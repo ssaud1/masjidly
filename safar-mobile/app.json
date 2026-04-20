@@ -51,6 +51,18 @@
     ],
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "4079faa0-1fc1-45f7-bfea-6b2e2b7a68a7"
+      }
+    },
+    "owner": "ss4108",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/4079faa0-1fc1-45f7-bfea-6b2e2b7a68a7"
     }
   }
 }
