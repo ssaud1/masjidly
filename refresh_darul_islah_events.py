@@ -105,6 +105,11 @@ def discover_pages_and_links(max_pages: int = 40) -> Tuple[List[str], List[str],
 
         html = fetch_text(u)
         if not html:
+            print(
+                f"[darul_islah] crawled={len(crawled_pages)}/{max_pages} "
+                f"queue={len(queue)} miss={u[:80]}",
+                flush=True,
+            )
             continue
         crawled_pages.append(u)
         soup = BeautifulSoup(html, "lxml")
@@ -124,6 +129,12 @@ def discover_pages_and_links(max_pages: int = 40) -> Tuple[List[str], List[str],
 
             if ("/events/list/page/" in low or "eventdisplay=past" in low or "tribe-bar-date=" in low) and full not in seen_pages:
                 queue.append(full)
+
+        print(
+            f"[darul_islah] crawled={len(crawled_pages)}/{max_pages} "
+            f"queue={len(queue)} event_links={len(event_links)} ics={len(ics_links)}",
+            flush=True,
+        )
 
     return crawled_pages, sorted(event_links), sorted(ics_links)
 

@@ -695,13 +695,14 @@ def fetch_all_posts_for_user(
     next_max_id: Optional[str] = resume_max
     success = False
     try:
-        for _ in range(max_pages):
+        for page_idx in range(max_pages):
             url = f"https://www.instagram.com/api/v1/feed/user/{user_id}/?count={max(1, min(50, count_per_page))}"
             if next_max_id:
                 url += "&max_id=" + quote(next_max_id, safe="")
             payload = request_json(session, url)
             batch = payload.get("items") or []
             if not batch:
+                print(f"[instagram] @{username} page={page_idx + 1} empty_batch -> stop", flush=True)
                 break
             new_count = 0
             for item in batch:
@@ -711,6 +712,12 @@ def fetch_all_posts_for_user(
                 seen.add(pk)
                 all_items.append(item)
                 new_count += 1
+            print(
+                f"[instagram] @{username} page={page_idx + 1} batch={len(batch)} "
+                f"new={new_count} total={len(all_items)} "
+                f"more_available={bool(payload.get('more_available'))}",
+                flush=True,
+            )
             if new_count == 0:
                 break
             if not payload.get("more_available"):
@@ -1151,14 +1158,16 @@ def scrape_account(
     sleep_seconds: float,
     save_raw_api: bool,
 ) -> List[EventRecord]:
+    t_acct = time.perf_counter()
+    print(f"[instagram] @{username} START (days={days} post_count={post_count} ocr={do_ocr})", flush=True)
     profile = get_user_profile(session, username)
     if not profile:
-        print(f"[WARN] {username}: could not read profile info")
+        print(f"[WARN] {username}: could not read profile info", flush=True)
         return []
     user_id = str(profile.get("id") or "")
     is_private = bool(profile.get("is_private"))
     if not user_id or is_private:
-        print(f"[WARN] {username}: skipped ({'private' if is_private else 'missing id'})")
+        print(f"[WARN] {username}: skipped ({'private' if is_private else 'missing id'})", flush=True)
         return []
 
     used_fallback = False
@@ -1177,13 +1186,14 @@ def scrape_account(
             username=username,
         )
     except Exception as exc:
-        print(f"[WARN] {username}: full feed blocked ({exc}); using first page fallback")
+        print(f"[WARN] {username}: full feed blocked ({exc}); using first page fallback", flush=True)
         nodes = fetch_first_page_nodes(session, username)
         posts = [{**node, "__kind": "node"} for node in nodes]
         used_fallback = True
     if not posts:
-        print(f"[WARN] {username}: no posts fetched")
+        print(f"[WARN] {username}: no posts fetched", flush=True)
         return []
+    print(f"[instagram] @{username} fetched {len(posts)} posts from feed", flush=True)
 
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)
     account_root = output_root / username
@@ -1193,7 +1203,11 @@ def scrape_account(
     ensure_dir(ocr_dir)
 
     records: List[EventRecord] = []
-    for item in posts:
+    kept = 0
+    downloaded = 0
+    ocr_runs = 0
+    cache_hits = 0
+    for idx, item in enumerate(posts):
         posted_at = extract_posted_at(item)
         if not posted_at or posted_at < cutoff:
             continue
@@ -1208,14 +1222,28 @@ def scrape_account(
         if not poster_url:
             continue
         image_path = posters_dir / f"{shortcode}.jpg"
-        if not image_path.exists():
+        if image_path.exists():
+            cache_hits += 1
+        else:
             try:
                 r = session.get(poster_url, timeout=35)
                 r.raise_for_status()
                 image_path.write_bytes(r.content)
+                downloaded += 1
             except Exception:
                 continue
-        ocr_text = run_ocr(image_path, ocr_dir / shortcode) if do_ocr else ""
+        ocr_text = ""
+        if do_ocr:
+            ocr_text = run_ocr(image_path, ocr_dir / shortcode)
+            ocr_runs += 1
+        kept += 1
+        if kept % 5 == 0:
+            print(
+                f"[instagram] @{username} progress kept={kept} "
+                f"downloaded={downloaded} ocr={ocr_runs} cache_hits={cache_hits} "
+                f"scanned={idx + 1}/{len(posts)}",
+                flush=True,
+            )
         fields = extract_event_fields(caption, ocr_text)
         raw_blob: Optional[Dict[str, Any]] = json_sanitize(item) if save_raw_api else None
         records.append(
@@ -1241,7 +1269,14 @@ def scrape_account(
 
     records.sort(key=lambda x: x.posted_at_utc, reverse=True)
     if used_fallback:
-        print(f"[WARN] {username}: first-page fallback only. Provide IG_SESSIONID for deeper pagination.")
+        print(f"[WARN] {username}: first-page fallback only. Provide IG_SESSIONID for deeper pagination.", flush=True)
+    elapsed = round(time.perf_counter() - t_acct, 1)
+    print(
+        f"[instagram] @{username} DONE  records={len(records)} "
+        f"downloaded={downloaded} ocr={ocr_runs} cache_hits={cache_hits} "
+        f"posts_scanned={len(posts)} elapsed={elapsed}s",
+        flush=True,
+    )
     return records
 
 

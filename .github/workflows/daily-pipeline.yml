@@ -58,10 +58,17 @@ jobs:
       SAFAR_FAST_MODE: ${{ github.event.inputs.fast_mode == 'true' && '1' || '0' }}
       SAFAR_SKIP_INSTAGRAM: ${{ github.event.inputs.skip_instagram == 'true' && '1' || '0' }}
       SAFAR_SKIP_EMAIL: ${{ github.event.inputs.skip_email == 'true' && '1' || '0' }}
-      # Use 2 parallel IG shards (we have 10 proxies, room to add more later).
-      SAFAR_INSTAGRAM_SHARDS: "2"
-      SAFAR_INSTAGRAM_SLEEP_SECONDS: "3.5"
+      # 4 parallel IG shards — one per proxy tier. We have 10 Webshare proxies so each
+      # shard gets a distinct IP, and total per-IP request rate stays below IG's throttle
+      # threshold. See safar_daily_pipeline.run_instagram_scrape.
+      SAFAR_INSTAGRAM_SHARDS: "4"
+      # Lowered from 3.5s -> 2.5s: because shards are now 4 with distinct proxies, per-IP
+      # rate = 1 req / 2.5s = 0.4 rps (vs 0.57 rps before, split 2x3.5s), so still safer.
+      SAFAR_INSTAGRAM_SLEEP_SECONDS: "2.5"
       SAFAR_INSTAGRAM_PROXY_FILE: "webshare_proxies.txt"
+      # Unbuffered Python stdout so the GHA live log shows scraper progress in real time
+      # (otherwise the 4KB block buffer can hide 30s+ of progress at once).
+      PYTHONUNBUFFERED: "1"
       # Gmail creds for ingest_masjid_emails.py
       GMAIL_USER: ${{ secrets.GMAIL_USER }}
       GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}

@@ -16,11 +16,13 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -48,15 +50,30 @@ SEED_DIR = ROOT / "safar-mobile" / "assets"
 PIPELINE_STEPS: List[Dict] = []
 
 
+def _ts() -> str:
+    return dt.datetime.now(dt.timezone.utc).strftime("%H:%M:%SZ")
+
+
+def _short(cmd: List[str]) -> str:
+    """Display name for a subprocess: basename of last .py arg, else full."""
+    for part in reversed(cmd):
+        if part.endswith(".py"):
+            return Path(part).name
+    return cmd[-1] if cmd else "?"
+
+
 def run(cmd: List[str], extra_env: Dict[str, str] | None = None) -> None:
-    print("[run]", " ".join(cmd))
+    name = _short(cmd)
+    print(f"[pipeline {_ts()}] START  {name}  ({' '.join(cmd)})", flush=True)
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
     t0 = time.perf_counter()
     subprocess.run(cmd, cwd=str(ROOT), check=True, env=env)
+    dur = round(time.perf_counter() - t0, 2)
+    print(f"[pipeline {_ts()}] DONE   {name}  ({dur}s)", flush=True)
     PIPELINE_STEPS.append(
-        {"argv": cmd, "ok": True, "duration_s": round(time.perf_counter() - t0, 2)}
+        {"argv": cmd, "ok": True, "duration_s": dur}
     )
 
 
@@ -67,12 +84,44 @@ def run_parallel(cmds: List[List[str]], max_workers: int = 4, extra_env: Dict[st
     if extra_env:
         env.update(extra_env)
     t0 = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(subprocess.run, cmd, cwd=str(ROOT), check=True, env=env): cmd for cmd in cmds}
-        for fut in as_completed(futures):
-            cmd = futures[fut]
-            print("[run.parallel]", " ".join(cmd))
-            fut.result()
+    start_times: Dict[int, float] = {}
+    still_running: Dict[int, List[str]] = {}
+
+    def _runner(cmd: List[str]) -> None:
+        name = _short(cmd)
+        print(f"[pipeline.parallel {_ts()}] START  {name}", flush=True)
+        t_start = time.perf_counter()
+        start_times[id(cmd)] = t_start
+        still_running[id(cmd)] = cmd
+        try:
+            subprocess.run(cmd, cwd=str(ROOT), check=True, env=env)
+        finally:
+            dur = round(time.perf_counter() - t_start, 2)
+            print(f"[pipeline.parallel {_ts()}] DONE   {name}  ({dur}s)", flush=True)
+            still_running.pop(id(cmd), None)
+
+    stop_heartbeat = threading.Event()
+
+    def _heartbeat() -> None:
+        while not stop_heartbeat.wait(120):
+            elapsed = round(time.perf_counter() - t0, 1)
+            pending = [_short(c) for c in still_running.values()]
+            if pending:
+                print(
+                    f"[pipeline.parallel {_ts()}] heartbeat elapsed={elapsed}s "
+                    f"still_running={pending}",
+                    flush=True,
+                )
+
+    hb = threading.Thread(target=_heartbeat, daemon=True)
+    hb.start()
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_runner, cmd): cmd for cmd in cmds}
+            for fut in as_completed(futures):
+                fut.result()
+    finally:
+        stop_heartbeat.set()
     PIPELINE_STEPS.append(
         {
             "argv": ["[parallel_refresh]", f"n={len(cmds)}"],
