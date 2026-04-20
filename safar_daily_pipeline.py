@@ -192,18 +192,23 @@ def run_instagram_scrape(base_cmd: List[str], run_env: Dict[str, str]) -> None:
         shards = n
     if shards <= 1:
         cmd = base_cmd + ["--usernames"] + names
-        # Even in serial mode, prefer a Webshare proxy over the raw GHA egress IP
-        # (GitHub Actions public IPs are already flagged by Instagram). Pick the
-        # first available proxy line; a single stable IP is much safer for IG than
-        # no proxy at all.
-        if proxy_lines:
+        # Match the original working scraper: direct connection by default.
+        # Only route through a Webshare proxy if the operator explicitly opts in
+        # via SAFAR_INSTAGRAM_FORCE_PROXY=1 (useful as a fallback when the raw
+        # runner IP gets flagged by Instagram).
+        force_proxy = os.getenv("SAFAR_INSTAGRAM_FORCE_PROXY", "0").strip() == "1"
+        if proxy_lines and force_proxy:
             cmd.extend(["--proxy", proxy_lines[0]])
             print(
-                f"[run] IG serial mode via proxy {_log_cmd_redact_proxy([proxy_lines[0]])}",
+                f"[run] IG serial mode via forced proxy {_log_cmd_redact_proxy([proxy_lines[0]])}",
                 flush=True,
             )
         else:
-            print("[run] IG serial mode, no proxy configured (using runner IP)", flush=True)
+            print(
+                "[run] IG serial mode, direct connection (no proxy; matches original "
+                "working script). Set SAFAR_INSTAGRAM_FORCE_PROXY=1 to route through Webshare.",
+                flush=True,
+            )
         print("[run]", _log_cmd_redact_proxy(cmd), flush=True)
         env = os.environ.copy()
         env.update(run_env)
