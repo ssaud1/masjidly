@@ -5,6 +5,7 @@
 *.pem
 *.key
 Webshare*proxies*.txt
+webshare_proxies.txt
 
 # --- Python ---
 .venv/

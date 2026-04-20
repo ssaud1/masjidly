@@ -1,0 +1,177 @@
+name: Daily scraper pipeline
+
+# Runs the full Safar pipeline (website scrapers + Gmail IMAP + Instagram +
+# enrichment + dashboards + seed regeneration) once a day, commits the
+# refreshed events JSON and mobile seed back to main, and Railway
+# auto-redeploys the API off the new commit.
+#
+# Timezone note: GitHub cron is UTC only. 17:00 UTC is:
+#   - 1 PM EDT (summer, Mar-Nov)
+#   - Noon EST (winter)
+# Adjust here or via workflow_dispatch whenever you need a one-off run.
+
+on:
+  schedule:
+    - cron: "0 17 * * *"
+  workflow_dispatch:
+    inputs:
+      fast_mode:
+        description: "Fast mode? (skips heavier OCR / poster audit)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      skip_instagram:
+        description: "Skip Instagram scraper?"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      skip_email:
+        description: "Skip Gmail IMAP ingest?"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+# We push commits back to main, so the workflow-scoped token needs write access.
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      # Pipeline flags
+      SAFAR_FAST_MODE: ${{ github.event.inputs.fast_mode == 'true' && '1' || '0' }}
+      SAFAR_SKIP_INSTAGRAM: ${{ github.event.inputs.skip_instagram == 'true' && '1' || '0' }}
+      SAFAR_SKIP_EMAIL: ${{ github.event.inputs.skip_email == 'true' && '1' || '0' }}
+      # Use 2 parallel IG shards (we have 10 proxies, room to add more later).
+      SAFAR_INSTAGRAM_SHARDS: "2"
+      SAFAR_INSTAGRAM_SLEEP_SECONDS: "3.5"
+      SAFAR_INSTAGRAM_PROXY_FILE: "webshare_proxies.txt"
+      # Gmail creds for ingest_masjid_emails.py
+      GMAIL_USER: ${{ secrets.GMAIL_USER }}
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Many scripts hardcode Path("/Users/shaheersaud/Safar"). Rather than rewrite
+      # all 15 of them, we symlink the repo into that legacy path inside the runner.
+      # This is ephemeral (the VM is destroyed after the job) and lets the scripts
+      # run unmodified.
+      - name: Symlink legacy /Users/shaheersaud/Safar path
+        run: |
+          sudo mkdir -p /Users/shaheersaud
+          sudo ln -sfn "$GITHUB_WORKSPACE" /Users/shaheersaud/Safar
+          ls -la /Users/shaheersaud/Safar | head -3
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install system packages (tesseract for OCR)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tesseract-ocr
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # Scrapers beyond the API surface:
+          pip install playwright==1.58.0 pillow==12.1.1
+
+      - name: Install Playwright browser (Chromium only)
+        run: |
+          python -m playwright install --with-deps chromium
+
+      - name: Restore scraper caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            events_by_masjid
+            instagram
+          key: safar-caches-${{ github.run_id }}
+          restore-keys: |
+            safar-caches-
+
+      - name: Write Webshare proxy file
+        env:
+          WEBSHARE_PROXIES: ${{ secrets.WEBSHARE_PROXIES }}
+        run: |
+          if [ -z "$WEBSHARE_PROXIES" ]; then
+            echo "::warning::WEBSHARE_PROXIES secret is empty; Instagram scraper will run without proxies (high risk of IG 429s)."
+            : > webshare_proxies.txt
+          else
+            printf '%s\n' "$WEBSHARE_PROXIES" > webshare_proxies.txt
+          fi
+          echo "proxy line count: $(grep -c . webshare_proxies.txt || true)"
+
+      - name: Run Safar daily pipeline
+        run: |
+          python safar_daily_pipeline.py
+
+      - name: Show resulting counts
+        if: always()
+        run: |
+          echo "--- target_masjids_events.json ---"
+          python -c "import json; d=json.load(open('target_masjids_events.json')); print('total events:', len(d))"
+          echo "--- target_masjids_future_events.json ---"
+          python -c "import json; d=json.load(open('target_masjids_future_events.json')); print('future events:', len(d))"
+          echo "--- seed ---"
+          ls -l safar-mobile/assets/seed-events.json safar-mobile/assets/seed-meta.json || true
+
+      - name: Upload pipeline report + IG cache diff as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-report-${{ github.run_id }}
+          path: |
+            events_by_masjid/_reports/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Commit refreshed data back to main
+        run: |
+          git config user.name  "safar-bot"
+          git config user.email "safar-bot@users.noreply.github.com"
+
+          # Only stage the files the pipeline is expected to update. Never stage
+          # the proxy file we wrote above (webshare_proxies.txt is in .gitignore
+          # via a line we add in this same commit if it's missing — but even
+          # without that it won't match the explicit `git add` set below).
+          git add \
+            target_masjids_events.json \
+            target_masjids_future_events.json \
+            target_masjids_future_events_detailed.json \
+            safar-mobile/assets/seed-events.json \
+            safar-mobile/assets/seed-meta.json || true
+
+          if git diff --cached --quiet; then
+            echo "No data changes to commit — pipeline produced identical output."
+            exit 0
+          fi
+
+          git commit -m "chore(data): refresh events $(date -u +%Y-%m-%d) [skip ci]"
+          # Use the default token; `permissions: contents: write` above lets us push to main.
+          git push origin HEAD:main
