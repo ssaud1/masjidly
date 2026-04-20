@@ -192,7 +192,19 @@ def run_instagram_scrape(base_cmd: List[str], run_env: Dict[str, str]) -> None:
         shards = n
     if shards <= 1:
         cmd = base_cmd + ["--usernames"] + names
-        print("[run]", " ".join(cmd))
+        # Even in serial mode, prefer a Webshare proxy over the raw GHA egress IP
+        # (GitHub Actions public IPs are already flagged by Instagram). Pick the
+        # first available proxy line; a single stable IP is much safer for IG than
+        # no proxy at all.
+        if proxy_lines:
+            cmd.extend(["--proxy", proxy_lines[0]])
+            print(
+                f"[run] IG serial mode via proxy {_log_cmd_redact_proxy([proxy_lines[0]])}",
+                flush=True,
+            )
+        else:
+            print("[run] IG serial mode, no proxy configured (using runner IP)", flush=True)
+        print("[run]", _log_cmd_redact_proxy(cmd), flush=True)
         env = os.environ.copy()
         env.update(run_env)
         subprocess.run(cmd, cwd=str(ROOT), check=True, env=env)

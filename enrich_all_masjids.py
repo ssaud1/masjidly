@@ -804,7 +804,26 @@ def enrich_file(path: Path) -> List[Dict]:
 
 def build_aggregate(all_events: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
     today = datetime.now().date().isoformat()
-    all_dedup = merge_fuzzy_duplicate_events(dedupe_events(all_events))
+
+    # Non-regression safeguard: union new scrape with the prior aggregate so a failed
+    # source (e.g., Instagram rate-limited for a day) never drops events we already had.
+    # Prior entries are *appended* so freshly-enriched copies from the current scrape
+    # win during dedupe (dedupe keeps the first occurrence of each identity key).
+    keep_prior = os.getenv("ENRICH_PRESERVE_PRIOR", "1") == "1"
+    prior_all: List[Dict] = []
+    if keep_prior and TARGET_ALL.exists():
+        try:
+            prior_all = load_json(TARGET_ALL)
+            if isinstance(prior_all, list):
+                print(f"[preserve] unioning {len(prior_all)} prior aggregate events with {len(all_events)} fresh")
+            else:
+                prior_all = []
+        except Exception as exc:
+            print(f"[preserve] could not read prior {TARGET_ALL.name}: {exc}")
+            prior_all = []
+    combined = list(all_events) + list(prior_all)
+
+    all_dedup = merge_fuzzy_duplicate_events(dedupe_events(combined))
 
     future: List[Dict] = []
     for e in all_dedup:

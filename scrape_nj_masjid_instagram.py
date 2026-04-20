@@ -1527,9 +1527,22 @@ def main() -> None:
 
     compare_rows: List[Dict[str, object]] = []
     combined_records: List[EventRecord] = []
-    print(f"Starting Instagram scrape for {len(args.usernames)} accounts")
+    print(f"Starting Instagram scrape for {len(args.usernames)} accounts", flush=True)
 
-    for username in args.usernames:
+    # Extra between-account pause to avoid tripping IG rate limits when proxies or
+    # the runner IP get flagged. Tunable via IG_ACCOUNT_SLEEP_SECONDS.
+    try:
+        account_pause_s = max(0.0, float(os.environ.get("IG_ACCOUNT_SLEEP_SECONDS", "0")))
+    except ValueError:
+        account_pause_s = 0.0
+
+    for acct_idx, username in enumerate(args.usernames):
+        if acct_idx > 0 and account_pause_s > 0:
+            print(
+                f"[INFO] inter-account pause {account_pause_s:.1f}s before {username}",
+                flush=True,
+            )
+            time.sleep(account_pause_s)
         if username not in SOURCE_MAP:
             print(f"[WARN] {username}: not mapped in SOURCE_MAP, skipping")
             continue

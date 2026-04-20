@@ -51,26 +51,33 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Serial IG + 25s inter-account pause + long backoffs can legitimately push the
+    # run past the old 90-minute budget, so raise the ceiling. All non-IG stages still
+    # finish in ~5 min; IG alone is bounded by 24 accounts * (pagination + 25s pause).
+    timeout-minutes: 150
 
     env:
       # Pipeline flags
       SAFAR_FAST_MODE: ${{ github.event.inputs.fast_mode == 'true' && '1' || '0' }}
       SAFAR_SKIP_INSTAGRAM: ${{ github.event.inputs.skip_instagram == 'true' && '1' || '0' }}
       SAFAR_SKIP_EMAIL: ${{ github.event.inputs.skip_email == 'true' && '1' || '0' }}
-      # 4 parallel IG shards — one per proxy tier. We have 10 Webshare proxies so each
-      # shard gets a distinct IP. See safar_daily_pipeline.run_instagram_scrape.
-      SAFAR_INSTAGRAM_SHARDS: "4"
-      # 4s sleep between requests per shard. 2.5s was too aggressive: IG rate-limited
-      # every shard's opening /web_profile_info/ call with 429s even across 4 proxies,
-      # triggering 5+ min of exponential backoff before scraping could begin. 4s keeps
-      # per-IP rate at 0.25 rps (vs. 0.57 rps on the original 2x3.5s baseline), while
-      # 4 distinct proxies still give ~1.0 rps aggregate (1.75x the baseline).
-      SAFAR_INSTAGRAM_SLEEP_SECONDS: "4"
-      # Stagger shard startup by 15s so we don't thundering-herd IG with 4 parallel
-      # /web_profile_info/ calls at t=0 (observed: instant 429 storm on all 4 shards).
-      # Shard N starts at t = N*15s. With 4 shards, full ramp-in completes at t+45s.
-      SAFAR_INSTAGRAM_SHARD_STAGGER_SECONDS: "15"
+      # SERIAL IG config. Previous run (4 shards + 4s sleep + 15s stagger) still got
+      # "web_profile_info blocked (instagram_throttle_or_upstream_429)" on EVERY account,
+      # so we collected 0 new IG events. Per upstream scraper docs & community advice,
+      # the reliable mode is: 1 shard, 1 IP, long per-request sleep, long inter-account
+      # pause. Slow > blocked.
+      SAFAR_INSTAGRAM_SHARDS: "1"
+      # 8s between pagination calls within an account (was 4s).
+      SAFAR_INSTAGRAM_SLEEP_SECONDS: "8"
+      # N/A for 1 shard but keep for clarity.
+      SAFAR_INSTAGRAM_SHARD_STAGGER_SECONDS: "0"
+      # 25s idle between accounts so the profile_info call for each username doesn't
+      # look like a scripted crawl. Honored inside scrape_nj_masjid_instagram.py.
+      IG_ACCOUNT_SLEEP_SECONDS: "25"
+      # More patient per-request retry/backoff for 429/5xx (vs. defaults 6 / 1.5 / 45).
+      IG_REQUEST_RETRIES: "10"
+      IG_BACKOFF_BASE_S: "3.0"
+      IG_BACKOFF_CAP_S: "180"
       SAFAR_INSTAGRAM_PROXY_FILE: "webshare_proxies.txt"
       # Unbuffered Python stdout so the GHA live log shows scraper progress in real time
       # (otherwise the 4KB block buffer can hide 30s+ of progress at once).
