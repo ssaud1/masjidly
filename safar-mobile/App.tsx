@@ -4212,19 +4212,19 @@ function AppInner() {
             style={[styles.modalActionBtn, styles.modalActionBtnPrimary, { alignSelf: "stretch" }]}
             onPress={() => setScholarScreenOpen(true)}
           >
-            <Text style={styles.modalActionBtnText}>🎤  Scholars & Speakers Directory</Text>
+            <Text style={styles.modalActionBtnText}><Text style={emojiFontStyle}>🎤</Text>  Scholars & Speakers Directory</Text>
           </Pressable>
           <Pressable
             style={[styles.modalActionBtn, styles.modalActionBtnPrimary, { alignSelf: "stretch" }]}
             onPress={() => setPassportOpen(true)}
           >
-            <Text style={styles.modalActionBtnText}>📘  Masjid Passport ({passportStamps.length}/24)</Text>
+            <Text style={styles.modalActionBtnText}><Text style={emojiFontStyle}>📘</Text>  Masjid Passport ({passportStamps.length}/24)</Text>
           </Pressable>
           <Pressable
             style={[styles.modalActionBtn, { alignSelf: "stretch" }]}
             onPress={exportBulkCalendar}
           >
-            <Text style={styles.modalActionBtnText}>📅  Export next 30 days to calendar</Text>
+            <Text style={styles.modalActionBtnText}><Text style={emojiFontStyle}>📅</Text>  Export next 30 days to calendar</Text>
           </Pressable>
         </View>
       </View>
@@ -4558,7 +4558,7 @@ function AppInner() {
 
                 <View style={[styles.eventWhenCard, isDarkTheme && styles.eventWhenCardDark]}>
                   <View style={styles.eventWhenRow}>
-                    <Text style={styles.eventWhenIcon}>📅</Text>
+                    <Text style={[styles.eventWhenIcon, emojiFontStyle]}>📅</Text>
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.eventWhenPrimary, isDarkTheme && { color: "#f4f7ff" }]}>
                         {formatHumanDate(ev.date)}
@@ -4631,7 +4631,7 @@ function AppInner() {
 
                 {/* #18 Attendees + #12 Invite friends */}
                 <View style={[styles.eventInfoCard, isDarkTheme && styles.eventInfoCardDark]}>
-                  <Text style={styles.eventInfoIcon}>👥</Text>
+                  <Text style={[styles.eventInfoIcon, emojiFontStyle]}>👥</Text>
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.eventInfoTitle, isDarkTheme && { color: "#f4f7ff" }]}>
                       {(ev.attendees?.going || 0) > 0
@@ -4657,7 +4657,7 @@ function AppInner() {
                     disabled={!ev.map_link}
                     onPress={() => ev.map_link && Linking.openURL(ev.map_link)}
                   >
-                    <Text style={styles.eventInfoIcon}>📍</Text>
+                    <Text style={[styles.eventInfoIcon, emojiFontStyle]}>📍</Text>
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.eventInfoTitle, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={1}>
                         {locationParts[0]}
@@ -4724,7 +4724,7 @@ function AppInner() {
                   if (!evDate || evDate > yestIso || !didRsvp) return null;
                   return (
                     <View style={[styles.eventInfoCard, { backgroundColor: "#f0eefb", borderWidth: 1, borderColor: "#d9d4f0" }]}>
-                      <Text style={styles.eventInfoIcon}>💭</Text>
+                      <Text style={[styles.eventInfoIcon, emojiFontStyle]}>💭</Text>
                       <View style={{ flex: 1 }}>
                         <Text style={[styles.eventInfoTitle, { color: "#3a2f7f" }]}>How was it?</Text>
                         <Text style={[styles.eventInfoSub, { color: "#5c4fa8" }]}>
@@ -4743,7 +4743,7 @@ function AppInner() {
 
                 {speaker ? (
                   <View style={[styles.eventInfoCard, isDarkTheme && styles.eventInfoCardDark]}>
-                    <Text style={styles.eventInfoIcon}>🎤</Text>
+                    <Text style={[styles.eventInfoIcon, emojiFontStyle]}>🎤</Text>
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.eventInfoTitle, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={2}>{speaker}</Text>
                       <Text style={[styles.eventInfoSub, isDarkTheme && { color: "#c4cee8" }]}>Speaker</Text>
@@ -4799,7 +4799,7 @@ function AppInner() {
                         style={[styles.eventLinkTile, isDarkTheme && styles.eventLinkTileDark]}
                         onPress={() => Linking.openURL(ev.source_url)}
                       >
-                        <Text style={styles.eventLinkIcon}>🌐</Text>
+                        <Text style={[styles.eventLinkIcon, emojiFontStyle]}>🌐</Text>
                         <Text style={[styles.eventLinkLabel, isDarkTheme && { color: "#f4f7ff" }]}>Event page</Text>
                   </Pressable>
                 ) : null}
@@ -4808,7 +4808,7 @@ function AppInner() {
                         style={[styles.eventLinkTile, isDarkTheme && styles.eventLinkTileDark]}
                         onPress={() => Linking.openURL(ev.deep_link?.web || "")}
                   >
-                        <Text style={styles.eventLinkIcon}>🔗</Text>
+                        <Text style={[styles.eventLinkIcon, emojiFontStyle]}>🔗</Text>
                         <Text style={[styles.eventLinkLabel, isDarkTheme && { color: "#f4f7ff" }]}>Open link</Text>
                   </Pressable>
                 ) : null}
@@ -4817,7 +4817,7 @@ function AppInner() {
                         style={[styles.eventLinkTile, isDarkTheme && styles.eventLinkTileDark]}
                         onPress={() => Linking.openURL(ev.map_link || "")}
                   >
-                        <Text style={styles.eventLinkIcon}>🗺️</Text>
+                        <Text style={[styles.eventLinkIcon, emojiFontStyle]}>🗺️</Text>
                         <Text style={[styles.eventLinkLabel, isDarkTheme && { color: "#f4f7ff" }]}>Directions</Text>
                   </Pressable>
                 ) : null}
@@ -4842,7 +4842,7 @@ function AppInner() {
                       style={[styles.eventTrustChip, feedbackState === "helpful" && styles.eventTrustChipActive]}
                       onPress={() => submitFeedback(ev, "helpful")}
                     >
-                      <Text style={[styles.eventTrustChipText, feedbackState === "helpful" && styles.eventTrustChipTextActive]}>👍 Helpful</Text>
+                      <Text style={[styles.eventTrustChipText, feedbackState === "helpful" && styles.eventTrustChipTextActive]}><Text style={emojiFontStyle}>👍</Text> Helpful</Text>
                     </Pressable>
                     <Pressable
                       style={[styles.eventTrustChip, feedbackState === "attended" && styles.eventTrustChipActive]}
