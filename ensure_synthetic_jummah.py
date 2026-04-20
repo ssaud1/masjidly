@@ -64,6 +64,13 @@ JUMMAH_PATTERN = re.compile(r"\b(jumu|jumma|jummah|khutbah)\b", re.IGNORECASE)
 
 
 def _load_manifest() -> List[Dict]:
+    # Manifest is typically created by the Instagram scraper. When the pipeline
+    # runs without IG (CI smoke tests, fast mode) the file may not exist yet —
+    # treat that as "no manifest-based masjids" rather than crashing the whole
+    # pipeline.
+    if not MANIFEST_PATH.exists():
+        print(f"[ensure_synthetic_jummah] manifest missing at {MANIFEST_PATH}; continuing with empty list")
+        return []
     with MANIFEST_PATH.open("r", encoding="utf-8") as f:
         data = json.load(f)
     return data.get("masjids", [])
