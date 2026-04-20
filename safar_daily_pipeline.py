@@ -30,9 +30,12 @@ from typing import Dict, List, Tuple
 
 from scrape_nj_masjid_instagram import DEFAULT_USERNAMES as IG_DEFAULT_USERNAMES, SOURCE_MAP as IG_SOURCE_MAP, normalize_proxy_line
 
-ROOT = Path("/Users/shaheersaud/Safar")
+ROOT = Path(__file__).resolve().parent
 EVENTS_DIR = ROOT / "events_by_masjid"
-PY = str(ROOT / ".venv" / "bin" / "python")
+# Prefer the venv interpreter when available; fall back to the current interpreter
+# (Railway / CI containers don't have a local .venv, they invoke us with system python).
+_VENV_PY = ROOT / ".venv" / "bin" / "python"
+PY = str(_VENV_PY) if _VENV_PY.exists() else sys.executable
 
 TARGET_ALL = ROOT / "target_masjids_events.json"
 TARGET_FUTURE = ROOT / "target_masjids_future_events.json"
@@ -41,6 +44,7 @@ DB_ALL = ROOT / "target_masjids_events.db"
 DB_FUTURE = ROOT / "target_masjids_future_events.db"
 INDEX_FILE = EVENTS_DIR / "_index.json"
 REPORT_DIR = EVENTS_DIR / "_reports"
+SEED_DIR = ROOT / "safar-mobile" / "assets"
 PIPELINE_STEPS: List[Dict] = []
 
 
@@ -302,6 +306,55 @@ def ensure_masjid_event_json_stubs() -> None:
             save_json(p, [])
 
 
+def write_mobile_seed() -> None:
+    """Dump a compact seed of future events + meta into the mobile bundle so the
+    app shows real data on first launch / airplane mode, before any network call.
+
+    Shape mirrors what /api/events and /api/meta return so `App.tsx` can swap in
+    the bundled seed as a cold-start fallback without extra parsing.
+    """
+    if not SEED_DIR.exists():
+        print(f"[seed] skip — {SEED_DIR} not present (safar-mobile not checked out)")
+        return
+    try:
+        future = load_json(TARGET_FUTURE) if TARGET_FUTURE.exists() else []
+        if not future:
+            # Fall back to the full file if future-only slice is missing.
+            future = load_json(TARGET_ALL)
+    except Exception as exc:
+        print(f"[seed] could not read events json: {exc}")
+        return
+
+    sources: List[str] = sorted({(e.get("source") or "").strip() for e in future if e.get("source")})
+    dates = [e.get("date") for e in future if e.get("date")]
+    min_date = min(dates) if dates else ""
+    max_date = max(dates) if dates else ""
+
+    try:
+        mtime = int(TARGET_FUTURE.stat().st_mtime) if TARGET_FUTURE.exists() else int(time.time())
+    except OSError:
+        mtime = int(time.time())
+
+    meta = {
+        "data_version": f"{mtime}-v3",
+        "default_reference": sources[0] if sources else "alfalah",
+        "min_date": min_date,
+        "max_date": max_date,
+        "sources": sources,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "event_count": len(future),
+    }
+
+    seed_events_path = SEED_DIR / "seed-events.json"
+    seed_meta_path = SEED_DIR / "seed-meta.json"
+    save_json(seed_events_path, future)
+    save_json(seed_meta_path, meta)
+    print(
+        f"[seed] wrote {seed_events_path.name} ({len(future)} events) + "
+        f"{seed_meta_path.name} ({len(sources)} sources)"
+    )
+
+
 def update_index() -> None:
     counts: Dict[str, int] = {}
     for p in sorted(EVENTS_DIR.glob("*_events.json")):
@@ -377,6 +430,10 @@ def main() -> None:
     sync_db(DB_FUTURE, TARGET_FUTURE)
     # Keep this mirror current for any existing consumers.
     save_json(TARGET_DETAILED, load_json(TARGET_FUTURE))
+
+    # Offline-first: ship a fresh snapshot of events + meta inside the mobile app
+    # bundle so launch-time UX never waits on the network.
+    write_mobile_seed()
 
     update_index()
     mode = "fast" if fast_mode else "full"
