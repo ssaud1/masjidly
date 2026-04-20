@@ -1,0 +1,56 @@
+{
+  "expo": {
+    "name": "Safar",
+    "slug": "safar-mobile",
+    "scheme": "masjidly",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "associatedDomains": [
+        "applinks:masjidly.app"
+      ]
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "masjidly.app",
+              "pathPrefix": "/event/"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
+    },
+    "plugins": [
+      "expo-notifications",
+      "expo-secure-store",
+      "expo-font"
+    ],
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}

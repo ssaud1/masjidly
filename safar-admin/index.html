@@ -1,0 +1,989 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Masjidly Admin</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #121b30;
+      --panel-2: #182544;
+      --ink: #f4f7ff;
+      --ink-soft: #c8d3ee;
+      --muted: #8492b4;
+      --border: #243357;
+      --brand: #6aa6ff;
+      --brand-strong: #3e82ff;
+      --accent: #8c7bff;
+      --ok: #4dc88b;
+      --warn: #f7b754;
+      --danger: #ff6b6b;
+      --chip: #1e2b4d;
+      --chip-ink: #dbe6ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: radial-gradient(circle at 10% 0%, #1a2449 0%, #0b1220 55%) fixed;
+      color: var(--ink);
+      min-height: 100vh;
+    }
+    a { color: var(--brand); text-decoration: none; }
+    button { font-family: inherit; }
+    input, select, textarea {
+      font-family: inherit;
+      font-size: 14px;
+      color: var(--ink);
+      background: #0d1528;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      outline: none;
+      width: 100%;
+    }
+    input:focus, select:focus, textarea:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(106,166,255,0.18); }
+    label { display: block; color: var(--ink-soft); font-size: 12px; font-weight: 600; margin-bottom: 6px; letter-spacing: 0.03em; text-transform: uppercase; }
+
+    .topbar {
+      position: sticky; top: 0; z-index: 10;
+      background: rgba(11,18,32,0.85);
+      backdrop-filter: blur(14px);
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 28px;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: -0.02em; font-size: 18px; }
+    .brand .logo {
+      width: 32px; height: 32px; border-radius: 10px;
+      background: linear-gradient(135deg, #6aa6ff, #8c7bff);
+      display:flex; align-items:center; justify-content:center; color: #fff; font-size: 17px;
+    }
+    .topbar .right { display: flex; align-items: center; gap: 12px; color: var(--ink-soft); font-size: 13px; }
+    .btn {
+      background: var(--brand-strong); color: #fff; border: 0; border-radius: 10px;
+      padding: 10px 14px; font-weight: 700; cursor: pointer; font-size: 13px;
+      letter-spacing: 0.01em;
+    }
+    .btn:hover { background: #2c6ff7; }
+    .btn.ghost { background: transparent; color: var(--ink-soft); border: 1px solid var(--border); }
+    .btn.ghost:hover { border-color: var(--brand); color: var(--ink); }
+    .btn.success { background: var(--ok); }
+    .btn.danger  { background: var(--danger); }
+    .btn.small { padding: 6px 10px; font-size: 12px; border-radius: 8px; }
+
+    .shell { display: grid; grid-template-columns: 240px 1fr; gap: 0; min-height: calc(100vh - 64px); }
+    .sidebar {
+      border-right: 1px solid rgba(255,255,255,0.06);
+      padding: 22px 18px; display: flex; flex-direction: column; gap: 4px;
+      background: rgba(9,15,28,0.55);
+    }
+    .sidebar .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; margin: 16px 10px 6px; }
+    .nav-item {
+      display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+      border-radius: 10px; color: var(--ink-soft); cursor: pointer; font-weight: 600; font-size: 14px;
+    }
+    .nav-item .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+    .nav-item:hover { background: rgba(255,255,255,0.04); color: var(--ink); }
+    .nav-item.active { background: rgba(62,130,255,0.15); color: #fff; }
+    .nav-item.active .dot { background: var(--brand); }
+
+    .main { padding: 28px; }
+    .page-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; gap: 14px; flex-wrap: wrap; }
+    .page-head h1 { font-size: 22px; letter-spacing: -0.02em; margin: 0; font-weight: 800; }
+    .page-head p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+
+    .card {
+      background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+      border: 1px solid var(--border);
+      border-radius: 18px; padding: 22px;
+      box-shadow: 0 8px 30px rgba(3,8,20,0.35);
+    }
+    .card h2 { margin: 0 0 14px; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; color: var(--ink); }
+    .card h2 small { color: var(--muted); font-weight: 500; margin-left: 8px; }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    @media (max-width: 900px) { .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; } }
+
+    .row { display: flex; gap: 12px; align-items: center; }
+    .hstack { display: flex; gap: 10px; align-items: center; }
+    .vstack { display: flex; flex-direction: column; gap: 10px; }
+    .muted { color: var(--muted); }
+    .pill { background: var(--chip); color: var(--chip-ink); padding: 4px 10px; font-size: 11px; border-radius: 999px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; }
+
+    .stat { padding: 16px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 14px; }
+    .stat .n { font-size: 26px; font-weight: 800; letter-spacing: -0.03em; color: #fff; }
+    .stat .l { margin-top: 2px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
+
+    .event-row {
+      padding: 14px 16px; border: 1px solid var(--border); border-radius: 14px;
+      display: grid; grid-template-columns: 140px 1fr auto; gap: 14px; align-items: center;
+      background: rgba(255,255,255,0.02); margin-bottom: 10px;
+    }
+    .event-row .when { font-weight: 700; color: var(--ink); font-size: 13px; }
+    .event-row .when span { display:block; color: var(--muted); font-weight: 500; font-size: 12px; margin-top: 2px;}
+    .event-row .title { font-weight: 700; color: #fff; font-size: 14px; margin: 0 0 4px; }
+    .event-row .meta  { color: var(--muted); font-size: 12px; }
+
+    .modal-bg {
+      position: fixed; inset: 0; background: rgba(5,10,22,0.72);
+      display: flex; align-items: center; justify-content: center; z-index: 20; padding: 20px;
+      backdrop-filter: blur(10px);
+    }
+    .modal {
+      width: 100%; max-width: 640px; max-height: 90vh; overflow: auto;
+      background: var(--panel);
+      border: 1px solid var(--border); border-radius: 18px; padding: 22px;
+    }
+    .modal h2 { margin-top: 0; }
+
+    .auth-shell { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+    .auth-card { width: 100%; max-width: 420px; }
+    .auth-card .logo-lg { width: 56px; height: 56px; border-radius: 16px; background: linear-gradient(135deg, #6aa6ff, #8c7bff); display:flex; align-items:center; justify-content:center; color:#fff; font-size: 26px; font-weight: 800; margin-bottom: 16px; }
+
+    .iqama-grid { display: grid; grid-template-columns: 120px 1fr 1fr; gap: 12px; align-items: center; margin-bottom: 10px; }
+    .iqama-grid .p { font-weight: 700; color: #fff; font-size: 13px; }
+
+    .poster-canvas {
+      width: 100%; max-width: 440px; margin: 10px auto 18px;
+      aspect-ratio: 4 / 5;
+      border-radius: 16px; overflow: hidden; box-shadow: 0 18px 60px rgba(5,10,22,0.6);
+      background: #000;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .poster-canvas svg { width: 100%; height: 100%; display: block; }
+
+    .toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: var(--panel-2); border: 1px solid var(--border); color: #fff;
+      padding: 10px 18px; border-radius: 999px; font-size: 13px; font-weight: 600;
+      box-shadow: 0 12px 30px rgba(0,0,0,0.45);
+      z-index: 50;
+      opacity: 0; pointer-events: none; transition: opacity 0.2s ease;
+    }
+    .toast.show { opacity: 1; }
+
+    .hidden { display: none !important; }
+    .scroll { max-height: 520px; overflow-y: auto; padding-right: 4px; }
+    .scroll::-webkit-scrollbar { width: 8px; }
+    .scroll::-webkit-scrollbar-thumb { background: #243357; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <!-- Auth view -->
+  <div id="authView" class="auth-shell">
+    <div class="card auth-card">
+      <div class="logo-lg">M</div>
+      <h1 style="margin:0 0 6px;font-size:22px;letter-spacing:-0.03em;">Masjidly Admin</h1>
+      <p class="muted" style="margin:0 0 18px;font-size:13px;">Sign in to manage your masjid's events, iqama times, posters, and analytics.</p>
+      <div class="vstack" style="gap:14px;">
+        <div>
+          <label>Email</label>
+          <input id="loginEmail" type="email" autocomplete="email" placeholder="admin@example.com" />
+        </div>
+        <div>
+          <label>Password</label>
+          <input id="loginPassword" type="password" autocomplete="current-password" placeholder="••••••••" />
+        </div>
+        <button id="loginBtn" class="btn" style="width:100%;padding:12px;">Sign in</button>
+        <div id="loginError" class="muted" style="color:var(--danger);font-size:13px;display:none;"></div>
+        <div class="muted" style="font-size:12px;text-align:center;">
+          Use a Masjidly account with admin role or a claimed masjid.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- App view -->
+  <div id="appView" class="hidden">
+    <div class="topbar">
+      <div class="brand">
+        <div class="logo">M</div>
+        <div>Masjidly · <span style="color:var(--muted);font-weight:600;">Admin</span></div>
+      </div>
+      <div class="right">
+        <span id="whoami"></span>
+        <span class="pill" id="rolePill">user</span>
+        <button class="btn ghost" id="logoutBtn">Sign out</button>
+      </div>
+    </div>
+
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="label">Masjid</div>
+        <select id="masjidSelect"></select>
+
+        <div class="label">Workspace</div>
+        <div class="nav-item active" data-nav="events"><span class="dot"></span>Events</div>
+        <div class="nav-item" data-nav="iqama"><span class="dot"></span>Iqama times</div>
+        <div class="nav-item" data-nav="poster"><span class="dot"></span>Poster designer</div>
+        <div class="nav-item" data-nav="analytics"><span class="dot"></span>Analytics</div>
+        <div class="nav-item" data-nav="import"><span class="dot"></span>Instagram import</div>
+
+        <div style="flex:1"></div>
+        <div class="muted" style="font-size:11px;padding:10px 12px;">
+          Build: Masjidly Admin v1
+        </div>
+      </aside>
+
+      <main class="main">
+
+        <!-- Events -->
+        <section id="page-events">
+          <div class="page-head">
+            <div>
+              <h1>Events</h1>
+              <p>Edit titles, times, speakers, and details. Changes publish instantly to the mobile app.</p>
+            </div>
+            <button class="btn ghost" id="refreshEventsBtn">Refresh</button>
+          </div>
+          <div class="card">
+            <h2>Upcoming <small id="eventsCount"></small></h2>
+            <div id="eventsList" class="scroll"></div>
+          </div>
+        </section>
+
+        <!-- Iqama -->
+        <section id="page-iqama" class="hidden">
+          <div class="page-head">
+            <div>
+              <h1>Iqama times</h1>
+              <p>These show on every event card for this masjid in the mobile app.</p>
+            </div>
+          </div>
+          <div class="card">
+            <h2>Daily prayers</h2>
+            <div id="iqamaForm"></div>
+            <div class="hstack" style="margin-top:16px;">
+              <button class="btn success" id="saveIqamaBtn">Save iqama times</button>
+              <div id="iqamaSaveState" class="muted" style="font-size:12px;"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Poster designer -->
+        <section id="page-poster" class="hidden">
+          <div class="page-head">
+            <div>
+              <h1>Poster auto-designer</h1>
+              <p>Pick an event and generate a shareable poster in seconds. Download as PNG or SVG.</p>
+            </div>
+          </div>
+          <div class="grid-2">
+            <div class="card">
+              <h2>Source event</h2>
+              <div class="vstack">
+                <div>
+                  <label>Choose an event</label>
+                  <select id="posterEventSelect"></select>
+                </div>
+                <div class="grid-2">
+                  <div>
+                    <label>Theme</label>
+                    <select id="posterTheme">
+                      <option value="emerald">Emerald night</option>
+                      <option value="dusk">Dusk gradient</option>
+                      <option value="royal">Royal blue</option>
+                      <option value="warm">Warm sand</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label>Accent</label>
+                    <select id="posterAccent">
+                      <option value="crescent">Crescent</option>
+                      <option value="geometric">Geometric</option>
+                      <option value="minimal">Minimal</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label>Tagline</label>
+                  <input id="posterTagline" placeholder="All are welcome" />
+                </div>
+                <div class="hstack">
+                  <button class="btn" id="downloadPngBtn">Download PNG</button>
+                  <button class="btn ghost" id="downloadSvgBtn">Download SVG</button>
+                </div>
+              </div>
+            </div>
+            <div class="card">
+              <h2>Preview</h2>
+              <div class="poster-canvas" id="posterCanvas"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Analytics -->
+        <section id="page-analytics" class="hidden">
+          <div class="page-head">
+            <div>
+              <h1>Analytics</h1>
+              <p>How your community is engaging with events over the last 30 days.</p>
+            </div>
+          </div>
+          <div class="grid-4" id="analyticsStats"></div>
+          <div class="card" style="margin-top:16px;">
+            <h2>Top speakers</h2>
+            <div id="analyticsSpeakers"></div>
+          </div>
+        </section>
+
+        <!-- Instagram import -->
+        <section id="page-import" class="hidden">
+          <div class="page-head">
+            <div>
+              <h1>Instagram import</h1>
+              <p>Queue a fresh scrape of your masjid's Instagram to pick up new flyers.</p>
+            </div>
+          </div>
+          <div class="card">
+            <h2>One-click pull</h2>
+            <p class="muted" style="font-size:13px;margin:0 0 14px;">When you trigger an import, the scrape pipeline will fetch the latest posts from your masjid's connected IG account and extract events from any new flyers. Results usually arrive within 2–5 minutes.</p>
+            <button class="btn" id="triggerIgBtn">Trigger Instagram import</button>
+            <div id="igStatus" class="muted" style="margin-top:12px;font-size:13px;"></div>
+          </div>
+        </section>
+
+      </main>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <!-- Edit modal -->
+  <div id="editModal" class="modal-bg hidden">
+    <div class="modal">
+      <h2 id="editModalTitle">Edit event</h2>
+      <div class="vstack">
+        <div>
+          <label>Title</label>
+          <input id="f_title" />
+        </div>
+        <div class="grid-2">
+          <div>
+            <label>Date</label>
+            <input id="f_date" type="date" />
+          </div>
+          <div>
+            <label>Start time</label>
+            <input id="f_start_time" type="time" />
+          </div>
+        </div>
+        <div class="grid-2">
+          <div>
+            <label>End time</label>
+            <input id="f_end_time" type="time" />
+          </div>
+          <div>
+            <label>Speaker</label>
+            <input id="f_speaker" />
+          </div>
+        </div>
+        <div class="grid-2">
+          <div>
+            <label>Audience</label>
+            <select id="f_audience">
+              <option value="all">All</option>
+              <option value="brothers">Brothers</option>
+              <option value="sisters">Sisters</option>
+              <option value="family">Family</option>
+              <option value="youth">Youth</option>
+            </select>
+          </div>
+          <div>
+            <label>Category</label>
+            <input id="f_category" />
+          </div>
+        </div>
+        <div>
+          <label>Location</label>
+          <input id="f_location_name" />
+        </div>
+        <div>
+          <label>Address</label>
+          <input id="f_address" />
+        </div>
+        <div>
+          <label>RSVP link</label>
+          <input id="f_rsvp_link" />
+        </div>
+        <div>
+          <label>Description</label>
+          <textarea id="f_description" rows="5"></textarea>
+        </div>
+      </div>
+      <div class="hstack" style="margin-top:18px;justify-content:flex-end;">
+        <button class="btn ghost" id="editCancelBtn">Cancel</button>
+        <button class="btn success" id="editSaveBtn">Save changes</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  // ------------------ Setup --------------------------------------------------
+  const API = (window.location.origin || "http://localhost:8000").replace(/\/$/, "");
+  const TOKEN_KEY = "masjidly.admin.token";
+  const SRC_KEY = "masjidly.admin.source";
+
+  const DEFAULT_PRAYERS = ["fajr", "dhuhr", "asr", "maghrib", "isha", "jumuah"];
+
+  const state = {
+    token: localStorage.getItem(TOKEN_KEY) || "",
+    user: null,
+    masjids: [],
+    source: localStorage.getItem(SRC_KEY) || "",
+    events: [],
+    iqama: {},
+    analytics: null,
+    editing: null,
+  };
+
+  // ------------------ Helpers ------------------------------------------------
+  function $(id) { return document.getElementById(id); }
+  function toast(msg, kind) {
+    const el = $("toast");
+    el.textContent = msg;
+    el.style.borderColor = kind === "error" ? "var(--danger)" : "var(--border)";
+    el.classList.add("show");
+    clearTimeout(el._t);
+    el._t = setTimeout(() => el.classList.remove("show"), 2200);
+  }
+
+  async function api(path, opts) {
+    opts = opts || {};
+    const headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
+    if (state.token) headers["Authorization"] = "Bearer " + state.token;
+    const r = await fetch(API + path, Object.assign({}, opts, { headers }));
+    let data = null;
+    try { data = await r.json(); } catch (e) {}
+    if (!r.ok) {
+      const msg = (data && (data.error || data.message)) || r.statusText || "Error";
+      throw new Error(msg);
+    }
+    return data;
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return "";
+    const d = new Date(iso + "T00:00:00");
+    return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  }
+  function fmtTime(hhmm) {
+    if (!hhmm) return "";
+    const [h, m] = hhmm.split(":").map(Number);
+    if (isNaN(h)) return hhmm;
+    const p = h >= 12 ? "PM" : "AM";
+    const h12 = ((h + 11) % 12) + 1;
+    return `${h12}:${String(m || 0).padStart(2, "0")} ${p}`;
+  }
+  function sourceLabel(s) {
+    if (!s) return "";
+    return s.toUpperCase();
+  }
+  function escapeHtml(s) {
+    return String(s || "").replace(/[&<>"']/g, c => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
+  }
+  function escapeXml(s) { return escapeHtml(s); }
+
+  // ------------------ Auth ---------------------------------------------------
+  $("loginBtn").addEventListener("click", async () => {
+    const email = $("loginEmail").value.trim();
+    const password = $("loginPassword").value;
+    $("loginError").style.display = "none";
+    if (!email || !password) {
+      $("loginError").textContent = "Enter both email and password.";
+      $("loginError").style.display = "block";
+      return;
+    }
+    try {
+      const d = await api("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
+      state.token = d.token;
+      state.user = d.user;
+      localStorage.setItem(TOKEN_KEY, state.token);
+      await bootApp();
+    } catch (e) {
+      $("loginError").textContent = e.message || "Sign in failed.";
+      $("loginError").style.display = "block";
+    }
+  });
+  $("logoutBtn").addEventListener("click", async () => {
+    try { await api("/api/auth/logout", { method: "POST" }); } catch (e) {}
+    state.token = ""; state.user = null;
+    localStorage.removeItem(TOKEN_KEY);
+    $("authView").classList.remove("hidden");
+    $("appView").classList.add("hidden");
+  });
+
+  async function bootApp() {
+    try {
+      const me = await api("/api/auth/me");
+      if (!me.authenticated) throw new Error("Not signed in");
+      state.user = me.user || me;
+      const role = (me.user && me.user.role) || (me.role) || "user";
+      $("whoami").textContent = (me.user && me.user.email) || (me.email) || "";
+      $("rolePill").textContent = role;
+
+      const myM = await api("/api/admin/my-masjids");
+      let masjids = (myM.masjids || []).filter(m => m.verified).map(m => m.source);
+      // Admins also get all known sources
+      if (role === "admin" || role === "owner") {
+        try {
+          const meta = await api("/api/meta");
+          (meta.sources || []).forEach(s => { if (!masjids.includes(s)) masjids.push(s); });
+        } catch (e) {}
+      }
+      if (masjids.length === 0 && (role === "admin" || role === "owner")) {
+        masjids = ["mcnj"];
+      }
+      state.masjids = masjids.sort();
+
+      const select = $("masjidSelect");
+      select.innerHTML = "";
+      state.masjids.forEach(s => {
+        const opt = document.createElement("option");
+        opt.value = s; opt.textContent = sourceLabel(s);
+        select.appendChild(opt);
+      });
+      if (!state.masjids.includes(state.source)) state.source = state.masjids[0] || "";
+      if (state.source) select.value = state.source;
+      localStorage.setItem(SRC_KEY, state.source || "");
+
+      $("authView").classList.add("hidden");
+      $("appView").classList.remove("hidden");
+
+      renderIqamaForm();
+      await loadPage("events");
+    } catch (e) {
+      state.token = "";
+      localStorage.removeItem(TOKEN_KEY);
+      $("authView").classList.remove("hidden");
+      $("appView").classList.add("hidden");
+    }
+  }
+
+  $("masjidSelect").addEventListener("change", async (ev) => {
+    state.source = ev.target.value;
+    localStorage.setItem(SRC_KEY, state.source);
+    renderIqamaForm();
+    await loadCurrentPage();
+  });
+
+  // ------------------ Navigation --------------------------------------------
+  let currentPage = "events";
+  document.querySelectorAll(".nav-item").forEach(el => {
+    el.addEventListener("click", () => loadPage(el.dataset.nav));
+  });
+
+  async function loadPage(name) {
+    currentPage = name;
+    document.querySelectorAll(".nav-item").forEach(el => {
+      el.classList.toggle("active", el.dataset.nav === name);
+    });
+    ["events", "iqama", "poster", "analytics", "import"].forEach(p => {
+      $("page-" + p).classList.toggle("hidden", p !== name);
+    });
+    await loadCurrentPage();
+  }
+  async function loadCurrentPage() {
+    if (currentPage === "events") await loadEvents();
+    else if (currentPage === "iqama") await loadIqama();
+    else if (currentPage === "poster") await loadPoster();
+    else if (currentPage === "analytics") await loadAnalytics();
+  }
+
+  // ------------------ Events -------------------------------------------------
+  $("refreshEventsBtn").addEventListener("click", () => loadEvents());
+
+  async function loadEvents() {
+    if (!state.source) return;
+    $("eventsList").innerHTML = `<div class="muted" style="padding:18px;">Loading…</div>`;
+    try {
+      const d = await api("/api/admin/events");
+      const src = state.source;
+      const mine = (d.events || []).filter(e => (e.source || "").toLowerCase() === src);
+      state.events = mine;
+      $("eventsCount").textContent = `${mine.length} ${mine.length === 1 ? "event" : "events"} · ${sourceLabel(src)}`;
+      if (mine.length === 0) {
+        $("eventsList").innerHTML = `<div class="muted" style="padding:18px;">No upcoming events for this masjid.</div>`;
+        return;
+      }
+      $("eventsList").innerHTML = mine.map(e => `
+        <div class="event-row">
+          <div class="when">${fmtDate(e.date)}<span>${fmtTime(e.start_time)}${e.end_time ? " – " + fmtTime(e.end_time) : ""}</span></div>
+          <div>
+            <div class="title">${escapeHtml(e.title || "Untitled")}</div>
+            <div class="meta">${escapeHtml(e.speaker || "")}${e.speaker ? " · " : ""}${escapeHtml(e.location_name || "Main prayer hall")}</div>
+          </div>
+          <div class="hstack">
+            <button class="btn ghost small" data-act="edit" data-uid="${escapeHtml(e.event_uid || "")}">Edit</button>
+            <button class="btn small" data-act="poster" data-uid="${escapeHtml(e.event_uid || "")}">Poster</button>
+          </div>
+        </div>
+      `).join("");
+      $("eventsList").querySelectorAll("button[data-act]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const uid = btn.dataset.uid;
+          const ev = mine.find(x => x.event_uid === uid);
+          if (!ev) return;
+          if (btn.dataset.act === "edit") openEdit(ev);
+          else if (btn.dataset.act === "poster") {
+            loadPage("poster").then(() => {
+              $("posterEventSelect").value = uid;
+              renderPoster();
+            });
+          }
+        });
+      });
+    } catch (e) {
+      $("eventsList").innerHTML = `<div class="muted" style="padding:18px;color:var(--danger);">Failed to load events: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function openEdit(ev) {
+    state.editing = ev;
+    $("editModalTitle").textContent = "Edit · " + (ev.title || "Untitled");
+    $("f_title").value = ev.title || "";
+    $("f_date").value = ev.date || "";
+    $("f_start_time").value = ev.start_time || "";
+    $("f_end_time").value = ev.end_time || "";
+    $("f_speaker").value = ev.speaker || "";
+    $("f_audience").value = ev.audience || "all";
+    $("f_category").value = ev.category || "";
+    $("f_location_name").value = ev.location_name || "";
+    $("f_address").value = ev.address || "";
+    $("f_rsvp_link").value = ev.rsvp_link || "";
+    $("f_description").value = ev.description || "";
+    $("editModal").classList.remove("hidden");
+  }
+  $("editCancelBtn").addEventListener("click", () => {
+    state.editing = null;
+    $("editModal").classList.add("hidden");
+  });
+  $("editSaveBtn").addEventListener("click", async () => {
+    if (!state.editing) return;
+    const body = {
+      title: $("f_title").value.trim(),
+      date: $("f_date").value,
+      start_time: $("f_start_time").value,
+      end_time: $("f_end_time").value,
+      speaker: $("f_speaker").value.trim(),
+      audience: $("f_audience").value,
+      category: $("f_category").value.trim(),
+      location_name: $("f_location_name").value.trim(),
+      address: $("f_address").value.trim(),
+      rsvp_link: $("f_rsvp_link").value.trim(),
+      description: $("f_description").value.trim(),
+    };
+    try {
+      await api(`/api/admin/events/${encodeURIComponent(state.editing.event_uid)}`, {
+        method: "PUT", body: JSON.stringify(body),
+      });
+      toast("Event updated");
+      state.editing = null;
+      $("editModal").classList.add("hidden");
+      await loadEvents();
+    } catch (e) {
+      toast("Save failed: " + e.message, "error");
+    }
+  });
+
+  // ------------------ Iqama --------------------------------------------------
+  function renderIqamaForm() {
+    const wrap = $("iqamaForm");
+    wrap.innerHTML = "";
+    DEFAULT_PRAYERS.forEach(p => {
+      const row = document.createElement("div");
+      row.className = "iqama-grid";
+      row.innerHTML = `
+        <div class="p">${p[0].toUpperCase() + p.slice(1)}</div>
+        <div>
+          <input id="iq_${p}" placeholder="Iqama HH:MM" />
+        </div>
+        <div>
+          ${p === "jumuah" ? `<input id="iq_${p}_j" placeholder="Jumuah times (comma-separated)" />` : `<div class="muted" style="font-size:12px;">Set as 24-hour time, e.g. 13:30</div>`}
+        </div>
+      `;
+      wrap.appendChild(row);
+    });
+  }
+
+  async function loadIqama() {
+    if (!state.source) return;
+    try {
+      const d = await api(`/api/iqama/${encodeURIComponent(state.source)}`);
+      state.iqama = d.iqama || {};
+      DEFAULT_PRAYERS.forEach(p => {
+        const info = state.iqama[p] || { iqama: "", jumuah_times: [] };
+        const f = $("iq_" + p);
+        if (f) f.value = info.iqama || "";
+        if (p === "jumuah") {
+          const jf = $("iq_jumuah_j");
+          if (jf) jf.value = (info.jumuah_times || []).join(", ");
+        }
+      });
+    } catch (e) {
+      toast("Couldn't load iqama times", "error");
+    }
+  }
+  $("saveIqamaBtn").addEventListener("click", async () => {
+    if (!state.source) return;
+    const payload = {};
+    DEFAULT_PRAYERS.forEach(p => {
+      const iqama = ($("iq_" + p)?.value || "").trim();
+      if (p === "jumuah") {
+        const jraw = ($("iq_jumuah_j")?.value || "").trim();
+        const times = jraw ? jraw.split(",").map(x => x.trim()).filter(Boolean) : [];
+        payload[p] = { iqama, jumuah_times: times };
+      } else {
+        payload[p] = { iqama };
+      }
+    });
+    try {
+      $("iqamaSaveState").textContent = "Saving…";
+      await api(`/api/iqama/${encodeURIComponent(state.source)}`, {
+        method: "POST", body: JSON.stringify(payload),
+      });
+      $("iqamaSaveState").textContent = "Saved · mobile app will refresh within a minute";
+      toast("Iqama times saved");
+    } catch (e) {
+      $("iqamaSaveState").textContent = "Error: " + e.message;
+      toast("Save failed: " + e.message, "error");
+    }
+  });
+
+  // ------------------ Poster designer (#47) ---------------------------------
+  const POSTER_THEMES = {
+    emerald: { bg1: "#0b3a2e", bg2: "#033d2b", accent: "#7ee8c1", ink: "#f2fff8", soft: "#a9c8ba" },
+    dusk:    { bg1: "#1d1048", bg2: "#3a1a5d", accent: "#ffb14f", ink: "#ffffff", soft: "#d6c6f1" },
+    royal:   { bg1: "#0b1f6b", bg2: "#0a359c", accent: "#ffc857", ink: "#ffffff", soft: "#bcd0ff" },
+    warm:    { bg1: "#8a4d1e", bg2: "#c97b3b", accent: "#ffe1b8", ink: "#fff9f0", soft: "#ffd3a8" },
+  };
+
+  async function loadPoster() {
+    if (!state.events || state.events.length === 0) await loadEvents();
+    const sel = $("posterEventSelect");
+    sel.innerHTML = "";
+    state.events.forEach(e => {
+      const opt = document.createElement("option");
+      opt.value = e.event_uid || "";
+      opt.textContent = `${fmtDate(e.date)} · ${e.title || "Untitled"}`;
+      sel.appendChild(opt);
+    });
+    renderPoster();
+  }
+
+  function renderPoster() {
+    const uid = $("posterEventSelect").value;
+    const ev = state.events.find(e => e.event_uid === uid) || state.events[0];
+    if (!ev) {
+      $("posterCanvas").innerHTML = `<div class="muted">Select an event</div>`;
+      return;
+    }
+    const themeKey = $("posterTheme").value || "emerald";
+    const accent = $("posterAccent").value || "crescent";
+    const tag = $("posterTagline").value || "All are welcome · Refreshments served";
+    const t = POSTER_THEMES[themeKey] || POSTER_THEMES.emerald;
+    const dateStr = (ev.date ? new Date(ev.date + "T00:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }) : "").toUpperCase();
+    const timeStr = ev.start_time ? `${fmtTime(ev.start_time)}${ev.end_time ? " – " + fmtTime(ev.end_time) : ""}` : "";
+    const speaker = ev.speaker || "";
+    const title = ev.title || "Untitled";
+    const masjid = sourceLabel(state.source);
+    const loc = ev.location_name || ev.address || "Main prayer hall";
+
+    const wrapTitle = wrapText(title, 18, 4);
+    const W = 800, H = 1000;
+    let accentSvg = "";
+    if (accent === "crescent") {
+      accentSvg = `
+        <g opacity="0.85">
+          <circle cx="640" cy="240" r="140" fill="${t.accent}"/>
+          <circle cx="680" cy="230" r="120" fill="${t.bg2}"/>
+          <g stroke="${t.accent}" stroke-width="3" opacity="0.55">
+            <circle cx="640" cy="240" r="170" fill="none"/>
+            <circle cx="640" cy="240" r="200" fill="none"/>
+          </g>
+        </g>`;
+    } else if (accent === "geometric") {
+      let g = `<g opacity="0.55" stroke="${t.accent}" stroke-width="1.2" fill="none">`;
+      for (let i = 0; i < 20; i++) {
+        const cx = 600 + Math.cos(i * 0.6) * 120;
+        const cy = 240 + Math.sin(i * 0.6) * 120;
+        g += `<circle cx="${cx}" cy="${cy}" r="${60 + (i * 4) % 80}" />`;
+      }
+      g += "</g>";
+      accentSvg = g;
+    } else {
+      accentSvg = `<circle cx="660" cy="220" r="90" fill="${t.accent}" opacity="0.25"/>`;
+    }
+
+    const svg = `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="${t.bg1}"/>
+      <stop offset="1" stop-color="${t.bg2}"/>
+    </linearGradient>
+    <linearGradient id="veil" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0.4"/>
+    </linearGradient>
+  </defs>
+  <rect width="${W}" height="${H}" fill="url(#bg)"/>
+  ${accentSvg}
+  <rect width="${W}" height="${H}" fill="url(#veil)"/>
+
+  <g font-family="Inter, Helvetica, Arial, sans-serif">
+    <text x="60" y="100" fill="${t.soft}" font-size="20" font-weight="700" letter-spacing="4">MASJIDLY · ${escapeXml(masjid)}</text>
+    <rect x="60" y="120" width="80" height="4" rx="2" fill="${t.accent}"/>
+
+    ${wrapTitle.map((line, i) => `
+      <text x="60" y="${280 + i * 72}" fill="${t.ink}" font-size="64" font-weight="900" letter-spacing="-1.5">${escapeXml(line)}</text>
+    `).join("")}
+
+    ${speaker ? `<text x="60" y="${280 + wrapTitle.length * 72 + 60}" fill="${t.accent}" font-size="28" font-weight="800">${escapeXml(speaker)}</text>` : ""}
+
+    <g transform="translate(60, ${H - 230})">
+      <rect x="0" y="0" width="680" height="150" rx="18" fill="rgba(255,255,255,0.08)"/>
+      <text x="24" y="44" fill="${t.soft}" font-size="14" letter-spacing="3" font-weight="700">WHEN</text>
+      <text x="24" y="78" fill="${t.ink}" font-size="22" font-weight="800">${escapeXml(dateStr)}</text>
+      <text x="24" y="108" fill="${t.ink}" font-size="22" font-weight="700">${escapeXml(timeStr)}</text>
+
+      <text x="380" y="44" fill="${t.soft}" font-size="14" letter-spacing="3" font-weight="700">WHERE</text>
+      <text x="380" y="78" fill="${t.ink}" font-size="20" font-weight="800">${escapeXml(masjid)}</text>
+      <text x="380" y="108" fill="${t.ink}" font-size="16" font-weight="600">${escapeXml(loc)}</text>
+    </g>
+
+    <text x="60" y="${H - 40}" fill="${t.soft}" font-size="16" font-weight="700">${escapeXml(tag)}</text>
+    <text x="${W - 60}" y="${H - 40}" text-anchor="end" fill="${t.soft}" font-size="14" font-weight="700">masjidly.app</text>
+  </g>
+</svg>`.trim();
+
+    $("posterCanvas").innerHTML = svg;
+  }
+
+  function wrapText(s, maxChars, maxLines) {
+    const words = String(s || "").split(/\s+/);
+    const lines = [];
+    let cur = "";
+    words.forEach(w => {
+      if ((cur + " " + w).trim().length > maxChars) {
+        if (cur) lines.push(cur);
+        cur = w;
+      } else {
+        cur = (cur ? cur + " " : "") + w;
+      }
+    });
+    if (cur) lines.push(cur);
+    if (lines.length > maxLines) {
+      lines.length = maxLines;
+      lines[maxLines - 1] = lines[maxLines - 1].slice(0, maxChars - 1) + "…";
+    }
+    return lines;
+  }
+
+  ["posterEventSelect", "posterTheme", "posterAccent", "posterTagline"].forEach(id => {
+    document.addEventListener("input", (ev) => {
+      if (ev.target && ev.target.id === id) renderPoster();
+    });
+    document.addEventListener("change", (ev) => {
+      if (ev.target && ev.target.id === id) renderPoster();
+    });
+  });
+
+  $("downloadSvgBtn").addEventListener("click", () => {
+    const svg = $("posterCanvas").querySelector("svg");
+    if (!svg) return;
+    const blob = new Blob([svg.outerHTML], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "masjidly-poster.svg"; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  });
+  $("downloadPngBtn").addEventListener("click", () => {
+    const svg = $("posterCanvas").querySelector("svg");
+    if (!svg) return;
+    const svgStr = new XMLSerializer().serializeToString(svg);
+    const img = new Image();
+    const blob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      c.width = 1600; c.height = 2000;
+      const ctx = c.getContext("2d");
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob(b => {
+        const u = URL.createObjectURL(b);
+        const a = document.createElement("a");
+        a.href = u; a.download = "masjidly-poster.png"; a.click();
+        setTimeout(() => { URL.revokeObjectURL(u); URL.revokeObjectURL(url); }, 2000);
+      }, "image/png");
+    };
+    img.onerror = () => toast("PNG export failed", "error");
+    img.src = url;
+  });
+
+  // ------------------ Analytics (#49) ---------------------------------------
+  async function loadAnalytics() {
+    if (!state.source) return;
+    const stats = $("analyticsStats");
+    stats.innerHTML = `<div class="muted">Loading…</div>`;
+    try {
+      const d = await api(`/api/admin/masjid/${encodeURIComponent(state.source)}/analytics`);
+      state.analytics = d;
+      stats.innerHTML = `
+        <div class="stat"><div class="n">${d.upcoming || 0}</div><div class="l">Upcoming events</div></div>
+        <div class="stat"><div class="n">${d.views || 0}</div><div class="l">Event views (30d)</div></div>
+        <div class="stat"><div class="n">${d.rsvps || 0}</div><div class="l">RSVPs</div></div>
+        <div class="stat"><div class="n">${d.check_ins || 0}</div><div class="l">Passport check-ins</div></div>
+        <div class="stat"><div class="n">${d.reflections || 0}</div><div class="l">Reflections</div></div>
+        <div class="stat"><div class="n">${(d.avg_rating || 0).toFixed(1)}</div><div class="l">Avg rating</div></div>
+        <div class="stat"><div class="n">${d.past_30d || 0}</div><div class="l">Past events (30d)</div></div>
+        <div class="stat"><div class="n">${(d.top_speakers || []).length}</div><div class="l">Active speakers</div></div>
+      `;
+      const sp = $("analyticsSpeakers");
+      const list = d.top_speakers || [];
+      if (list.length === 0) {
+        sp.innerHTML = `<div class="muted">No speaker data yet.</div>`;
+      } else {
+        const max = Math.max(1, ...list.map(x => x.count));
+        sp.innerHTML = list.map(s => `
+          <div class="hstack" style="gap:14px;margin-bottom:10px;">
+            <div style="min-width:200px;color:#fff;font-weight:700;font-size:14px;">${escapeHtml(s.name)}</div>
+            <div style="flex:1;height:10px;background:#0d1528;border-radius:99px;overflow:hidden;">
+              <div style="height:100%;width:${(s.count / max) * 100}%;background:linear-gradient(90deg,#6aa6ff,#8c7bff);"></div>
+            </div>
+            <div class="muted" style="font-size:13px;min-width:40px;text-align:right;">${s.count}</div>
+          </div>
+        `).join("");
+      }
+    } catch (e) {
+      stats.innerHTML = `<div class="muted" style="color:var(--danger);">Failed to load analytics: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  // ------------------ IG import (#48) ---------------------------------------
+  $("triggerIgBtn").addEventListener("click", async () => {
+    if (!state.source) return;
+    $("igStatus").textContent = "Queuing…";
+    try {
+      const d = await api(`/api/admin/scrape-ig/${encodeURIComponent(state.source)}`, { method: "POST" });
+      $("igStatus").textContent = `Queued (${d.queue_length} pending). You'll see new events once the pipeline finishes.`;
+      toast("Instagram import queued");
+    } catch (e) {
+      $("igStatus").textContent = "Error: " + e.message;
+      toast("Import failed: " + e.message, "error");
+    }
+  });
+
+  // ------------------ Boot ---------------------------------------------------
+  if (state.token) {
+    bootApp();
+  }
+</script>
+</body>
+</html>

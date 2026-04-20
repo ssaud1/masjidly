@@ -1,0 +1,54 @@
+# --- Environments & secrets ---
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+Webshare*proxies*.txt
+
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Node / Expo / React ---
+node_modules/
+.expo/
+.expo-shared/
+dist/
+build/
+.next/
+.turbo/
+
+# --- macOS ---
+.DS_Store
+
+# --- Scraper / pipeline runtime output (large, regenerated on every run) ---
+events_by_masjid/
+instagram/
+__pycache__/
+
+# --- Derived SQLite databases (events DBs are regenerated from JSON;
+#     masjidly_app.db holds local dev user state only). ---
+target_masjids_events.db
+target_masjids_future_events.db
+masjidly_app.db
+
+# --- Committed on purpose (do NOT ignore): ---
+# target_masjids_events.json        <- events data, source of truth for Flask
+# target_masjids_future_events.json <- future events data
+
+# --- Logs / temp ---
+*.log
+*.tmp
+*.swp
+
+# --- IDE ---
+.idea/
+.vscode/
