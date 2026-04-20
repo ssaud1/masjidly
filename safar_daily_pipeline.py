@@ -213,13 +213,40 @@ def run_instagram_scrape(base_cmd: List[str], run_env: Dict[str, str]) -> None:
     env_base = os.environ.copy()
     env_base.update(run_env)
 
+    # Stagger shard start-times so all N profile-info / feed requests don't
+    # fire simultaneously through different Webshare proxies (Instagram flags
+    # bursty IP-rotation patterns even when the per-IP rate is low). Default
+    # 15s between shards. Set to 0 to disable.
+    try:
+        stagger_s = max(0.0, float(os.getenv("SAFAR_INSTAGRAM_SHARD_STAGGER_SECONDS", "15").strip() or "15"))
+    except ValueError:
+        stagger_s = 15.0
+
     def _run_shard(pair: Tuple[int, List[str]]) -> None:
         shard_idx, sub = pair
+        if stagger_s > 0 and shard_idx > 0:
+            delay = stagger_s * shard_idx
+            print(
+                f"[run.instagram.parallel] shard={shard_idx} staggering start "
+                f"by {delay:.1f}s accounts={len(sub)}",
+                flush=True,
+            )
+            time.sleep(delay)
         cmd = base_cmd + ["--usernames"] + sub
         px = proxy_lines[shard_idx % len(proxy_lines)]
         cmd.extend(["--proxy", px])
-        print("[run.instagram.parallel]", _log_cmd_redact_proxy(cmd))
+        print(
+            f"[run.instagram.parallel] shard={shard_idx} START accounts={len(sub)} "
+            f"cmd={_log_cmd_redact_proxy(cmd)}",
+            flush=True,
+        )
+        t_shard = time.perf_counter()
         subprocess.run(cmd, cwd=str(ROOT), check=True, env=env_base)
+        print(
+            f"[run.instagram.parallel] shard={shard_idx} DONE "
+            f"elapsed={round(time.perf_counter() - t_shard, 1)}s",
+            flush=True,
+        )
 
     workers = min(len(groups), 8)
     with ThreadPoolExecutor(max_workers=workers) as pool:

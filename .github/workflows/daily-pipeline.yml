@@ -59,12 +59,18 @@ jobs:
       SAFAR_SKIP_INSTAGRAM: ${{ github.event.inputs.skip_instagram == 'true' && '1' || '0' }}
       SAFAR_SKIP_EMAIL: ${{ github.event.inputs.skip_email == 'true' && '1' || '0' }}
       # 4 parallel IG shards — one per proxy tier. We have 10 Webshare proxies so each
-      # shard gets a distinct IP, and total per-IP request rate stays below IG's throttle
-      # threshold. See safar_daily_pipeline.run_instagram_scrape.
+      # shard gets a distinct IP. See safar_daily_pipeline.run_instagram_scrape.
       SAFAR_INSTAGRAM_SHARDS: "4"
-      # Lowered from 3.5s -> 2.5s: because shards are now 4 with distinct proxies, per-IP
-      # rate = 1 req / 2.5s = 0.4 rps (vs 0.57 rps before, split 2x3.5s), so still safer.
-      SAFAR_INSTAGRAM_SLEEP_SECONDS: "2.5"
+      # 4s sleep between requests per shard. 2.5s was too aggressive: IG rate-limited
+      # every shard's opening /web_profile_info/ call with 429s even across 4 proxies,
+      # triggering 5+ min of exponential backoff before scraping could begin. 4s keeps
+      # per-IP rate at 0.25 rps (vs. 0.57 rps on the original 2x3.5s baseline), while
+      # 4 distinct proxies still give ~1.0 rps aggregate (1.75x the baseline).
+      SAFAR_INSTAGRAM_SLEEP_SECONDS: "4"
+      # Stagger shard startup by 15s so we don't thundering-herd IG with 4 parallel
+      # /web_profile_info/ calls at t=0 (observed: instant 429 storm on all 4 shards).
+      # Shard N starts at t = N*15s. With 4 shards, full ramp-in completes at t+45s.
+      SAFAR_INSTAGRAM_SHARD_STAGGER_SECONDS: "15"
       SAFAR_INSTAGRAM_PROXY_FILE: "webshare_proxies.txt"
       # Unbuffered Python stdout so the GHA live log shows scraper progress in real time
       # (otherwise the 4KB block buffer can hide 30s+ of progress at once).

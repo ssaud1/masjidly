@@ -217,16 +217,20 @@ def is_event_detail(url: str) -> bool:
     return len([x for x in p.split("/") if x]) >= 2
 
 
-_URL_DATE_RE = re.compile(r"/events/(\d{4}-\d{2}-\d{2})(?:/|$)")
+# Tribe Events recurring-event URLs put the per-occurrence date at the tail of
+# the path, e.g. /events/di-juniors-girls-2/2026-05-29/. We match any YYYY-MM-DD
+# segment and, if multiple are present, prefer the last one (some slugs contain
+# a year like /events/ramadan-2024/2026-03-20/ and we want the occurrence date).
+_URL_DATE_RE = re.compile(r"/(\d{4}-\d{2}-\d{2})(?:/|$)")
 
 
 def url_event_date(url: str) -> Optional[date]:
-    """Parse the YYYY-MM-DD out of a Tribe Events detail URL, if present."""
-    m = _URL_DATE_RE.search(url)
-    if not m:
+    """Parse the latest YYYY-MM-DD path segment from a Tribe Events detail URL."""
+    matches = _URL_DATE_RE.findall(url)
+    if not matches:
         return None
     try:
-        return datetime.strptime(m.group(1), "%Y-%m-%d").date()
+        return datetime.strptime(matches[-1], "%Y-%m-%d").date()
     except ValueError:
         return None
 
