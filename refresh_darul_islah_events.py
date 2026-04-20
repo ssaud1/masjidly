@@ -33,7 +33,7 @@ from collections import deque
 from datetime import datetime, date
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -71,7 +71,68 @@ MAX_CRAWL_PAGES = int(os.getenv("DARUL_MAX_CRAWL_PAGES", "40"))
 # pages we'll fetch even if we have time left. Keeps the fetch predictable.
 MAX_DETAIL_PAGES = int(os.getenv("DARUL_MAX_DETAIL_PAGES", "60"))
 
+# darulislah.org blocks GitHub Actions IP ranges on direct connections
+# (observed: all HTTPS requests ConnectTimeout at 6s from ubuntu-latest
+# runners). Route through the same Webshare proxy pool the Instagram
+# scraper uses. Reads newline-separated proxy URLs / Webshare
+# host:port:user:password lines. Falls back to direct connection if
+# unset or empty; the wall-clock budget still protects the pipeline.
+PROXY_FILE = os.getenv("DARUL_PROXY_FILE", os.getenv("SAFAR_INSTAGRAM_PROXY_FILE", "webshare_proxies.txt"))
+
 _RUN_STARTED = time.perf_counter()
+
+
+def _normalize_proxy_line(raw: str) -> str:
+    """Accept full proxy URLs or Webshare host:port:user:password lines."""
+    s = re.sub(r"\s+", "", (raw or "").strip())
+    if not s or s.startswith("#"):
+        return ""
+    if "://" in s:
+        return s
+    parts = s.split(":")
+    if len(parts) < 4:
+        return ""
+    host, port, user = parts[0], parts[1], parts[2]
+    password = ":".join(parts[3:])
+    if not port.isdigit():
+        return ""
+    return f"http://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}"
+
+
+def _redact_proxy(url: str) -> str:
+    """Hide user:pass when logging the proxy URL."""
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or "?"
+        port = parsed.port or "?"
+        return f"{parsed.scheme}://<redacted>@{host}:{port}"
+    except Exception:
+        return "<proxy?>"
+
+
+def _load_proxy() -> Optional[Dict[str, str]]:
+    """Return a requests-compatible proxies={'http':..,'https':..} dict, or None."""
+    raw = (PROXY_FILE or "").strip()
+    if not raw:
+        return None
+    p = Path(raw)
+    if not p.is_absolute():
+        # Resolve relative to script location so the daily pipeline's
+        # cwd=/Users/shaheersaud/Safar still finds it in GHA after symlink.
+        p = Path(__file__).resolve().parent / raw
+    if not p.exists():
+        print(f"[darul_islah] proxy file not found: {p} — using direct connection", flush=True)
+        return None
+    for ln in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+        norm = _normalize_proxy_line(ln)
+        if norm:
+            print(f"[darul_islah] using proxy {_redact_proxy(norm)}", flush=True)
+            return {"http": norm, "https": norm}
+    print(f"[darul_islah] proxy file {p} has no usable lines — using direct", flush=True)
+    return None
+
+
+_PROXIES = _load_proxy()
 
 
 def _elapsed() -> float:
@@ -99,7 +160,7 @@ def fetch_text(url: str, timeout: int = HTTP_TIMEOUT, tries: int = HTTP_TRIES) -
     for attempt in range(tries + 1):
         t0 = time.perf_counter()
         try:
-            r = requests.get(url, headers=HEADERS, timeout=timeout)
+            r = requests.get(url, headers=HEADERS, timeout=timeout, proxies=_PROXIES)
             dt_ms = int((time.perf_counter() - t0) * 1000)
             if r.status_code == 200:
                 return r.text
@@ -122,7 +183,7 @@ def fetch_bytes(url: str, timeout: int = HTTP_TIMEOUT, tries: int = HTTP_TRIES) 
     for attempt in range(tries + 1):
         t0 = time.perf_counter()
         try:
-            r = requests.get(url, headers=HEADERS, timeout=timeout)
+            r = requests.get(url, headers=HEADERS, timeout=timeout, proxies=_PROXIES)
             dt_ms = int((time.perf_counter() - t0) * 1000)
             if r.status_code == 200:
                 return r.content
@@ -459,10 +520,13 @@ def filter_and_rank_event_links(event_links: List[str]) -> List[str]:
 
 
 def main() -> None:
+    proxy_label = "direct"
+    if _PROXIES:
+        proxy_label = _redact_proxy(_PROXIES.get("https") or _PROXIES.get("http") or "")
     print(
         f"[darul_islah] START pid={os.getpid()} budget={MAX_RUNTIME_SECONDS}s "
         f"http_timeout={HTTP_TIMEOUT}s max_crawl={MAX_CRAWL_PAGES} "
-        f"max_details={MAX_DETAIL_PAGES}",
+        f"max_details={MAX_DETAIL_PAGES} via={proxy_label}",
         flush=True,
     )
     OUT_DIR.mkdir(parents=True, exist_ok=True)
