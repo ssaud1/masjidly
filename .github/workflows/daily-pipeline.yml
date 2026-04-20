@@ -75,9 +75,11 @@ jobs:
       IG_REQUEST_RETRIES: "4"
       IG_BACKOFF_BASE_S: "1.5"
       IG_BACKOFF_CAP_S: "20"
-      # Proxy is opt-in. Set to "1" only if the GHA runner IP itself gets banned.
-      # Default matches the original script: direct connection, no proxy juggling.
-      SAFAR_INSTAGRAM_FORCE_PROXY: "0"
+      # Route IG through a single Webshare proxy. GHA public IPs are pre-flagged
+      # by Instagram; the previous direct-connection run got web_profile_info 429s
+      # on every account. One stable residential-ish proxy + old-style light retry
+      # is the closest we can get to "works like it did from a home Mac".
+      SAFAR_INSTAGRAM_FORCE_PROXY: "1"
       SAFAR_INSTAGRAM_PROXY_FILE: "webshare_proxies.txt"
       # Unbuffered Python stdout so the GHA live log shows scraper progress in real time
       # (otherwise the 4KB block buffer can hide 30s+ of progress at once).
