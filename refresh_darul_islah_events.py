@@ -10,13 +10,27 @@
 # 2) Finds/downloads remote ICS feeds from the site
 # 3) Parses local ICS file (if present)
 # 4) Merges + dedupes all events into events_by_masjid/darul_islah_events.json
+#
+# Performance/resilience controls (2026 refactor):
+# - Hard wall-clock cap (DARUL_MAX_RUNTIME_SECONDS, default 300s) so the
+#   script self-aborts on a slow origin instead of stalling the pipeline.
+# - Short HTTP timeouts (6s) with one retry, to fail fast on dead pages.
+# - Per-URL date prefilter: only fetch detail pages for upcoming events
+#   (dated URLs like /events/2026-05-01/...). Undated slugs are fetched
+#   but counted against the runtime cap.
+# - Newest-first iteration so if we hit the cap, the upcoming events are
+#   scraped before we give up.
+# - Verbose progress prints flushed every page so GHA live logs show
+#   whether we're progressing or genuinely hung.
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
@@ -48,30 +62,82 @@ HEADERS = {
     "Referer": "https://www.darulislah.org/",
 }
 
+# Fail fast on a slow origin rather than stalling the daily pipeline.
+MAX_RUNTIME_SECONDS = int(os.getenv("DARUL_MAX_RUNTIME_SECONDS", "300"))
+HTTP_TIMEOUT = int(os.getenv("DARUL_HTTP_TIMEOUT", "6"))
+HTTP_TRIES = int(os.getenv("DARUL_HTTP_TRIES", "1"))
+MAX_CRAWL_PAGES = int(os.getenv("DARUL_MAX_CRAWL_PAGES", "40"))
+# 0 = unlimited (use runtime cap); otherwise a hard cap on how many detail
+# pages we'll fetch even if we have time left. Keeps the fetch predictable.
+MAX_DETAIL_PAGES = int(os.getenv("DARUL_MAX_DETAIL_PAGES", "60"))
+
+_RUN_STARTED = time.perf_counter()
+
+
+def _elapsed() -> float:
+    return round(time.perf_counter() - _RUN_STARTED, 1)
+
+
+def _out_of_budget(label: str = "") -> bool:
+    el = _elapsed()
+    if el >= MAX_RUNTIME_SECONDS:
+        suffix = f" ({label})" if label else ""
+        print(
+            f"[darul_islah] BUDGET_EXCEEDED elapsed={el}s "
+            f"cap={MAX_RUNTIME_SECONDS}s — bailing early{suffix}",
+            flush=True,
+        )
+        return True
+    return False
+
 
 def clean(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
-def fetch_text(url: str, timeout: int = 18, tries: int = 2) -> Optional[str]:
-    for _ in range(tries + 1):
+def fetch_text(url: str, timeout: int = HTTP_TIMEOUT, tries: int = HTTP_TRIES) -> Optional[str]:
+    for attempt in range(tries + 1):
+        t0 = time.perf_counter()
         try:
             r = requests.get(url, headers=HEADERS, timeout=timeout)
+            dt_ms = int((time.perf_counter() - t0) * 1000)
             if r.status_code == 200:
                 return r.text
-        except requests.RequestException:
-            pass
+            print(
+                f"[darul_islah] http={r.status_code} in {dt_ms}ms attempt={attempt + 1} "
+                f"url={url[:100]}",
+                flush=True,
+            )
+        except requests.RequestException as exc:
+            dt_ms = int((time.perf_counter() - t0) * 1000)
+            print(
+                f"[darul_islah] http=ERR in {dt_ms}ms attempt={attempt + 1} "
+                f"err={type(exc).__name__} url={url[:100]}",
+                flush=True,
+            )
     return None
 
 
-def fetch_bytes(url: str, timeout: int = 18, tries: int = 2) -> Optional[bytes]:
-    for _ in range(tries + 1):
+def fetch_bytes(url: str, timeout: int = HTTP_TIMEOUT, tries: int = HTTP_TRIES) -> Optional[bytes]:
+    for attempt in range(tries + 1):
+        t0 = time.perf_counter()
         try:
             r = requests.get(url, headers=HEADERS, timeout=timeout)
+            dt_ms = int((time.perf_counter() - t0) * 1000)
             if r.status_code == 200:
                 return r.content
-        except requests.RequestException:
-            pass
+            print(
+                f"[darul_islah] ics_http={r.status_code} in {dt_ms}ms attempt={attempt + 1} "
+                f"url={url[:100]}",
+                flush=True,
+            )
+        except requests.RequestException as exc:
+            dt_ms = int((time.perf_counter() - t0) * 1000)
+            print(
+                f"[darul_islah] ics_http=ERR in {dt_ms}ms attempt={attempt + 1} "
+                f"err={type(exc).__name__} url={url[:100]}",
+                flush=True,
+            )
     return None
 
 
@@ -90,14 +156,36 @@ def is_event_detail(url: str) -> bool:
     return len([x for x in p.split("/") if x]) >= 2
 
 
-def discover_pages_and_links(max_pages: int = 40) -> Tuple[List[str], List[str], List[str]]:
+_URL_DATE_RE = re.compile(r"/events/(\d{4}-\d{2}-\d{2})(?:/|$)")
+
+
+def url_event_date(url: str) -> Optional[date]:
+    """Parse the YYYY-MM-DD out of a Tribe Events detail URL, if present."""
+    m = _URL_DATE_RE.search(url)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def discover_pages_and_links(max_pages: int = MAX_CRAWL_PAGES) -> Tuple[List[str], List[str], List[str]]:
     queue = deque(STARTS)
     seen_pages = set()
     event_links = set()
     ics_links = set()
     crawled_pages: List[str] = []
 
+    print(
+        f"[darul_islah] STAGE discover max_pages={max_pages} "
+        f"timeout={HTTP_TIMEOUT}s tries={HTTP_TRIES + 1} budget={MAX_RUNTIME_SECONDS}s",
+        flush=True,
+    )
+
     while queue and len(crawled_pages) < max_pages:
+        if _out_of_budget("discover"):
+            break
         u = queue.popleft()
         if u in seen_pages:
             continue
@@ -107,13 +195,16 @@ def discover_pages_and_links(max_pages: int = 40) -> Tuple[List[str], List[str],
         if not html:
             print(
                 f"[darul_islah] crawled={len(crawled_pages)}/{max_pages} "
-                f"queue={len(queue)} miss={u[:80]}",
+                f"queue={len(queue)} miss={u[:80]} elapsed={_elapsed()}s",
                 flush=True,
             )
             continue
         crawled_pages.append(u)
         soup = BeautifulSoup(html, "lxml")
 
+        added_details = 0
+        added_ics = 0
+        added_queue = 0
         for a in soup.find_all("a", href=True):
             href = a["href"].strip()
             full = urljoin(u, href)
@@ -122,17 +213,25 @@ def discover_pages_and_links(max_pages: int = 40) -> Tuple[List[str], List[str],
             low = full.lower()
 
             if is_event_detail(full):
-                event_links.add(full.rstrip("/"))
+                norm = full.rstrip("/")
+                if norm not in event_links:
+                    event_links.add(norm)
+                    added_details += 1
 
             if ".ics" in low or "ical=1" in low or "outlook-ical" in low:
-                ics_links.add(full)
+                if full not in ics_links:
+                    ics_links.add(full)
+                    added_ics += 1
 
             if ("/events/list/page/" in low or "eventdisplay=past" in low or "tribe-bar-date=" in low) and full not in seen_pages:
                 queue.append(full)
+                added_queue += 1
 
         print(
             f"[darul_islah] crawled={len(crawled_pages)}/{max_pages} "
-            f"queue={len(queue)} event_links={len(event_links)} ics={len(ics_links)}",
+            f"queue={len(queue)} (+{added_queue}) event_links={len(event_links)} "
+            f"(+{added_details}) ics={len(ics_links)} (+{added_ics}) "
+            f"elapsed={_elapsed()}s page={u[:70]}",
             flush=True,
         )
 
@@ -322,53 +421,122 @@ def extract_ics_image_urls(block: Dict[str, str]) -> List[str]:
 
 def newest_local_ics_file() -> Optional[Path]:
     downloads = Path("/Users/shaheersaud/Downloads")
+    if not downloads.exists():
+        return None
     cands = sorted(downloads.glob(LOCAL_ICS_GLOB), key=lambda p: p.stat().st_mtime, reverse=True)
     return cands[0] if cands else None
 
 
-def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    pages, event_links, ics_links = discover_pages_and_links(max_pages=40)
-    print(f"pages_crawled={len(pages)} event_links={len(event_links)} ics_links={len(ics_links)}")
+def filter_and_rank_event_links(event_links: List[str]) -> List[str]:
+    """Keep only upcoming-or-undated URLs, ranked by extracted date DESC (soonest first)."""
+    today = date.today()
+    upcoming: List[Tuple[date, str]] = []
+    undated: List[str] = []
+    dropped_past = 0
+    for u in event_links:
+        d = url_event_date(u)
+        if d is None:
+            undated.append(u)
+        elif d >= today:
+            upcoming.append((d, u))
+        else:
+            dropped_past += 1
+    upcoming.sort(key=lambda x: x[0])
+    print(
+        f"[darul_islah] filter_event_links input={len(event_links)} "
+        f"upcoming={len(upcoming)} undated={len(undated)} dropped_past={dropped_past}",
+        flush=True,
+    )
+    ranked = [u for _, u in upcoming] + undated
+    if MAX_DETAIL_PAGES > 0 and len(ranked) > MAX_DETAIL_PAGES:
+        print(
+            f"[darul_islah] capping detail fetch: {len(ranked)} -> {MAX_DETAIL_PAGES} "
+            f"(DARUL_MAX_DETAIL_PAGES)",
+            flush=True,
+        )
+        ranked = ranked[:MAX_DETAIL_PAGES]
+    return ranked
 
+
+def main() -> None:
+    print(
+        f"[darul_islah] START pid={os.getpid()} budget={MAX_RUNTIME_SECONDS}s "
+        f"http_timeout={HTTP_TIMEOUT}s max_crawl={MAX_CRAWL_PAGES} "
+        f"max_details={MAX_DETAIL_PAGES}",
+        flush=True,
+    )
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    pages, event_links, ics_links = discover_pages_and_links()
+    print(
+        f"[darul_islah] STAGE discover DONE pages_crawled={len(pages)} "
+        f"event_links={len(event_links)} ics_links={len(ics_links)} elapsed={_elapsed()}s",
+        flush=True,
+    )
+
+    ranked_links = filter_and_rank_event_links(event_links)
+    print(
+        f"[darul_islah] STAGE scrape_details n={len(ranked_links)} elapsed={_elapsed()}s",
+        flush=True,
+    )
     scraped: List[Dict] = []
-    for i, u in enumerate(event_links, 1):
+    for i, u in enumerate(ranked_links, 1):
+        if _out_of_budget("scrape_details"):
+            break
+        t0 = time.perf_counter()
         ev = parse_event_page(u)
+        dt_ms = int((time.perf_counter() - t0) * 1000)
         if ev:
             scraped.append(ev)
-        if i % 30 == 0:
-            print(f"scraped_details={i}/{len(event_links)}")
+        if i % 5 == 0 or i == len(ranked_links):
+            print(
+                f"[darul_islah] detail {i}/{len(ranked_links)} "
+                f"kept={len(scraped)} last_ms={dt_ms} elapsed={_elapsed()}s",
+                flush=True,
+            )
 
     downloaded_ics_events: List[Dict] = []
     seen_ics_links = set()
-    # Always try explicit live ICS URLs first.
+    print(
+        f"[darul_islah] STAGE ics candidates={len(LIVE_ICS_URLS) + len(ics_links)} "
+        f"elapsed={_elapsed()}s",
+        flush=True,
+    )
     for link in LIVE_ICS_URLS + ics_links:
+        if _out_of_budget("ics"):
+            break
         if link in seen_ics_links:
             continue
         seen_ics_links.add(link)
-        b = fetch_bytes(link, timeout=25, tries=2)
+        b = fetch_bytes(link, timeout=HTTP_TIMEOUT * 2, tries=HTTP_TRIES)
         if b and (b.startswith(b"BEGIN:VCALENDAR") or b"BEGIN:VCALENDAR" in b[:200]):
             DOWNLOADED_ICS.write_bytes(b)
             downloaded_ics_events.extend(parse_ics_file(DOWNLOADED_ICS))
-            print(f"downloaded_ics={link}")
-            # Keep first successful canonical feed and stop.
+            print(f"[darul_islah] downloaded_ics={link} events={len(downloaded_ics_events)}", flush=True)
             break
 
     local_ics_events: List[Dict] = []
     local_ics = newest_local_ics_file()
     if local_ics:
         local_ics_events = parse_ics_file(local_ics)
-        print(f"local_ics_file={local_ics}")
-    print(f"local_ics_events={len(local_ics_events)} downloaded_ics_events={len(downloaded_ics_events)} scraped={len(scraped)}")
+        print(f"[darul_islah] local_ics_file={local_ics} events={len(local_ics_events)}", flush=True)
+    print(
+        f"[darul_islah] STAGE merge local_ics={len(local_ics_events)} "
+        f"downloaded_ics={len(downloaded_ics_events)} scraped={len(scraped)} "
+        f"elapsed={_elapsed()}s",
+        flush=True,
+    )
 
     merged = dedupe(scraped + downloaded_ics_events + local_ics_events)
     OUT_JSON.write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    print(f"saved={OUT_JSON} total={len(merged)}")
+    blank_desc = sum(1 for e in merged if not e.get("description"))
+    blank_date = sum(1 for e in merged if not e.get("date"))
+    blank_start = sum(1 for e in merged if not e.get("start_time"))
     print(
-        "blank_desc=", sum(1 for e in merged if not e.get("description")),
-        "blank_date=", sum(1 for e in merged if not e.get("date")),
-        "blank_start=", sum(1 for e in merged if not e.get("start_time")),
+        f"[darul_islah] DONE saved={OUT_JSON} total={len(merged)} "
+        f"blank_desc={blank_desc} blank_date={blank_date} blank_start={blank_start} "
+        f"elapsed={_elapsed()}s",
+        flush=True,
     )
 
 
