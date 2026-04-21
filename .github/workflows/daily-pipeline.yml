@@ -196,4 +196,18 @@ jobs:
 
           git commit -m "chore(data): refresh events $(date -u +%Y-%m-%d) [skip ci]"
           # Use the default token; `permissions: contents: write` above lets us push to main.
-          git push origin HEAD:main
+          # Retry-with-rebase: if someone else pushed during the ~25-min scrape
+          # window, pull their work, replay our commit on top, and push again.
+          # We do this instead of `--force` so we never clobber real work.
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:main; then
+              echo "Pushed on attempt $attempt"
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt) — rebasing onto latest main"
+            git fetch origin main
+            git rebase origin/main || { echo "Rebase conflict — aborting"; git rebase --abort || true; exit 1; }
+            sleep $((attempt * 2))
+          done
+          echo "Could not push after 5 attempts"
+          exit 1
