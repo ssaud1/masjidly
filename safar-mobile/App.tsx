@@ -185,7 +185,7 @@ const WELCOME_FLOW_DONE_KEY = "masjidly_welcome_flow_done_v1";
 const GUIDED_TOUR_DONE_KEY = "masjidly_guided_tour_done_v5";
 // Bump on every EAS update so the badge on the welcome screen reflects what's
 // actually running on device. v2 = post-"always-welcome" build + Explore perf.
-const APP_BUILD_VERSION = "v41";
+const APP_BUILD_VERSION = "v42";
 
 // Static hosted URLs referenced from several places (Settings, About,
 // PrivacyInfo).  Mirrored from `app.json > expo.extra.urls` so the app
@@ -853,8 +853,8 @@ const GUIDED_TOUR_STEPS: Array<{
   // 2. TASK — go to Map
   {
     title: "First stop: the map",
-    body: "Tap the Map tab at the bottom. That's where every masjid in your area lives.",
-    hint: "Waiting for you to tap the Map tab…",
+    body: "Tap the highlighted Map button at the BOTTOM of your screen (second tab). That's where every masjid in your area lives.",
+    hint: "Tap the ring below ↓",
     target: { kind: "task", taskId: "goto-explore", highlight: { kind: "tab", tabIndex: 1 } },
   },
   // 3. TASK — tap a pin
@@ -1655,6 +1655,11 @@ function AppInner() {
   const launchDotPulse = useRef(new Animated.Value(0)).current;
   const homeHeroGlowDrift = useRef(new Animated.Value(0)).current;
   const homeHeroGlowLoopRef = useRef<Animated.CompositeAnimation | null>(null);
+  // Spins the refresh icon while the event list is being re-fetched.
+  // Also drives the Masjidly hero logo's extra pulse on manual refresh.
+  const refreshSpin = useRef(new Animated.Value(0)).current;
+  const refreshSpinLoopRef = useRef<Animated.CompositeAnimation | null>(null);
+  const heroRefreshPulse = useRef(new Animated.Value(0)).current;
   // (legacy explore intro-motion removed; tabs now stay mounted and switch instantly)
   const welcomeSlidesRef = useRef<ScrollView | null>(null);
   const [welcomeSlideIndex, setWelcomeSlideIndex] = useState(0);
@@ -1828,7 +1833,7 @@ function AppInner() {
         if (referralRaw) {
           setReferralCode(referralRaw);
         } else {
-          const generated = `M-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+          const generated = `M-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
           setReferralCode(generated);
           await SecureStore.setItemAsync(REFERRAL_CODE_KEY, generated);
         }
@@ -2298,6 +2303,39 @@ function AppInner() {
       homeHeroGlowLoopRef.current = null;
     };
   }, [homeHeroGlowDrift]);
+
+  // Spin the refresh icon whenever an event re-fetch is in flight so
+  // the refresh tap is always visually acknowledged. Also gives a
+  // one-shot "breathing" pulse to the home hero logo so the circles
+  // around it react to the manual refresh, matching the Assalaam
+  // popup's event-count animation.
+  useEffect(() => {
+    if (loading) {
+      refreshSpin.setValue(0);
+      refreshSpinLoopRef.current?.stop();
+      refreshSpinLoopRef.current = Animated.loop(
+        Animated.timing(refreshSpin, {
+          toValue: 1,
+          duration: 900,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        }),
+      );
+      refreshSpinLoopRef.current.start();
+      Animated.sequence([
+        Animated.timing(heroRefreshPulse, { toValue: 1, duration: 280, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+        Animated.timing(heroRefreshPulse, { toValue: 0, duration: 540, easing: Easing.inOut(Easing.cubic), useNativeDriver: true }),
+      ]).start();
+    } else {
+      refreshSpinLoopRef.current?.stop();
+      refreshSpinLoopRef.current = null;
+      Animated.timing(refreshSpin, { toValue: 0, duration: 180, useNativeDriver: true }).start();
+    }
+    return () => {
+      refreshSpinLoopRef.current?.stop();
+      refreshSpinLoopRef.current = null;
+    };
+  }, [loading, refreshSpin, heroRefreshPulse]);
 
   // Keep `today` honest across midnight rollovers AND foreground/background
   // transitions. Without this, a phone left open overnight would still treat
@@ -3553,6 +3591,29 @@ function AppInner() {
       },
     ];
 
+    // Audience-specific plan, only included when the user has declared
+    // an audience preference. Always placed FIRST so brothers/sisters
+    // immediately see what's programmed for them specifically.
+    if (personalization.preferredAudience === "sisters") {
+      topics.unshift({
+        id: "sisters-track",
+        title: "Sisters' learning track",
+        sub: "Halaqahs, tafsir & circles specifically for sisters.",
+        emoji: "✾",
+        color: "#a24e9a",
+        match: (e) => inferAudience(e) === "sisters",
+      });
+    } else if (personalization.preferredAudience === "brothers") {
+      topics.unshift({
+        id: "brothers-track",
+        title: "Brothers' learning track",
+        sub: "Halaqahs, classes & circles specifically for brothers.",
+        emoji: "✦",
+        color: "#2e5caa",
+        match: (e) => inferAudience(e) === "brothers",
+      });
+    }
+
     const nowKey = today;
     // Cap how far ahead we look. A 6-week window is long enough to
     // produce a real "plan" (2–3 events per month) without surfacing
@@ -3566,6 +3627,12 @@ function AppInner() {
         if (d < nowKey) return false;
         if (d > horizonEnd) return false;
         if (isEventPastNow(e)) return false;
+        // Respect the user's audience preference: if they picked
+        // "brothers" we never surface sisters-only events in their
+        // personalised plan (and vice versa). "family" / "general"
+        // events pass for everyone.
+        if (personalization.preferredAudience === "brothers" && inferAudience(e) === "sisters") return false;
+        if (personalization.preferredAudience === "sisters" && inferAudience(e) === "brothers") return false;
         return true;
       })
       .sort((a, b) =>
@@ -3606,9 +3673,9 @@ function AppInner() {
       .filter((p) => p.events.length >= 2);
 
     return plans;
-    // Intentionally only depend on event pool + today — the topic table
-    // is static and re-creating the plans on every render is cheap.
-  }, [orderedVisibleEvents, today]);
+    // Depends on events + today + audience preference so sisters/brothers
+    // see their dedicated track as soon as they set a preference.
+  }, [orderedVisibleEvents, today, personalization.preferredAudience]);
 
   const futureVisibleCount = useMemo(() => {
     return visibleEvents.filter((e) => (e.date || "") >= today && !isEventPastNow(e)).length;
@@ -3738,13 +3805,13 @@ function AppInner() {
     // friendly variants people might share by mouth ("M XXXXXX",
     // "MXXXXXX", just "XXXXXX").
     const normalized = (() => {
-      if (/^M-[A-Z0-9]{4,8}$/.test(cleaned)) return cleaned;
-      if (/^M[A-Z0-9]{4,8}$/.test(cleaned)) return `M-${cleaned.slice(1)}`;
-      if (/^[A-Z0-9]{4,8}$/.test(cleaned)) return `M-${cleaned}`;
+      if (/^M-[A-Z0-9]{3,8}$/.test(cleaned)) return cleaned;
+      if (/^M[A-Z0-9]{3,8}$/.test(cleaned)) return `M-${cleaned.slice(1)}`;
+      if (/^[A-Z0-9]{3,8}$/.test(cleaned)) return `M-${cleaned}`;
       return "";
     })();
     if (!normalized) {
-      setReferralSaveError("That doesn't look like a Masjidly code. It should look like M-ABCD12.");
+      setReferralSaveError("That doesn't look like a Masjidly code. It should look like M-AB12C.");
       setReferralSavingState("error");
       return "";
     }
@@ -4757,17 +4824,18 @@ function AppInner() {
                     textContentType="emailAddress"
                   />
                   <Pressable
-                    style={[
+                    style={({ pressed }) => [
                       styles.captureEmailOptInRow,
                       personalization.emailOptIn && styles.captureEmailOptInRowActive,
+                      pressed && styles.captureChoicePillPressed,
                     ]}
                     onPress={() => {
+                      hapticTap("selection");
                       if (!personalization.email?.trim() && !personalization.emailOptIn) {
                         setOnboardingError("Add your email first, then opt in.");
                         return;
                       }
                       setPersonalization((prev) => ({ ...prev, emailOptIn: !prev.emailOptIn }));
-                      hapticTap("selection");
                     }}
                   >
                     <View
@@ -4804,14 +4872,18 @@ function AppInner() {
                       return (
                         <Pressable
                           key={`gender-welcome-${id}`}
-                          onPress={() => setPersonalization((prev) => ({ ...prev, gender: id as PersonalizationPrefs["gender"] }))}
-                          style={[
+                          onPress={() => {
+                            hapticTap("selection");
+                            setPersonalization((prev) => ({ ...prev, gender: id as PersonalizationPrefs["gender"] }));
+                          }}
+                          style={({ pressed }) => [
                             styles.captureChoicePill,
                           styles.captureChoicePillOnWelcome,
                             isNeo && styles.captureChoicePillNeo,
                             isEmerald && styles.captureChoicePillEmerald,
                             active && styles.captureChoicePillActive,
                           active && styles.captureChoicePillActiveOnWelcome,
+                            pressed && styles.captureChoicePillPressed,
                           ]}
                         >
                           <Text
@@ -4842,14 +4914,18 @@ function AppInner() {
                       return (
                         <Pressable
                           key={`interest-welcome-${interest}`}
-                          onPress={() => toggleInterest(interest)}
-                          style={[
+                          onPress={() => {
+                            hapticTap("selection");
+                            toggleInterest(interest);
+                          }}
+                          style={({ pressed }) => [
                             styles.captureChoicePill,
                             styles.captureChoicePillOnWelcome,
                             isNeo && styles.captureChoicePillNeo,
                             isEmerald && styles.captureChoicePillEmerald,
                             active && styles.captureChoicePillActive,
                             active && styles.captureChoicePillActiveOnWelcome,
+                            pressed && styles.captureChoicePillPressed,
                           ]}
                         >
                           <Text
@@ -4886,7 +4962,7 @@ function AppInner() {
                     }}
                     autoCapitalize="characters"
                     autoCorrect={false}
-                    placeholder="M-ABCD12"
+                    placeholder="M-AB12C"
                     placeholderTextColor={isNeo ? "#6b6b6b" : isEmerald ? "#4f7a5d" : "#ffdfc9"}
                   />
                   <Text style={[styles.captureHelper, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>
@@ -5499,7 +5575,11 @@ function AppInner() {
               </Pressable>
               <Pressable
                 hitSlop={6}
-                style={[styles.cardActionChip, saved && styles.cardActionChipActive]}
+                style={({ pressed }) => [
+                  styles.cardActionChip,
+                  saved && styles.cardActionChipActive,
+                  pressed && styles.cardActionChipPressed,
+                ]}
                 onPress={(ev) => { ev.stopPropagation?.(); toggleSavedEvent(e); }}
               >
                 <Text style={[styles.cardActionChipText, saved && styles.cardActionChipTextActive, emojiFontStyle]}>
@@ -5508,7 +5588,10 @@ function AppInner() {
               </Pressable>
               <Pressable
                 hitSlop={6}
-                style={styles.cardActionChip}
+                style={({ pressed }) => [
+                  styles.cardActionChip,
+                  pressed && styles.cardActionChipPressed,
+                ]}
                 onPress={(ev) => { ev.stopPropagation?.(); shareEvent(e); }}
               >
                 <Text style={[styles.cardActionChipText, emojiFontStyle]}>↗</Text>
@@ -5557,7 +5640,12 @@ function AppInner() {
               {
                 opacity: homeHeroGlowDrift.interpolate({ inputRange: [0, 1], outputRange: [0.38, 0.72] }),
                 transform: [
-                  { scale: homeHeroGlowDrift.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1.14] }) },
+                  {
+                    scale: Animated.add(
+                      homeHeroGlowDrift.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1.14] }),
+                      heroRefreshPulse.interpolate({ inputRange: [0, 1], outputRange: [0, 0.18] }),
+                    ),
+                  },
                   { translateX: homeHeroGlowDrift.interpolate({ inputRange: [0, 1], outputRange: [-18, 22] }) },
                   { translateY: homeHeroGlowDrift.interpolate({ inputRange: [0, 1], outputRange: [-14, 10] }) },
                 ],
@@ -5571,7 +5659,12 @@ function AppInner() {
               {
                 opacity: homeHeroGlowDrift.interpolate({ inputRange: [0, 1], outputRange: [0.55, 0.28] }),
                 transform: [
-                  { scale: homeHeroGlowDrift.interpolate({ inputRange: [0, 1], outputRange: [1.08, 0.9] }) },
+                  {
+                    scale: Animated.add(
+                      homeHeroGlowDrift.interpolate({ inputRange: [0, 1], outputRange: [1.08, 0.9] }),
+                      heroRefreshPulse.interpolate({ inputRange: [0, 1], outputRange: [0, 0.22] }),
+                    ),
+                  },
                   { translateX: homeHeroGlowDrift.interpolate({ inputRange: [0, 1], outputRange: [30, -10] }) },
                   { translateY: homeHeroGlowDrift.interpolate({ inputRange: [0, 1], outputRange: [20, -16] }) },
                 ],
@@ -5607,16 +5700,40 @@ function AppInner() {
         </LinearGradient>
 
         <View style={styles.homeQuickRow}>
-          {quickActions.map((a) => (
-            <Pressable
-              key={`qa-${a.label}`}
-              style={[styles.homeQuickBtn, isDarkTheme && styles.homeQuickBtnDark]}
-              onPress={a.action}
-            >
-              <Text style={[styles.homeQuickEmoji, emojiFontStyle, isDarkTheme && { color: "#f4f7ff" }]}>{a.emoji}</Text>
-              <Text style={[styles.homeQuickLabel, isDarkTheme && { color: "#f4f7ff" }]}>{a.label}</Text>
-            </Pressable>
-          ))}
+          {quickActions.map((a) => {
+            const isRefreshAction = a.label === "Refresh";
+            const emojiSpin = refreshSpin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
+            return (
+              <Pressable
+                key={`qa-${a.label}`}
+                style={({ pressed }) => [
+                  styles.homeQuickBtn,
+                  isDarkTheme && styles.homeQuickBtnDark,
+                  pressed && styles.cardActionChipPressed,
+                ]}
+                onPress={() => {
+                  hapticTap("selection");
+                  a.action();
+                }}
+              >
+                {isRefreshAction ? (
+                  <Animated.Text
+                    style={[
+                      styles.homeQuickEmoji,
+                      emojiFontStyle,
+                      isDarkTheme && { color: "#f4f7ff" },
+                      { transform: [{ rotate: emojiSpin }] },
+                    ]}
+                  >
+                    {a.emoji}
+                  </Animated.Text>
+                ) : (
+                  <Text style={[styles.homeQuickEmoji, emojiFontStyle, isDarkTheme && { color: "#f4f7ff" }]}>{a.emoji}</Text>
+                )}
+                <Text style={[styles.homeQuickLabel, isDarkTheme && { color: "#f4f7ff" }]}>{a.label}</Text>
+              </Pressable>
+            );
+          })}
         </View>
 
         {liveNowEvents.length ? (
@@ -6822,6 +6939,22 @@ function AppInner() {
       .filter((c) => c.count > 0);
 
     const followedSet = new Set(followedMasjids.map((s) => s.toLowerCase()));
+
+    // Upcoming events from the masjids the user actively follows — this
+    // is what "follow" should feel like: a dedicated strip of events
+    // from THEIR houses of worship. Up to ~8 events, sorted by date.
+    const followedMasjidEvents = followedSet.size
+      ? orderedVisibleEvents
+          .filter((e) => followedSet.has((normalizeText(e.source) || "").toLowerCase()))
+          .filter((e) => (e.date || "") >= todayIso && !isEventPastNow(e))
+          .sort((a, b) =>
+            `${a.date || ""} ${a.start_time || "99:99"}`.localeCompare(
+              `${b.date || ""} ${b.start_time || "99:99"}`,
+            ),
+          )
+          .slice(0, 8)
+      : [];
+
     const unfollowedMasjidBuckets = (() => {
       const byMasjid = new Map<string, { source: string; count: number; nextDate?: string; distance?: number }>();
       for (const e of orderedVisibleEvents) {
@@ -6894,6 +7027,45 @@ function AppInner() {
             </View>
           );
         })()}
+
+        {/* Events from masjids the user follows. This is the main
+            "why follow" payoff — a dedicated strip that surfaces what
+            YOUR masjids are running this week, so follows feel like
+            a signal Masjidly actually uses. */}
+        {followedMasjidEvents.length ? (
+          <View style={styles.discoverSection}>
+            <View style={styles.discoverSectionHeader}>
+              <Text style={[styles.discoverSectionTitle, isDarkTheme && { color: "#f4f7ff" }]}>Your masjids</Text>
+              <Pressable onPress={() => { hapticTap("selection"); switchTab("explore"); }} hitSlop={8}>
+                <Text style={[styles.discoverSeeAll, isDarkTheme && { color: "#9db0db" }]}>Open map →</Text>
+              </Pressable>
+            </View>
+            <Text style={[styles.discoverSectionSub, isDarkTheme && { color: "#9db0db" }]}>
+              Events from the {followedMasjids.length} masjid{followedMasjids.length === 1 ? "" : "s"} you follow.
+            </Text>
+            {followedMasjidEvents.slice(0, 5).map((e, idx) => {
+              const poster = pickPoster(e.image_urls);
+              return (
+                <Pressable
+                  key={`fm-${idx}-${eventStorageKey(e)}`}
+                  style={({ pressed }) => [styles.discoverFollowedScholarsRow, pressed && styles.cardActionChipPressed]}
+                  onPress={() => { hapticTap("selection"); setSelectedEvent(e); }}
+                >
+                  {poster ? (
+                    <Image source={{ uri: poster }} style={{ width: "100%", height: 120, borderRadius: 10, marginBottom: 8 }} />
+                  ) : null}
+                  <Text style={styles.discoverFollowedScholarsRowWhat} numberOfLines={2}>{e.title}</Text>
+                  <Text style={styles.discoverFollowedScholarsRowWho} numberOfLines={1}>
+                    {formatSourceLabel(e.source)}{e.speaker ? ` · ${e.speaker}` : ""}
+                  </Text>
+                  <Text style={styles.discoverFollowedScholarsRowWhen}>
+                    {formatHumanDate(e.date)} · {eventTime(e)}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        ) : null}
 
         {/* Scholars & Speakers rail */}
         <View style={styles.discoverSection}>
@@ -7284,7 +7456,7 @@ function AppInner() {
                   }}
                   autoCapitalize="characters"
                   autoCorrect={false}
-                  placeholder="M-ABCD12"
+                  placeholder="M-AB12C"
                   placeholderTextColor="#a3aec6"
                   style={styles.shareReferredInput}
                 />
@@ -8916,63 +9088,9 @@ function AppInner() {
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator
             >
-              {/* #2 Iqama / prayer times card. Prefers masjid-published
-                  iqama (stored server-side) and falls back to calculated
-                  adhan times from Aladhan so every masjid in our
-                  directory has *something* useful to show. */}
-              {(() => {
-                const src = selectedMasjidSheet;
-                if (!src) return null;
-                const iq = iqamaBySource[src] || {};
-                const prayers = ["fajr", "dhuhr", "asr", "maghrib", "isha"] as const;
-                const anyIqama = prayers.some((p) => iq[p]?.iqama);
-                const jumuah = iq["jumuah"]?.jumuah_times || [];
-                const calc = prayerTimesBySource[src];
-                const usingFallback = !anyIqama && !!calc;
-                if (!anyIqama && !calc && !jumuah.length) {
-                  return (
-                    <View style={styles.iqamaCard}>
-                      <Text style={styles.iqamaTitle}>Prayer times</Text>
-                      <Text style={styles.iqamaSub}>Loading today's prayer times…</Text>
-                    </View>
-                  );
-                }
-                return (
-                  <View style={styles.iqamaCard}>
-                    <Text style={styles.iqamaTitle}>
-                      {anyIqama ? "Iqama times" : "Prayer times today"}
-                    </Text>
-                    {usingFallback ? (
-                      <Text style={styles.iqamaSub}>
-                        Calculated adhan times (ISNA) — iqama is typically 10–20 min later.
-                      </Text>
-                    ) : null}
-                    <View style={styles.iqamaRow}>
-                      {prayers.map((p) => (
-                        <View key={p} style={styles.iqamaCell}>
-                          <Text style={styles.iqamaPrayer}>{p[0].toUpperCase() + p.slice(1)}</Text>
-                          <Text style={styles.iqamaTime}>
-                            {iq[p]?.iqama
-                              ? iq[p].iqama
-                              : calc
-                              ? (calc as any)[p] || "—"
-                              : "—"}
-                          </Text>
-                        </View>
-                      ))}
-                    </View>
-                    {jumuah.length ? (
-                      <Text style={styles.iqamaJumuah}>
-                        Jumu'ah: {jumuah.join("  ·  ")}
-                      </Text>
-                    ) : null}
-                    <Pressable style={styles.iqamaStampBtn} onPress={() => stampPassport(src)}>
-                      <Text style={styles.iqamaStampText}>✓ I'm here — stamp passport</Text>
-                    </Pressable>
-                  </View>
-                );
-              })()}
-
+              {/* Events come FIRST — it's what the user tapped the masjid
+                  for. Iqama / prayer-time block renders below so it's
+                  still available without burying the upcoming events. */}
               {(() => {
                 const masjidEvents = orderedVisibleEvents.filter(
                   (ev) => normalizeText(ev.source).toLowerCase() === selectedMasjidSheet.toLowerCase(),
@@ -9083,6 +9201,61 @@ function AppInner() {
                         );
                       })}
                     </View>
+                  </View>
+                );
+              })()}
+
+              {/* Iqama / prayer times card. Now below events so the
+                  primary reason for opening the sheet is visible first. */}
+              {(() => {
+                const src = selectedMasjidSheet;
+                if (!src) return null;
+                const iq = iqamaBySource[src] || {};
+                const prayers = ["fajr", "dhuhr", "asr", "maghrib", "isha"] as const;
+                const anyIqama = prayers.some((p) => iq[p]?.iqama);
+                const jumuah = iq["jumuah"]?.jumuah_times || [];
+                const calc = prayerTimesBySource[src];
+                const usingFallback = !anyIqama && !!calc;
+                if (!anyIqama && !calc && !jumuah.length) {
+                  return (
+                    <View style={styles.iqamaCard}>
+                      <Text style={styles.iqamaTitle}>Prayer times</Text>
+                      <Text style={styles.iqamaSub}>Loading today's prayer times…</Text>
+                    </View>
+                  );
+                }
+                return (
+                  <View style={styles.iqamaCard}>
+                    <Text style={styles.iqamaTitle}>
+                      {anyIqama ? "Iqama times" : "Prayer times today"}
+                    </Text>
+                    {usingFallback ? (
+                      <Text style={styles.iqamaSub}>
+                        Calculated adhan times (ISNA) — iqama is typically 10–20 min later.
+                      </Text>
+                    ) : null}
+                    <View style={styles.iqamaRow}>
+                      {prayers.map((p) => (
+                        <View key={p} style={styles.iqamaCell}>
+                          <Text style={styles.iqamaPrayer}>{p[0].toUpperCase() + p.slice(1)}</Text>
+                          <Text style={styles.iqamaTime}>
+                            {iq[p]?.iqama
+                              ? iq[p].iqama
+                              : calc
+                              ? (calc as any)[p] || "—"
+                              : "—"}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                    {jumuah.length ? (
+                      <Text style={styles.iqamaJumuah}>
+                        Jumu'ah: {jumuah.join("  ·  ")}
+                      </Text>
+                    ) : null}
+                    <Pressable style={styles.iqamaStampBtn} onPress={() => stampPassport(src)}>
+                      <Text style={styles.iqamaStampText}>✓ I'm here — stamp passport</Text>
+                    </Pressable>
                   </View>
                 );
               })()}
@@ -9907,30 +10080,68 @@ function AppInner() {
                   {collectionPreview.events.length} event
                   {collectionPreview.events.length === 1 ? "" : "s"} match
                 </Text>
-                {collectionPreview.events.map((e, i) => (
-                  <Pressable
-                    key={`coll-ev-${i}-${eventStorageKey(e)}`}
-                    style={[styles.discoverFollowedScholarsRow, { backgroundColor: isDarkTheme ? "#1b2238" : "#ffffff" }]}
-                    onPress={() => {
-                      setCollectionPreview(null);
-                      setSelectedEvent(e);
-                    }}
-                  >
-                    <Text
-                      style={[styles.discoverFollowedScholarsRowWhat, isDarkTheme && { color: "#f4f7ff" }]}
-                      numberOfLines={2}
+                {collectionPreview.events.map((e, i) => {
+                  const poster = pickPoster(e.image_urls);
+                  const saved = isSavedEvent(e);
+                  return (
+                    <Pressable
+                      key={`coll-ev-${i}-${eventStorageKey(e)}`}
+                      style={({ pressed }) => [
+                        styles.discoverFollowedScholarsRow,
+                        { backgroundColor: isDarkTheme ? "#1b2238" : "#ffffff", padding: 12, gap: 8 },
+                        pressed && styles.cardActionChipPressed,
+                      ]}
+                      onPress={() => {
+                        hapticTap("selection");
+                        setCollectionPreview(null);
+                        setSelectedEvent(e);
+                      }}
                     >
-                      {e.title}
-                    </Text>
-                    <Text style={[styles.discoverFollowedScholarsRowWho, isDarkTheme && { color: "#c4cee8" }]} numberOfLines={1}>
-                      {formatSourceLabel(e.source)}
-                      {e.speaker ? ` · ${e.speaker}` : ""}
-                    </Text>
-                    <Text style={[styles.discoverFollowedScholarsRowWhen, isDarkTheme && { color: "#9db0db" }]}>
-                      {formatHumanDate(e.date)} · {eventTime(e)}
-                    </Text>
-                  </Pressable>
-                ))}
+                      {poster ? (
+                        <Image
+                          source={{ uri: poster }}
+                          style={{ width: "100%", height: 180, borderRadius: 12 }}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <View style={{ width: "100%", height: 90, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: masjidBrandColor(e.source) }}>
+                          <Text style={{ color: "#fff", fontWeight: "900", fontSize: 18 }}>{masjidInitials(e.source)}</Text>
+                        </View>
+                      )}
+                      <Text
+                        style={[styles.discoverFollowedScholarsRowWhat, isDarkTheme && { color: "#f4f7ff" }, { fontSize: 16 }]}
+                        numberOfLines={2}
+                      >
+                        {e.title}
+                      </Text>
+                      <Text style={[styles.discoverFollowedScholarsRowWho, isDarkTheme && { color: "#c4cee8" }]} numberOfLines={1}>
+                        {formatSourceLabel(e.source)}
+                        {e.speaker ? ` · ${e.speaker}` : ""}
+                      </Text>
+                      <Text style={[styles.discoverFollowedScholarsRowWhen, isDarkTheme && { color: "#9db0db" }]}>
+                        {formatHumanDate(e.date)} · {eventTime(e)}
+                      </Text>
+                      <View style={{ flexDirection: "row", gap: 8, marginTop: 4 }}>
+                        <Pressable
+                          hitSlop={6}
+                          onPress={(ev) => {
+                            ev.stopPropagation?.();
+                            toggleSavedEvent(e);
+                          }}
+                          style={({ pressed }) => [
+                            styles.cardActionChip,
+                            saved && styles.cardActionChipActive,
+                            pressed && styles.cardActionChipPressed,
+                          ]}
+                        >
+                          <Text style={[styles.cardActionChipText, saved && styles.cardActionChipTextActive, emojiFontStyle]}>
+                            {saved ? "♥ Saved" : "♡ Save"}
+                          </Text>
+                        </Pressable>
+                      </View>
+                    </Pressable>
+                  );
+                })}
                 {collectionPreview.exploreHandoff ? (
                   <Pressable
                     style={[styles.sadaqahBtn, { marginTop: 12 }]}
@@ -10086,20 +10297,30 @@ function AppInner() {
               <Pressable
                 style={[styles.sadaqahBtn, { backgroundColor: knowledgePlanPreview.color }]}
                 onPress={() => {
-                  let added = 0;
-                  for (const ev of knowledgePlanPreview.events) {
-                    if (!isSavedEvent(ev)) {
-                      toggleSavedEvent(ev);
-                      added += 1;
+                  // Batch all plan events into Saved in one state update so
+                  // React doesn't clobber earlier writes with stale reads.
+                  let addedCount = 0;
+                  setSavedEventsMap((prev) => {
+                    const next = { ...prev };
+                    for (const ev of knowledgePlanPreview.events) {
+                      const key = eventStorageKey(ev);
+                      if (!next[key]) {
+                        next[key] = ev;
+                        addedCount += 1;
+                      }
                     }
-                  }
+                    SecureStore.setItemAsync(SAVED_EVENTS_KEY, JSON.stringify(next)).catch(() => {});
+                    return next;
+                  });
                   hapticTap("success");
-                  Alert.alert(
-                    "Plan saved",
-                    added > 0
-                      ? `Added ${added} event${added === 1 ? "" : "s"} to your Saved list.`
-                      : "All stops were already in your Saved list.",
-                  );
+                  setTimeout(() => {
+                    Alert.alert(
+                      "Plan saved",
+                      addedCount > 0
+                        ? `Added ${addedCount} event${addedCount === 1 ? "" : "s"} to your Saved list.`
+                        : "All stops were already in your Saved list.",
+                    );
+                  }, 0);
                 }}
               >
                 <Text style={styles.sadaqahBtnText}>Save this plan to my shortlist</Text>
@@ -10138,14 +10359,54 @@ function AppInner() {
           </View>
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 40, gap: 10 }}>
             {!selectedSpeaker ? (
-              speakers.length === 0 ? (
-                <Text style={styles.bottomSheetSub}>Loading scholar directory…</Text>
-              ) : (
-                speakers.slice(0, 80).map((sp) => (
+              (() => {
+                // Prefer the backend speakers payload when available, but
+                // fall back to deriving a list from the loaded events so
+                // the directory never shows an infinite loading spinner.
+                const list: Speaker[] = speakers.length
+                  ? speakers
+                  : (() => {
+                      const agg = new Map<string, Speaker>();
+                      for (const ev of orderedVisibleEvents) {
+                        const raw = (ev.speaker || "").trim();
+                        if (!raw) continue;
+                        const slug = raw.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+                        if (!slug) continue;
+                        const cur = agg.get(slug) || { slug, name: raw, total_events: 0, upcoming_events: 0, sources: [] as string[] };
+                        cur.total_events += 1;
+                        if ((ev.date || "") >= today && !isEventPastNow(ev)) cur.upcoming_events += 1;
+                        const src = normalizeText(ev.source);
+                        if (src && !cur.sources.includes(src)) cur.sources.push(src);
+                        if (!cur.next_title || (ev.date || "") < (cur.next_date || "9999-12-31")) {
+                          cur.next_title = ev.title;
+                          cur.next_date = ev.date || null;
+                        }
+                        agg.set(slug, cur);
+                      }
+                      return [...agg.values()]
+                        .filter((s) => s.upcoming_events > 0 || s.total_events > 0)
+                        .sort((a, b) => (b.upcoming_events || 0) - (a.upcoming_events || 0));
+                    })();
+                if (list.length === 0) {
+                  return (
+                    <View style={{ padding: 20, alignItems: "center", gap: 10 }}>
+                      <Text style={[styles.bottomSheetSub, { textAlign: "center" }]}>
+                        Your scholar directory is warming up. Pull down to refresh, or try a wider radius in Explore.
+                      </Text>
+                      <Pressable
+                        onPress={() => { hapticTap("selection"); loadSpeakers(); }}
+                        style={({ pressed }) => [styles.bottomSheetFollowBtn, pressed && styles.cardActionChipPressed]}
+                      >
+                        <Text style={styles.bottomSheetFollowText}>Try again</Text>
+                      </Pressable>
+                    </View>
+                  );
+                }
+                return list.slice(0, 80).map((sp) => (
                   <Pressable
                     key={`sp-${sp.slug}`}
-                    style={styles.scholarCard}
-                    onPress={() => setSelectedSpeaker(sp.slug)}
+                    style={({ pressed }) => [styles.scholarCard, pressed && styles.cardActionChipPressed]}
+                    onPress={() => { hapticTap("selection"); setSelectedSpeaker(sp.slug); }}
                   >
                     {sp.image_url ? (
                       <Image source={{ uri: sp.image_url }} style={styles.scholarAvatar} />
@@ -10164,19 +10425,28 @@ function AppInner() {
                       ) : null}
                     </View>
                   </Pressable>
-                ))
-              )
+                ));
+              })()
             ) : (
               (() => {
-                const sp = speakers.find((s) => s.slug === selectedSpeaker);
-                if (!sp) return null;
                 const upcomingMatches = orderedVisibleEvents.filter(
                   (ev) =>
                     (ev.speaker || "")
                       .toLowerCase()
                       .replace(/[^a-z0-9]+/g, "-")
-                      .replace(/^-+|-+$/g, "") === sp.slug
+                      .replace(/^-+|-+$/g, "") === selectedSpeaker
                 );
+                const sp = speakers.find((s) => s.slug === selectedSpeaker)
+                  || (upcomingMatches.length
+                    ? {
+                        slug: selectedSpeaker,
+                        name: upcomingMatches[0].speaker || selectedSpeaker,
+                        total_events: upcomingMatches.length,
+                        upcoming_events: upcomingMatches.filter((e) => (e.date || "") >= today && !isEventPastNow(e)).length,
+                        sources: Array.from(new Set(upcomingMatches.map((e) => normalizeText(e.source)).filter(Boolean))),
+                      } as Speaker
+                    : null);
+                if (!sp) return null;
                 return (
                   <>
                     <View style={styles.scholarHero}>
@@ -11574,6 +11844,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
+  captureChoicePillPressed: { opacity: 0.55, transform: [{ scale: 0.96 }] },
   captureChoicePillNeo: { borderColor: "#b1b1b1", backgroundColor: "#efefef" },
   captureChoicePillEmerald: { borderColor: "#a4c8b2", backgroundColor: "#ecf7f0" },
   captureChoicePillActive: { backgroundColor: "#2f3138", borderColor: "#1f2026" },
@@ -11677,19 +11948,19 @@ const styles = StyleSheet.create({
   },
   launchLogo: { width: 200, height: 200, marginBottom: -8 },
   launchGreeting: {
-    position: "absolute",
-    top: 146,
+    marginTop: 28,
     color: "#b55624",
-    fontSize: 34,
+    fontSize: 26,
     fontWeight: "900",
-    letterSpacing: -0.6,
+    letterSpacing: -0.4,
     textAlign: "center",
+    alignSelf: "center",
+    paddingHorizontal: 18,
   },
   launchGreetingNeo: { color: "#8f4a25" },
   launchGreetingEmerald: { color: "#1f5137" },
   launchDotsRow: {
-    position: "absolute",
-    bottom: 96,
+    marginTop: 22,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -11813,8 +12084,8 @@ const styles = StyleSheet.create({
   premiumCardSubNeo: { color: "#4f4f4f" },
   premiumCardMetricNeo: { color: "#191919" },
   darkPillBtn: {
-    height: 42,
-    paddingHorizontal: 18,
+    height: 32,
+    paddingHorizontal: 12,
     borderRadius: 999,
     backgroundColor: "#2f3138",
     alignItems: "center",
@@ -11824,7 +12095,7 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 5 },
   },
-  darkPillBtnText: { color: "#fff", fontWeight: "700", fontSize: 15 },
+  darkPillBtnText: { color: "#fff", fontWeight: "700", fontSize: 12 },
   darkPillBtnMinera: { backgroundColor: "#2f3341", shadowColor: "#161925" },
   darkPillBtnTextMinera: { color: "#ffffff" },
   viewEventsBtn: {
