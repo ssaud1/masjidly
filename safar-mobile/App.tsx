@@ -3,11 +3,60 @@ import { StatusBar } from "expo-status-bar";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Device from "expo-device";
 import * as Linking from "expo-linking";
+import * as Location from "expo-location";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Notifications from "expo-notifications";
 import * as SecureStore from "expo-secure-store";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import MapView, { Callout, Marker, type Region } from "react-native-maps";
+
+// Haptics load lazily: native module is only present in builds that bundled
+// expo-haptics at compile time. On older TestFlight binaries (pre-v6) the
+// module isn't linked, so we swallow the import error and no-op. Vibration is
+// always available as a minimal fallback.
+type HapticsModule = {
+  impactAsync?: (style: string) => Promise<void> | void;
+  selectionAsync?: () => Promise<void> | void;
+  notificationAsync?: (type: string) => Promise<void> | void;
+  ImpactFeedbackStyle?: { Light: string; Medium: string; Heavy: string; Soft: string; Rigid: string };
+  NotificationFeedbackType?: { Success: string; Warning: string; Error: string };
+};
+let hapticsModule: HapticsModule | null = null;
+try {
+  // Wrapped so Metro doesn't eagerly resolve into the JS bundle when the
+  // native side can't satisfy the import.
+  hapticsModule = require("expo-haptics");
+} catch {
+  hapticsModule = null;
+}
+
+function hapticTap(kind: "selection" | "success" = "selection") {
+  try {
+    if (hapticsModule) {
+      if (kind === "success" && hapticsModule.notificationAsync && hapticsModule.NotificationFeedbackType) {
+        void hapticsModule.notificationAsync(hapticsModule.NotificationFeedbackType.Success);
+        return;
+      }
+      if (hapticsModule.selectionAsync) {
+        void hapticsModule.selectionAsync();
+        return;
+      }
+      if (hapticsModule.impactAsync && hapticsModule.ImpactFeedbackStyle) {
+        void hapticsModule.impactAsync(hapticsModule.ImpactFeedbackStyle.Light);
+        return;
+      }
+    }
+  } catch {
+    // fall through to Vibration
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { Vibration } = require("react-native");
+    Vibration?.vibrate?.(kind === "success" ? [0, 20, 40, 20] : 12);
+  } catch {
+    // truly no-op on any platform that has neither
+  }
+}
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   AppState,
@@ -15,6 +64,7 @@ import {
   ActivityIndicator,
   Animated,
   Easing,
+  FlatList,
   Image,
   InteractionManager,
   Modal,
@@ -129,9 +179,13 @@ const TOKEN_KEY = "masjidly_auth_token";
 const SAVED_EVENTS_KEY = "masjidly_saved_events_v1";
 const PERSONALIZATION_KEY = "masjidly_personalization_v1";
 const WELCOME_FLOW_DONE_KEY = "masjidly_welcome_flow_done_v1";
+// Bump on every EAS update so the badge on the welcome screen reflects what's
+// actually running on device. v2 = post-"always-welcome" build + Explore perf.
+const APP_BUILD_VERSION = "v10";
 const THEME_KEY = "masjidly_theme_v1";
 const FOLLOWED_MASJIDS_KEY = "masjidly_followed_masjids_v1";
 const RSVP_STATUSES_KEY = "masjidly_rsvp_statuses_v1";
+const RSVP_NOTIFICATION_IDS_KEY = "masjidly_rsvp_notification_ids_v1";
 const FILTER_PRESETS_KEY = "masjidly_filter_presets_v1";
 const FEEDBACK_RESPONSES_KEY = "masjidly_feedback_responses_v1";
 const STREAK_TRACKER_KEY = "masjidly_streak_tracker_v1";
@@ -229,14 +283,25 @@ Notifications.setNotificationHandler({
   }),
 });
 
+// NOTE: intentionally uses the device's LOCAL date — not UTC. Previous version
+// used new Date().toISOString() which flips to tomorrow's date after ~7pm ET,
+// making the app think "today" had already advanced and bucketing tomorrow's
+// events into the Today card.
 function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function plusDaysIso(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function formatHumanDate(iso: string): string {
@@ -428,6 +493,194 @@ function eventTopicSummary(e: EventItem): string {
   return "";
 }
 
+// Stable dedupe key. We DELIBERATELY do not prefer event_uid, because the same
+// event can appear with uid=null in the bundled seed and uid="abc" once the
+// live pipeline assigns one — that used to create two copies per event. The
+// source+date+start_time+title signature is fully deterministic across seed
+// and live, so it collapses both copies into one. We only fall back to uid
+// when the sdt signature would be too weak to identify the row (e.g. missing
+// source/date/title, which almost never happens in practice).
+function eventDedupeKey(e: any): string {
+  const source = (e?.source || "").toString().trim().toLowerCase();
+  const date = (e?.date || "").toString().trim();
+  const title = (e?.title || "").toString().trim().toLowerCase().slice(0, 120);
+  const startTime = (e?.start_time || "").toString().trim();
+  if (source && date && title) return `sdt:${source}|${date}|${startTime}|${title}`;
+  const uid = (e?.event_uid || "").toString().trim().toLowerCase();
+  if (uid) return `uid:${uid}`;
+  return `sdt:${source}|${date}|${startTime}|${title}`;
+}
+
+// Identifies ongoing programs / class series that aren't discrete events the
+// user wants in their "what's happening" feed. We keep things like Jumu'ah,
+// halaqas, fundraisers, dinners, open houses, lectures, conferences, picnics,
+// etc. but strip out rolling classes and school registration announcements.
+// Returns the concrete Date an event starts at. Uses local timezone since
+// event scrape data is stored in the masjid's local wall-clock time (ET for
+// all NJ masjids today).
+function eventStartDate(e: any): Date | null {
+  const iso = (e?.date || "").toString().trim();
+  if (!iso) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return null;
+  const startTime = (e?.start_time || "").toString().trim();
+  const hm = /^([0-2]?\d):([0-5]\d)/.exec(startTime);
+  const year = Number(m[1]);
+  const month = Number(m[2]) - 1;
+  const day = Number(m[3]);
+  const hour = hm ? Number(hm[1]) : 10;
+  const min = hm ? Number(hm[2]) : 0;
+  const d = new Date(year, month, day, hour, min, 0, 0);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// Local notification scheduling for RSVP'd events. We fire two reminders:
+//   1. 9:00am on the day-of ("Today: <title> at <masjid>, starts at 6:45pm")
+//   2. ~2 hours before the event starts ("Starting soon: ...")
+// Ids are persisted per-event-key so we can cancel them when the user
+// un-RSVPs. Best-effort: never throws into the UI.
+async function scheduleEventReminders(e: any): Promise<void> {
+  const key = (e?.event_uid && String(e.event_uid)) ||
+    `${e?.source || ""}|${e?.date || ""}|${e?.start_time || ""}|${e?.title || ""}`;
+  try {
+    const perm = await Notifications.getPermissionsAsync();
+    if (!perm.granted) {
+      const req = await Notifications.requestPermissionsAsync();
+      if (!req.granted) return;
+    }
+  } catch {
+    return;
+  }
+  await cancelEventReminders(key);
+  const start = eventStartDate(e);
+  if (!start) return;
+  const now = Date.now();
+  const masjid = (e?.source || "").toString().toUpperCase();
+  const title = (e?.title || "Your event").toString();
+  const when = `${start.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  const ids: string[] = [];
+  const dayOf = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 9, 0, 0, 0);
+  if (dayOf.getTime() > now + 60_000) {
+    try {
+      const id = await Notifications.scheduleNotificationAsync({
+        content: {
+          title: `Today: ${title}`,
+          body: masjid ? `${masjid} · starts at ${when}` : `Starts at ${when}`,
+          data: { event_key: key, kind: "day_of" },
+        },
+        trigger: dayOf as any,
+      });
+      ids.push(id);
+    } catch { /* non-fatal */ }
+  }
+  const twoHoursBefore = new Date(start.getTime() - 2 * 60 * 60 * 1000);
+  if (twoHoursBefore.getTime() > now + 60_000) {
+    try {
+      const id = await Notifications.scheduleNotificationAsync({
+        content: {
+          title: `Starting soon: ${title}`,
+          body: masjid ? `${masjid} · ${when}` : `Starts at ${when}`,
+          data: { event_key: key, kind: "two_hours" },
+        },
+        trigger: twoHoursBefore as any,
+      });
+      ids.push(id);
+    } catch { /* non-fatal */ }
+  }
+  try {
+    const raw = await SecureStore.getItemAsync(RSVP_NOTIFICATION_IDS_KEY);
+    const map: Record<string, string[]> = raw ? JSON.parse(raw) : {};
+    map[key] = ids;
+    await SecureStore.setItemAsync(RSVP_NOTIFICATION_IDS_KEY, JSON.stringify(map));
+  } catch { /* non-fatal */ }
+}
+
+async function cancelEventReminders(key: string): Promise<void> {
+  try {
+    const raw = await SecureStore.getItemAsync(RSVP_NOTIFICATION_IDS_KEY);
+    if (!raw) return;
+    const map: Record<string, string[]> = JSON.parse(raw);
+    const ids = map[key] || [];
+    for (const id of ids) {
+      try { await Notifications.cancelScheduledNotificationAsync(id); } catch { /* non-fatal */ }
+    }
+    delete map[key];
+    await SecureStore.setItemAsync(RSVP_NOTIFICATION_IDS_KEY, JSON.stringify(map));
+  } catch { /* non-fatal */ }
+}
+
+// Returns true if the event has already ended relative to the device's local
+// clock. Used to keep the Today bucket honest — a Monday 18:45-19:45 halaqa
+// shouldn't still show up as "Today" at 9pm.
+function isEventPastNow(e: any): boolean {
+  const now = new Date();
+  const isoDate = (e?.date || "").toString().trim();
+  if (!isoDate) return false;
+  const localTodayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  if (isoDate < localTodayIso) return true;
+  if (isoDate > localTodayIso) return false;
+  // Same-day: use end_time if present, else start_time + 60min, else start_time.
+  const parseHm = (s: any): number | null => {
+    if (!s) return null;
+    const m = /^([0-2]?\d):([0-5]\d)/.exec(s.toString().trim());
+    if (!m) return null;
+    return Number(m[1]) * 60 + Number(m[2]);
+  };
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const endMin = parseHm(e?.end_time);
+  if (endMin != null) return nowMin > endMin;
+  const startMin = parseHm(e?.start_time);
+  if (startMin != null) return nowMin > startMin + 60; // assume 1h duration
+  return false;
+}
+
+function isEventLiveNow(e: any): boolean {
+  const now = new Date();
+  const isoDate = (e?.date || "").toString().trim();
+  if (!isoDate) return false;
+  const localTodayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  if (isoDate !== localTodayIso) return false;
+  const parseHm = (s: any): number | null => {
+    if (!s) return null;
+    const m = /^([0-2]?\d):([0-5]\d)/.exec(s.toString().trim());
+    if (!m) return null;
+    return Number(m[1]) * 60 + Number(m[2]);
+  };
+  const startMin = parseHm(e?.start_time);
+  if (startMin == null) return false;
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const endMin = parseHm(e?.end_time);
+  const effectiveEnd = endMin != null ? endMin : startMin + 60; // default 1h duration
+  return nowMin >= startMin && nowMin <= effectiveEnd;
+}
+
+function isProgramNotEvent(e: any): boolean {
+  const title = (e?.title || "").toLowerCase();
+  const blob = `${title} ${(e?.description || "").toLowerCase().slice(0, 400)}`;
+  // If the event carries a concrete date AND time, treat it as a real event
+  // even if the title says "class" or "course" — those are still scheduled
+  // things users might want to attend. Previously we were dropping all
+  // "Quran class" / "Arabic class" entries which caused Tuesdays to look
+  // empty. Only strip ongoing generic listings with no schedule anchor.
+  const hasAnchor = !!(e?.date && e?.start_time);
+  if (hasAnchor) {
+    // Only flag summer/weekend school catch-all entries with no real date.
+    if (!e?.start_time && /\b(sunday|weekend|weekday|saturday|summer|after[-\s]?school)\s+school\b/.test(blob)) {
+      return true;
+    }
+    return false;
+  }
+  // No anchor → apply the stricter filters below.
+  if (/\b(sunday|weekend|weekday|saturday|summer|after[-\s]?school)\s+school\b/.test(blob)) return true;
+  if (/\b(tajweed|tajwid|quran|qur'?an|hifz|hifdh|arabic|islamic\s+studies|fiqh|aqeedah|aqidah|seerah|tafsir|qira'?ah|qaida)\s+class(es)?\b/.test(blob)) return true;
+  if (/\b(kids|children|youth|teen)\s+(class(es)?|program|club|circle)\b/.test(blob)) return true;
+  // Generic "class" without a date anchor (usually ongoing)
+  if (/^\s*(sisters'?|brothers'?|adult)\s+(tajweed|quran|qur'?an|arabic|fiqh|seerah|tafsir)\s+class(es)?\s*$/.test(title)) return true;
+  // Pure registration/enrollment announcements (not the event itself)
+  if (/\b(enroll(ment)?|registration)\s+(is\s+)?(now\s+)?(open|available|starting)\b/.test(blob) && !/\b(event|dinner|gala|conference|retreat|picnic|fundraiser|banquet)\b/.test(blob)) return true;
+  return false;
+}
+
 function inferSpeakerFromText(text: string): string {
   const t = normalizeText(text || "");
   if (!t) return "";
@@ -604,47 +857,82 @@ function AppInner() {
   const [meta, setMeta] = useState<MetaResponse | null>(null);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [loading, setLoading] = useState(true);
+  // Ref-tracked "events have at least once populated" flag used by the welcome
+  // flow to hold the final hand-off until the app is ready to display content.
+  const eventsReadyRef = useRef<boolean>(false);
+  useEffect(() => {
+    if (events.length > 0) eventsReadyRef.current = true;
+  }, [events.length]);
   const [error, setError] = useState("");
+  // Re-rendered at midnight and whenever the app returns to foreground so any
+  // logic keyed off `today` advances without a cold start. Derived from the
+  // device's local timezone.
+  const [todayLocalIso, setTodayLocalIso] = useState<string>(todayIso());
+  const today = todayLocalIso;
+  const [devTapCount, setDevTapCount] = useState(0);
+  const [developerPanelOpen, setDeveloperPanelOpen] = useState(false);
 
   const [reference, setReference] = useState("");
   const [radius, setRadius] = useState("35");
   const [query, setQuery] = useState("");
   const [startDate, setStartDate] = useState(todayIso());
-  const [endDate, setEndDate] = useState(plusDaysIso(45));
+  const [endDate, setEndDate] = useState(plusDaysIso(365));
   const [audienceFilter, setAudienceFilter] = useState<"all" | "brothers" | "sisters" | "family">("all");
   const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set());
   const [tab, setTab] = useState<"home" | "explore" | "calendar" | "saved" | "settings">("home");
+  // Pre-mount every tab scene at launch so taps are instant (no first-mount
+  // MapView / month-grid cost). Scenes are hidden with display:none until
+  // selected. This costs a bit more on cold start but kills all tab-switch lag.
   const [mountedTabs, setMountedTabs] = useState<Set<"home" | "explore" | "calendar" | "saved" | "settings">>(
-    () => new Set(["home"]) as Set<"home" | "explore" | "calendar" | "saved" | "settings">
+    () =>
+      new Set(["home", "explore", "calendar", "saved", "settings"]) as Set<
+        "home" | "explore" | "calendar" | "saved" | "settings"
+      >
   );
-  const exploreScrollRef = useRef<ScrollView | null>(null);
+  // Outer Explore list is now a SectionList (virtualized); keep the ref loose
+  // so switchTab can call scrollToLocation without type gymnastics.
+  const exploreScrollRef = useRef<SectionList<EventItem> | null>(null);
   const calendarScrollRef = useRef<ScrollView | null>(null);
-  const savedScrollRef = useRef<ScrollView | null>(null);
+  const savedScrollRef = useRef<FlatList<EventItem> | null>(null);
   const switchTab = useCallback((next: "home" | "explore" | "calendar" | "saved" | "settings") => {
+    // Fire haptic synchronously so the tap feels instant even if React takes a
+    // frame or two to paint the target tab. This is the single biggest
+    // perceived-speed lever for the bottom tab bar.
+    try { hapticTap("selection"); } catch { /* non-fatal */ }
     setMountedTabs((prev) => (prev.has(next) ? prev : new Set(prev).add(next)));
     setTab(next);
     // Snap each scene to the top when the user taps its tab so they always
     // land on the most relevant content (e.g. today's events on Explore).
     requestAnimationFrame(() => {
-      if (next === "explore") exploreScrollRef.current?.scrollTo({ y: 0, animated: false });
+      if (next === "explore") {
+        try {
+          exploreScrollRef.current?.scrollToLocation({
+            sectionIndex: 0,
+            itemIndex: 0,
+            viewPosition: 0,
+            animated: false,
+          });
+        } catch {
+          // SectionList throws if the list is empty; safe to ignore.
+        }
+      }
       if (next === "calendar") calendarScrollRef.current?.scrollTo({ y: 0, animated: false });
-      if (next === "saved") savedScrollRef.current?.scrollTo({ y: 0, animated: false });
+      if (next === "saved") {
+        try {
+          savedScrollRef.current?.scrollToOffset({ offset: 0, animated: false });
+        } catch {
+          // safe no-op if list isn't mounted yet
+        }
+      }
     });
-  }, []);
-  useEffect(() => {
-    // Pre-mount every tab scene once the app is idle. This makes subsequent
-    // tab taps instant (no first-time MapView / JSX build cost on tap).
-    const task = InteractionManager.runAfterInteractions(() => {
-      setMountedTabs(
-        new Set(["home", "explore", "calendar", "saved", "settings"]) as Set<
-          "home" | "explore" | "calendar" | "saved" | "settings"
-        >
-      );
-    });
-    return () => task.cancel();
   }, []);
   const [entryScreen, setEntryScreen] = useState<"welcome" | "onboarding" | "launch" | "app">("welcome");
   const [selectedEvent, setSelectedEvent] = useState<EventItem | null>(null);
+  // Two-phase mount for the event detail modal: when a user taps an event we
+  // want the Modal's fade animation to start immediately, so we render a cheap
+  // skeleton until `detailReady` flips true on the next interaction tick. That
+  // way the heavy hero + sections don't block the tap.
+  const [detailReady, setDetailReady] = useState(false);
   const [currentUser, setCurrentUser] = useState<UserAuth | null>(null);
   const [deepLinkEventUid, setDeepLinkEventUid] = useState("");
   const [profileDraft, setProfileDraft] = useState<ProfilePayload>({
@@ -666,6 +954,10 @@ function AppInner() {
   const [pendingWelcomeSlide, setPendingWelcomeSlide] = useState<number | null>(null);
   const [calendarView, setCalendarView] = useState<"month" | "list">("month");
   const [selectedCalendarDate, setSelectedCalendarDate] = useState("");
+  // Which month is currently displayed in the calendar grid. Starts on "today"
+  // and shifts forward/backward via ‹ / › arrows. Stored as an ISO date so we
+  // can keep it in sync across midnight rollovers.
+  const [calendarAnchorIso, setCalendarAnchorIso] = useState<string>(() => todayIso());
   const [selectedCalendarModalDate, setSelectedCalendarModalDate] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("relevant");
   const [exploreMode, setExploreMode] = useState<ExploreMode>("list");
@@ -675,9 +967,36 @@ function AppInner() {
   const [savedFilterPresets, setSavedFilterPresets] = useState<SavedFilterPreset[]>([]);
   const [presetDraftLabel, setPresetDraftLabel] = useState("");
   const [editingPresetId, setEditingPresetId] = useState("");
-  const [mapRegion, setMapRegion] = useState<Region>(DEFAULT_MAP_REGION);
+  // Keep the map's current region in a ref (not state) so user pans / zooms and
+  // programmatic re-centers don't thrash the whole Explore memoized tree. We
+  // still persist the last viewed region to SecureStore between launches.
+  const mapRegionRef = useRef<Region>(DEFAULT_MAP_REGION);
+  const mapRef = useRef<MapView | null>(null);
   const [followedMasjids, setFollowedMasjids] = useState<string[]>([]);
   const [rsvpStatuses, setRsvpStatuses] = useState<Record<string, RsvpStatus>>({});
+  // One-shot: after events hydrate for the first time and we know the user's
+  // RSVPs, schedule any missing day-of / 2h reminders. This catches users who
+  // tapped "Going" before this feature existed.
+  const rsvpReminderCatchupRan = useRef(false);
+  useEffect(() => {
+    if (rsvpReminderCatchupRan.current) return;
+    if (!events.length) return;
+    const rsvpKeys = Object.keys(rsvpStatuses);
+    if (!rsvpKeys.length) { rsvpReminderCatchupRan.current = true; return; }
+    rsvpReminderCatchupRan.current = true;
+    (async () => {
+      try {
+        const raw = await SecureStore.getItemAsync(RSVP_NOTIFICATION_IDS_KEY);
+        const scheduled: Record<string, string[]> = raw ? JSON.parse(raw) : {};
+        for (const e of events) {
+          const key = e.event_uid ? String(e.event_uid) : `${e.source || ""}|${e.date || ""}|${e.start_time || ""}|${e.title || ""}`;
+          if (!rsvpStatuses[key]) continue;
+          if (scheduled[key]) continue;
+          try { await scheduleEventReminders(e); } catch { /* non-fatal */ }
+        }
+      } catch { /* non-fatal */ }
+    })();
+  }, [events, rsvpStatuses]);
   const [feedbackResponses, setFeedbackResponses] = useState<Record<string, "helpful" | "off" | "attended">>({});
   const [showModerationQueue, setShowModerationQueue] = useState(false);
   const [moderationReports, setModerationReports] = useState<any[]>([]);
@@ -692,6 +1011,11 @@ function AppInner() {
   const [scholarScreenOpen, setScholarScreenOpen] = useState(false);
   const [selectedSpeaker, setSelectedSpeaker] = useState<string | null>(null);
   const [halaqaFilter, setHalaqaFilter] = useState<string | null>(null);
+  // Progressive render: Explore starts by drawing only the next ~2 weeks of
+  // day-sections. "Show more" reveals the rest. Keeps tap-to-tab snappy even
+  // when the catalog has hundreds of events.
+  const EXPLORE_SECTIONS_BATCH = 14;
+  const [exploreSectionLimit, setExploreSectionLimit] = useState(EXPLORE_SECTIONS_BATCH);
   const [passportStamps, setPassportStamps] = useState<{ source: string; stamped_at: string }[]>([]);
   const [passportOpen, setPassportOpen] = useState(false);
   const [qrEntryBuffer, setQrEntryBuffer] = useState("");
@@ -731,6 +1055,15 @@ function AppInner() {
   const launchMessageTranslateY = useRef(new Animated.Value(20)).current;
   const launchPulse = useRef(new Animated.Value(0)).current;
   const launchGlowDrift = useRef(new Animated.Value(0)).current;
+  // Master exit opacity — applied to the entire launch screen wrapper so
+  // glows, card, and greeting all fade together instead of the greeting
+  // lingering while the card disappears. Starts visible (1) and fades to 0
+  // only during the final exit step.
+  const launchExitOpacity = useRef(new Animated.Value(1)).current;
+  // Three-dot bouncing indicator shown under the card so the 2.8s intro
+  // doesn't feel stalled, and stays visible if data loading drags on beyond
+  // the intro timeline.
+  const launchDotPulse = useRef(new Animated.Value(0)).current;
   const homeHeroGlowDrift = useRef(new Animated.Value(0)).current;
   const homeHeroGlowLoopRef = useRef<Animated.CompositeAnimation | null>(null);
   // (legacy explore intro-motion removed; tabs now stay mounted and switch instantly)
@@ -739,6 +1072,7 @@ function AppInner() {
   const { width: screenWidth, height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const eventModalPosterHeight = Math.min(240, Math.round(windowHeight * 0.26));
+  const masjidPosterWidth = Math.min(320, Math.round(screenWidth - 64));
   const modalChromeTopPad = Math.max(insets.top, 12);
   const [notoEmojiLoaded] = useFonts({ NotoColorEmoji_400Regular });
   const emojiFontStyle = notoEmojiLoaded ? { fontFamily: "NotoColorEmoji_400Regular" as const } : {};
@@ -1121,6 +1455,14 @@ function AppInner() {
     launchMessageTranslateY.setValue(20);
     launchPulse.setValue(0);
     launchGlowDrift.setValue(0);
+    launchExitOpacity.setValue(1);
+    launchDotPulse.setValue(0);
+    // Two phases:
+    // 1. Intro — bring in greeting, then card, then hold. Loading indicator
+    //    keeps animating throughout.
+    // 2. Exit — once data is hydrated AND the hold has finished, fade the
+    //    whole wrapper (glows + card + greeting + dots) out on a single
+    //    master opacity so nothing pops out abruptly.
     const intro = Animated.sequence([
       Animated.parallel([
         Animated.timing(launchMessageOpacity, {
@@ -1157,39 +1499,7 @@ function AppInner() {
           useNativeDriver: true,
         }),
       ]),
-      Animated.delay(1300),
-      Animated.parallel([
-        Animated.timing(launchOpacity, {
-          toValue: 0,
-          duration: 520,
-          easing: Easing.inOut(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(launchTranslateY, {
-          toValue: -68,
-          duration: 520,
-          easing: Easing.inOut(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(launchScale, {
-          toValue: 1.04,
-          duration: 520,
-          easing: Easing.inOut(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(launchMessageOpacity, {
-          toValue: 0.72,
-          duration: 420,
-          easing: Easing.inOut(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(launchMessageTranslateY, {
-          toValue: -18,
-          duration: 420,
-          easing: Easing.inOut(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]),
+      Animated.delay(900),
     ]);
     const pulse = Animated.loop(
       Animated.sequence([
@@ -1223,19 +1533,82 @@ function AppInner() {
         }),
       ])
     );
+    // Bouncing-dots indicator — loops until exit fade begins.
+    const dotsLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(launchDotPulse, {
+          toValue: 1,
+          duration: 720,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(launchDotPulse, {
+          toValue: 0,
+          duration: 720,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+      ])
+    );
     const pulseStart = setTimeout(() => {
       pulse.start();
       glowFloat.start();
-    }, 950);
+      dotsLoop.start();
+    }, 300);
+    let disposed = false;
+    let exitStarted = false;
+    let waitingInterval: ReturnType<typeof setInterval> | null = null;
+    const runExit = () => {
+      if (exitStarted || disposed) return;
+      exitStarted = true;
+      Animated.timing(launchExitOpacity, {
+        toValue: 0,
+        duration: 520,
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished && !disposed) setEntryScreen("app");
+      });
+    };
     intro.start(({ finished }) => {
-      if (finished) setEntryScreen("app");
+      if (!finished || disposed) return;
+      // If events already hydrated (cache or seed), exit immediately. Else
+      // poll briefly — the bundled seed hydration is synchronous and almost
+      // always available within a few hundred ms of intro completing.
+      const isReady = () => events.length > 0 || !loading;
+      if (isReady()) {
+        runExit();
+        return;
+      }
+      waitingInterval = setInterval(() => {
+        if (disposed) return;
+        if (isReady()) {
+          if (waitingInterval) {
+            clearInterval(waitingInterval);
+            waitingInterval = null;
+          }
+          runExit();
+        }
+      }, 150);
+      // Safety net: never keep the splash open longer than 2s after intro.
+      setTimeout(() => {
+        if (waitingInterval) {
+          clearInterval(waitingInterval);
+          waitingInterval = null;
+        }
+        runExit();
+      }, 2000);
     });
     return () => {
+      disposed = true;
       clearTimeout(pulseStart);
+      if (waitingInterval) clearInterval(waitingInterval);
       pulse.stop();
       glowFloat.stop();
+      dotsLoop.stop();
     };
-  }, [entryScreen, launchGlowDrift, launchMessageOpacity, launchMessageTranslateY, launchOpacity, launchPulse, launchScale, launchTranslateY]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entryScreen]);
 
   useEffect(() => {
     const startHomeBreathing = () => {
@@ -1271,15 +1644,62 @@ function AppInner() {
     };
   }, [homeHeroGlowDrift]);
 
+  // Keep `today` honest across midnight rollovers AND foreground/background
+  // transitions. Without this, a phone left open overnight would still treat
+  // yesterday as today until the user cold-launched the app.
+  useEffect(() => {
+    let cancelled = false;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleMidnightTick = () => {
+      if (cancelled) return;
+      const now = new Date();
+      const nextMidnight = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate() + 1,
+        0,
+        0,
+        5, // small buffer so we're clearly on the next day
+      );
+      const ms = Math.max(1000, nextMidnight.getTime() - now.getTime());
+      timeoutHandle = setTimeout(() => {
+        if (cancelled) return;
+        setTodayLocalIso(todayIso());
+        scheduleMidnightTick();
+      }, ms);
+    };
+
+    scheduleMidnightTick();
+    setTodayLocalIso(todayIso());
+
+    const appStateSub = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") {
+        setTodayLocalIso(todayIso());
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      appStateSub.remove();
+    };
+  }, []);
+
   const sourceArray = useMemo(() => Array.from(selectedSources), [selectedSources]);
 
   const loadProfile = async () => {
     try {
-      const localWelcomeDone = (await SecureStore.getItemAsync(WELCOME_FLOW_DONE_KEY)) === "1";
+      // Demo mode: ignore the persisted welcome-done flag so the three-slide
+      // intro shows on every launch. Still read it so SecureStore stays warm.
+      void SecureStore.getItemAsync(WELCOME_FLOW_DONE_KEY).catch(() => null);
       const me = await apiJson("/api/auth/me");
       if (!me?.authenticated) {
         setCurrentUser(null);
-        if (localWelcomeDone) setEntryScreen("app");
+        // Dev/demo mode: always start on the welcome flow so the three-slide
+        // intro is shown on every launch. Flip this back to
+        // `if (localWelcomeDone) setEntryScreen("app")` once we ship v1.
+        setEntryScreen("welcome");
         return;
       }
       setCurrentUser(me.user as UserAuth);
@@ -1304,11 +1724,8 @@ function AppInner() {
       if (favorites.length) setFollowedMasjids(favorites);
       if (p.audience_filter) setAudienceFilter(p.audience_filter);
       if (Number.isFinite(Number(p.radius))) setRadius(String(Math.max(5, Math.min(200, Number(p.radius)))));
-      if (localWelcomeDone) {
-        setEntryScreen("app");
-      } else {
-        setEntryScreen("welcome");
-      }
+      // Always show the three-slide welcome flow for now (demo mode).
+      setEntryScreen("welcome");
     } catch {
       setCurrentUser(null);
     }
@@ -1356,6 +1773,16 @@ function AppInner() {
       } catch {
         // local onboarding completion is sufficient for welcome gating
       }
+      // Wait briefly for events to hydrate so the hand-off into the app feels
+      // seamless (no "launch screen flicker" gap). Cap at 2s so we never leave
+      // the user stranded on the welcome button.
+      const deadline = Date.now() + 2000;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        if (eventsReadyRef.current) break;
+        if (Date.now() > deadline) break;
+        await new Promise((r) => setTimeout(r, 80));
+      }
       finishExitProgress.setValue(0);
       await new Promise<void>((resolve) => {
         Animated.timing(finishExitProgress, {
@@ -1365,9 +1792,45 @@ function AppInner() {
           useNativeDriver: true,
         }).start(() => resolve());
       });
-      setEntryScreen("launch");
+      setEntryScreen(eventsReadyRef.current ? "app" : "launch");
     } catch (e) {
       setOnboardingError((e as Error).message || "Could not save onboarding.");
+    }
+  };
+
+  const skipOnboarding = async () => {
+    try {
+      setOnboardingError("");
+      const nextPersonalization: PersonalizationPrefs = {
+        ...personalization,
+        completed: true,
+      };
+      setPersonalization(nextPersonalization);
+      try {
+        await SecureStore.setItemAsync(PERSONALIZATION_KEY, JSON.stringify(nextPersonalization));
+        await SecureStore.setItemAsync(WELCOME_FLOW_DONE_KEY, "1");
+      } catch {
+        // non-fatal — skip should still work even if SecureStore blips
+      }
+      const deadline = Date.now() + 2000;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        if (eventsReadyRef.current) break;
+        if (Date.now() > deadline) break;
+        await new Promise((r) => setTimeout(r, 80));
+      }
+      finishExitProgress.setValue(0);
+      await new Promise<void>((resolve) => {
+        Animated.timing(finishExitProgress, {
+          toValue: 1,
+          duration: 320,
+          easing: Easing.inOut(Easing.cubic),
+          useNativeDriver: true,
+        }).start(() => resolve());
+      });
+      setEntryScreen(eventsReadyRef.current ? "app" : "launch");
+    } catch {
+      setEntryScreen("launch");
     }
   };
 
@@ -1479,6 +1942,62 @@ function AppInner() {
 
   const remoteDataVersionRef = useRef<string>("");
   const didInitialCacheHydrateRef = useRef(false);
+  const [locationBannerDismissed, setLocationBannerDismissed] = useState(false);
+  const [locationRequesting, setLocationRequesting] = useState(false);
+
+  const requestLocationAndSave = useCallback(async () => {
+    try {
+      setLocationRequesting(true);
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert(
+          "Location off",
+          "Location permission wasn't granted. You can turn it on in Settings and try again.",
+          [{ text: "OK" }]
+        );
+        setLocationBannerDismissed(true);
+        return;
+      }
+      const pos = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      const nextDraft = {
+        ...profileDraft,
+        home_lat: pos.coords.latitude,
+        home_lon: pos.coords.longitude,
+      };
+      setProfileDraft(nextDraft);
+      // Persist to server if signed in; ignore failures silently.
+      try {
+        await apiJson("/api/profile", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...nextDraft,
+            onboarding_done: nextDraft.onboarding_done,
+            radius: Number(radius || nextDraft.radius || 35),
+            favorite_sources: Array.from(selectedSources),
+            audience_filter: audienceFilter,
+          }),
+        });
+      } catch {
+        // local state is enough to enable near-me sort
+      }
+      // Re-center the map on the user's location via the imperative ref so we
+      // don't re-render the entire Explore tree.
+      const nextRegion: Region = {
+        ...mapRegionRef.current,
+        latitude: pos.coords.latitude,
+        longitude: pos.coords.longitude,
+      };
+      mapRegionRef.current = nextRegion;
+      mapRef.current?.animateToRegion(nextRegion, 400);
+    } catch (e) {
+      Alert.alert("Couldn't get location", (e as Error).message || "Try again in a moment.");
+    } finally {
+      setLocationRequesting(false);
+    }
+  }, [profileDraft, radius, selectedSources, audienceFilter]);
 
   const loadEvents = async (opts?: { force?: boolean }) => {
     const force = !!opts?.force;
@@ -1518,19 +2037,46 @@ function AppInner() {
       setLoading(true);
       const payload = await apiJson(`/api/events?${q.toString()}`);
       const fetched = (payload.events || []) as EventItem[];
-      setEvents(fetched);
+      // Union with whatever we already have on-screen (seed / prior cache) so
+      // the visible count never drops when a later pipeline has slightly
+      // fewer rows in-window. Prefer the freshest copy per dedupe key.
+      const byKey = new Map<string, EventItem>();
+      for (const item of BUNDLED_SEED_EVENTS as EventItem[]) {
+        const k = eventDedupeKey(item);
+        if (!byKey.has(k)) byKey.set(k, item);
+      }
+      for (const item of events) {
+        const k = eventDedupeKey(item);
+        if (!byKey.has(k)) byKey.set(k, item);
+      }
+      for (const item of fetched) {
+        byKey.set(eventDedupeKey(item), item); // live overrides
+      }
+      const unioned = Array.from(byKey.values());
+      setEvents(unioned);
       setLastSyncedAt(Date.now());
-      // Persist this snapshot so next launch is instant and offline-tolerant.
+      // Persist the union so next cold start already has the full set.
       const toCache: EventsCachePayload = {
-        events: fetched,
+        events: unioned,
         data_version: remoteDataVersionRef.current || "unknown",
         cached_at: Date.now(),
       };
       AsyncStorage.setItem(EVENTS_CACHE_KEY, JSON.stringify(toCache)).catch(() => {});
     } catch (e) {
-      setError((e as Error).message || "Failed to load events");
-      // Don't nuke events if we already have a valid cached snapshot onscreen.
-      if (!events.length) setEvents([]);
+      const msg = (e as Error).message || "Failed to load events";
+      setError(msg);
+      // Don't nuke events if we already have a valid cached snapshot onscreen
+      // — seed + cache are still useful offline. If we have literally nothing,
+      // fall back to the bundled seed as a last resort.
+      if (!events.length) {
+        const fallback: EventItem[] = [];
+        const byKey = new Map<string, EventItem>();
+        for (const item of BUNDLED_SEED_EVENTS as EventItem[]) {
+          byKey.set(eventDedupeKey(item), item);
+        }
+        for (const item of byKey.values()) fallback.push(item);
+        if (fallback.length) setEvents(fallback);
+      }
     } finally {
       setLoading(false);
     }
@@ -1559,29 +2105,36 @@ function AppInner() {
             // ignore malformed cache
           }
         }
-        let appliedEvents = false;
-        if (eventsRaw) {
-          try {
-            const parsed = JSON.parse(eventsRaw) as EventsCachePayload;
-            if (parsed?.events?.length && !events.length) {
-              setEvents(parsed.events);
-              setLastSyncedAt(parsed.cached_at || Date.now());
-              appliedEvents = true;
-            }
-          } catch {
-            // ignore malformed cache
-          }
-        }
-        // Offline-first floor: if AsyncStorage held nothing usable (fresh install,
-        // cleared storage, corrupted cache), fall back to the seed that shipped
-        // inside the app bundle so the UI is never empty on cold start.
+        // Offline-first floor: always start from the bundled seed. Cache (if
+        // present and fresher per-event) overlays on top, so the app never
+        // shows a narrow/stale snapshot first and then "catches up" to the
+        // full set. The live fetch later will overlay freshest data.
         if (!appliedMeta && BUNDLED_SEED_META && Array.isArray(BUNDLED_SEED_META.sources)) {
           setMeta((prev) => prev || BUNDLED_SEED_META);
         }
-        if (!appliedEvents && !events.length && Array.isArray(BUNDLED_SEED_EVENTS) && BUNDLED_SEED_EVENTS.length) {
-          setEvents(BUNDLED_SEED_EVENTS as EventItem[]);
-          // Don't set lastSyncedAt — a real network refresh should still be shown
-          // as the first sync. The seed is a floor, not a confirmed fetch.
+        if (!events.length) {
+          const byKey = new Map<string, EventItem>();
+          for (const item of BUNDLED_SEED_EVENTS as EventItem[]) {
+            byKey.set(eventDedupeKey(item), item);
+          }
+          let cachedAt = 0;
+          if (eventsRaw) {
+            try {
+              const parsed = JSON.parse(eventsRaw) as EventsCachePayload;
+              if (parsed?.events?.length) {
+                for (const item of parsed.events) {
+                  byKey.set(eventDedupeKey(item), item); // overlay seed
+                }
+                cachedAt = parsed.cached_at || 0;
+              }
+            } catch {
+              // ignore malformed cache
+            }
+          }
+          if (byKey.size) {
+            setEvents(Array.from(byKey.values()));
+            if (cachedAt) setLastSyncedAt(cachedAt);
+          }
         }
       } finally {
         didInitialCacheHydrateRef.current = true;
@@ -1616,6 +2169,22 @@ function AppInner() {
       sub.remove();
     };
   }, []);
+
+  // Two-phase event-detail mount: defer the heavy body one tick so the Modal
+  // fade animation starts instantly on tap. Also reset the flag on close so
+  // the next open goes through the same fast path.
+  useEffect(() => {
+    if (!selectedEvent) {
+      setDetailReady(false);
+      return;
+    }
+    const handle = InteractionManager.runAfterInteractions(() => {
+      setDetailReady(true);
+    });
+    return () => {
+      handle.cancel?.();
+    };
+  }, [selectedEvent]);
 
   useEffect(() => {
     if (!deepLinkEventUid) return;
@@ -1808,6 +2377,7 @@ function AppInner() {
 
   const visibleEvents = useMemo(() => {
     return events.filter((e) => {
+      if (isProgramNotEvent(e)) return false;
       if (audienceFilter !== "all" && inferAudience(e) !== audienceFilter) return false;
       if (quickFilters.length && !quickFilters.every((f) => matchesQuickFilter(e, f))) return false;
       return true;
@@ -1856,6 +2426,26 @@ function AppInner() {
     [grouped, halaqaFilter]
   );
 
+  // Only surface topic chips that actually have upcoming visible events — an
+  // empty chip just leads to an empty feed and confuses the user.
+  const availableTopicChips = useMemo(() => {
+    const present = new Set<string>();
+    for (const e of visibleEvents) {
+      if ((e.date || "") < today) continue;
+      if (isEventPastNow(e)) continue;
+      for (const t of e.topics || []) {
+        if ((HALAQA_FILTER_TOPICS as readonly string[]).includes(t)) present.add(t);
+      }
+    }
+    return (HALAQA_FILTER_TOPICS as readonly string[]).filter((t) => present.has(t));
+  }, [visibleEvents, today]);
+
+  useEffect(() => {
+    if (halaqaFilter && !availableTopicChips.includes(halaqaFilter)) {
+      setHalaqaFilter(null);
+    }
+  }, [availableTopicChips, halaqaFilter]);
+
   const savedEvents = useMemo(
     () =>
       Object.values(savedEventsMap).sort((a, b) =>
@@ -1867,9 +2457,8 @@ function AppInner() {
   );
 
   const upcoming = useMemo(() => {
-    const today = todayIso();
     return events
-      .filter((e) => (e.date || "") >= today)
+      .filter((e) => (e.date || "") >= today && !isProgramNotEvent(e) && !isEventPastNow(e))
       .sort((a, b) => {
         const scoreDelta = scoreEventForPersonalization(b) - scoreEventForPersonalization(a);
         if (scoreDelta !== 0) return scoreDelta;
@@ -1878,22 +2467,20 @@ function AppInner() {
         );
       })
       .slice(0, 16);
-  }, [events, personalization.interests, personalization.preferredAudience, rsvpStatuses, followedMasjids, savedEventsMap]);
+  }, [events, personalization.interests, personalization.preferredAudience, rsvpStatuses, followedMasjids, savedEventsMap, today]);
 
   /** All upcoming visible events (same filters as Explore), for Calendar month grid + export list — not the home-card `upcoming` slice. */
   const calendarScheduleEvents = useMemo(() => {
-    const today = todayIso();
     return orderedVisibleEvents
-      .filter((e) => normalizeText(e.date) && (e.date || "") >= today)
+      .filter((e) => normalizeText(e.date) && (e.date || "") >= today && !isEventPastNow(e))
       .sort((a, b) =>
         `${a.date || ""} ${a.start_time || "99:99"}`.localeCompare(`${b.date || ""} ${b.start_time || "99:99"}`)
       );
-  }, [orderedVisibleEvents]);
+  }, [orderedVisibleEvents, today]);
 
   const futureVisibleCount = useMemo(() => {
-    const today = todayIso();
-    return visibleEvents.filter((e) => (e.date || "") >= today).length;
-  }, [visibleEvents]);
+    return visibleEvents.filter((e) => (e.date || "") >= today && !isEventPastNow(e)).length;
+  }, [visibleEvents, today]);
   const featuredEvent = useMemo(() => {
     if (!upcoming.length) return null;
     const brothersUpcoming = upcoming.filter((e) => inferAudience(e) === "brothers");
@@ -1935,13 +2522,22 @@ function AppInner() {
     return pins;
   }, [meta?.sources, orderedVisibleEvents]);
 
+  // Whenever the user changes filters, audience, or the underlying catalog
+  // shape changes, snap the progressive-render cap back to the first batch so
+  // they see the newest matches without scrolling.
+  useEffect(() => {
+    setExploreSectionLimit(EXPLORE_SECTIONS_BATCH);
+  }, [audienceFilter, halaqaFilter, quickFilters, exploreSections.length]);
+
   useEffect(() => {
     if (exploreMode !== "map" || !masjidPinsForExplore.length) return;
     const withEvents = masjidPinsForExplore.filter((p) => p.count > 0);
     const pool = withEvents.length ? withEvents : masjidPinsForExplore;
     const latitude = pool.reduce((sum, p) => sum + p.latitude, 0) / pool.length;
     const longitude = pool.reduce((sum, p) => sum + p.longitude, 0) / pool.length;
-    setMapRegion((prev) => ({ ...prev, latitude, longitude }));
+    const nextRegion: Region = { ...mapRegionRef.current, latitude, longitude };
+    mapRegionRef.current = nextRegion;
+    mapRef.current?.animateToRegion(nextRegion, 0);
   }, [exploreMode, masjidPinsForExplore]);
 
   const toggleSource = (src: string) => {
@@ -1960,9 +2556,11 @@ function AppInner() {
   const toggleSavedEvent = async (e: EventItem) => {
     const key = eventStorageKey(e);
     const next = { ...savedEventsMap };
+    const willSave = !next[key];
     if (next[key]) delete next[key];
     else next[key] = e;
     setSavedEventsMap(next);
+    hapticTap(willSave ? "success" : "selection");
     try {
       await SecureStore.setItemAsync(SAVED_EVENTS_KEY, JSON.stringify(next));
     } catch {
@@ -1982,8 +2580,10 @@ function AppInner() {
   const toggleFollowMasjid = async (source: string) => {
     const src = normalizeText(source);
     if (!src) return;
-    const next = followedMasjids.includes(src) ? followedMasjids.filter((s) => s !== src) : [...followedMasjids, src];
+    const willFollow = !followedMasjids.includes(src);
+    const next = willFollow ? [...followedMasjids, src] : followedMasjids.filter((s) => s !== src);
     setFollowedMasjids(next);
+    hapticTap(willFollow ? "success" : "selection");
     try {
       await SecureStore.setItemAsync(FOLLOWED_MASJIDS_KEY, JSON.stringify(next));
     } catch {
@@ -2024,20 +2624,36 @@ function AppInner() {
     const key = eventStorageKey(e);
     const current = rsvpStatuses[key];
     const next = { ...rsvpStatuses };
+    const willActivate = current !== status;
     if (current === status) {
       delete next[key];
     } else {
       next[key] = status;
     }
     setRsvpStatuses(next);
+    hapticTap(willActivate ? "success" : "selection");
     try {
       await SecureStore.setItemAsync(RSVP_STATUSES_KEY, JSON.stringify(next));
     } catch {
       // ignore local rsvp write failure
     }
+    // Fire-and-forget: schedule / cancel local reminders so users get pinged
+    // the morning of and ~2h before each RSVP'd event. We store the scheduled
+    // notification ids keyed by event so we can cancel them if the user
+    // changes their mind.
+    try {
+      if (willActivate) {
+        await scheduleEventReminders(e);
+      } else {
+        await cancelEventReminders(key);
+      }
+    } catch {
+      // notification scheduling is best-effort; never block the UI.
+    }
   };
 
   const shareEvent = (e: EventItem) => {
+    hapticTap("selection");
     const when = `${formatHumanDate(e.date)} · ${eventTime(e)}`;
     const link = e.deep_link?.web || e.source_url || "";
     const masjid = formatSourceLabel(e.source);
@@ -2517,7 +3133,7 @@ function AppInner() {
                   >
                     <Image source={WELCOME_LOGO} style={styles.welcomeLogoBase} resizeMode="contain" />
                   </View>
-                  <Text style={[styles.welcomeBetaBadge, isNeo && styles.welcomeBetaBadgeNeo, isEmerald && styles.welcomeBetaBadgeEmerald]}>BETA</Text>
+                  <Text style={[styles.welcomeBetaBadge, isNeo && styles.welcomeBetaBadgeNeo, isEmerald && styles.welcomeBetaBadgeEmerald]}>{`BETA · ${APP_BUILD_VERSION}`}</Text>
           <Text style={[styles.welcomeTitle, isMinera && styles.welcomeTitleMinera, isEmerald && styles.welcomeTitleEmerald, isNeo && styles.welcomeTitleNeo]}>Local masjid events, beautifully organized</Text>
           <Text style={[styles.welcomeSub, isMinera && styles.welcomeSubMinera, isEmerald && styles.welcomeSubEmerald, isNeo && styles.welcomeSubNeo]}>
             Discover upcoming programs, classes, and community nights from nearby masjids in one place.
@@ -2533,8 +3149,8 @@ function AppInner() {
             </View>
 
             <View style={[styles.welcomeSlide, { width: pagerWidth }]}>
-        <Animated.View
-          style={[
+              <View
+                style={[
                   styles.welcomeHeroCard,
                   isMinera && styles.welcomeHeroCardMinera,
                   isEmerald && styles.welcomeHeroCardEmerald,
@@ -2544,22 +3160,12 @@ function AppInner() {
                   isInferno && styles.welcomeHeroCardInferno,
                   styles.welcomeInfoCard,
                   styles.welcomeSlideCard,
-                  {
-                    opacity: Animated.multiply(stepsOpacity, cardFlipOpacity(1)),
-                    transform: [
-                      { perspective: 1100 },
-                      { translateY: stepsTranslate },
-                      { translateX: cardFlipTranslateX(1) },
-                      { rotateY: cardFlipRotate(1) },
-                      { scale: cardFlipScale(1) },
-                    ],
-                  },
                 ]}
               >
                 <Animated.View
+                  pointerEvents="none"
                   style={[
                     styles.heroGlowOne,
-                    styles.welcomeInfoGlowOne,
                     isMinera && styles.heroGlowOneMinera,
                     isEmerald && styles.heroGlowOneEmerald,
                     isMidnight && styles.heroGlowOneMidnight,
@@ -2568,26 +3174,16 @@ function AppInner() {
                     isInferno && styles.heroGlowOneInferno,
                     {
                       transform: [
-                        {
-                          translateY: bubbleDrift.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: [0, -14],
-                          }),
-                        },
-                        {
-                          translateX: bubbleDrift.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: [0, 9],
-                          }),
-                        },
+                        { translateY: bubbleDrift.interpolate({ inputRange: [0, 1], outputRange: [0, -14] }) },
+                        { translateX: bubbleDrift.interpolate({ inputRange: [0, 1], outputRange: [0, -6] }) },
                       ],
                     },
                   ]}
                 />
                 <Animated.View
+                  pointerEvents="none"
                   style={[
                     styles.heroGlowTwo,
-                    styles.welcomeInfoGlowTwo,
                     isMinera && styles.heroGlowTwoMinera,
                     isEmerald && styles.heroGlowTwoEmerald,
                     isMidnight && styles.heroGlowTwoMidnight,
@@ -2596,35 +3192,25 @@ function AppInner() {
                     isInferno && styles.heroGlowTwoInferno,
                     {
                       transform: [
-                        {
-                          translateY: bubbleDrift.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: [0, 12],
-                          }),
-                        },
-                        {
-                          translateX: bubbleDrift.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: [0, -8],
-                          }),
-                        },
+                        { translateY: bubbleDrift.interpolate({ inputRange: [0, 1], outputRange: [0, 12] }) },
+                        { translateX: bubbleDrift.interpolate({ inputRange: [0, 1], outputRange: [0, 8] }) },
                       ],
                     },
                   ]}
                 />
                 <Text style={[styles.welcomeInfoEyebrow, isNeo && styles.welcomeInfoEyebrowNeo, isEmerald && styles.welcomeInfoEyebrowEmerald]}>DISCOVER FASTER</Text>
                 <Text style={[styles.tutorialTitle, styles.welcomeInfoTitle, styles.welcomeInfoTitleCentered, isNeo && styles.welcomeInfoTitleNeo, isEmerald && styles.welcomeInfoTitleEmerald]}>
-            How Masjidly works
-          </Text>
+                  How Masjidly works
+                </Text>
                 <Text style={[styles.welcomeInfoLead, isNeo && styles.welcomeInfoLeadNeo, isEmerald && styles.welcomeInfoLeadEmerald]}>
                   Find local masjid programs in seconds without juggling flyers, posts, and group chats.
                 </Text>
 
-                <Animated.View style={[styles.welcomeFeatureStack, { opacity: footerOpacity, transform: [{ translateY: footerTranslate }] }]}>
+                <View style={styles.welcomeFeatureStack}>
                   {tutorialSteps.slice(0, 3).map((step, idx) => (
                     <View
                       key={`feature-${idx}`}
-          style={[
+                      style={[
                         styles.welcomeFeatureRow,
                         isNeo && styles.welcomeFeatureRowNeo,
                         isEmerald && styles.welcomeFeatureRowEmerald,
@@ -2635,12 +3221,12 @@ function AppInner() {
                       </View>
                       <Text style={[styles.welcomeFeatureText, isNeo && styles.welcomeFeatureTextNeo, isEmerald && styles.welcomeFeatureTextEmerald]}>
                         {step}
-          </Text>
+                      </Text>
                     </View>
                   ))}
-                </Animated.View>
+                </View>
 
-          <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
+                <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
             <Pressable
               style={[
                 styles.welcomePrimaryBtn,
@@ -2683,11 +3269,11 @@ function AppInner() {
                       Continue
               </Text>
           </Pressable>
-          </Animated.View>
+                </Animated.View>
                 <Text style={[styles.welcomeCardHint, styles.welcomeCardHintOnHero, isNeo && styles.welcomeCardHintNeo, isEmerald && styles.welcomeCardHintEmerald]}>
                   Swipe to continue.
                 </Text>
-              </Animated.View>
+              </View>
             </View>
 
             <View style={[styles.welcomeSlide, { width: pagerWidth }]}>
@@ -2772,6 +3358,15 @@ function AppInner() {
                     },
                   ]}
                 />
+                <Pressable
+                  onPress={skipOnboarding}
+                  style={styles.welcomeSkipPill}
+                  hitSlop={10}
+                >
+                  <Text style={[styles.welcomeSkipPillText, isNeo && styles.welcomeSkipPillTextNeo, isEmerald && styles.welcomeSkipPillTextEmerald]}>
+                    Skip
+                  </Text>
+                </Pressable>
                 <Text style={[styles.captureTitle, isNeo && styles.welcomeInfoTitleNeo, isEmerald && styles.welcomeInfoTitleEmerald]}>Tell us about yourself</Text>
                 <Text style={[styles.captureSub, isNeo && styles.welcomeInfoSubNeo, isEmerald && styles.welcomeInfoSubEmerald]}>
                   Quick setup so we can personalize your Masjidly experience.
@@ -3079,7 +3674,7 @@ function AppInner() {
 
   const renderLaunchScreen = () => (
     <SafeAreaView style={[styles.welcomeContainer, isMidnight && styles.containerMidnight, isNeo && styles.containerNeo, isVitaria && styles.containerVitaria, isInferno && styles.containerInferno, isEmerald && styles.containerEmerald]}>
-      <View style={styles.launchWrap}>
+      <Animated.View style={[styles.launchWrap, { opacity: launchExitOpacity }]}>
         <Animated.View
           style={[
             styles.heroGlowOne,
@@ -3194,7 +3789,45 @@ function AppInner() {
         >
           Welcome back, {personalization.name || "Friend"}
         </Animated.Text>
-      </View>
+        <Animated.View
+          style={[
+            styles.launchDotsRow,
+            {
+              opacity: launchMessageOpacity,
+            },
+          ]}
+        >
+          {[0, 1, 2].map((i) => {
+            // Stagger each dot by 1/3 of a cycle so they "bounce" in sequence.
+            const phaseShift = i / 3;
+            const dotOpacity = launchDotPulse.interpolate({
+              inputRange: [0, 0.5, 1],
+              outputRange: [0.35, 1, 0.35],
+            });
+            const dotScale = launchDotPulse.interpolate({
+              inputRange: [0, 0.5, 1],
+              outputRange: [0.85, 1.15, 0.85],
+            });
+            const dotTranslate = launchDotPulse.interpolate({
+              inputRange: [0, 0.5, 1],
+              outputRange: [0, -4 - phaseShift * 3, 0],
+            });
+            return (
+              <Animated.View
+                key={`launch-dot-${i}`}
+                style={[
+                  styles.launchDot,
+                  isMidnight && styles.launchDotDark,
+                  {
+                    opacity: dotOpacity,
+                    transform: [{ scale: dotScale }, { translateY: dotTranslate }],
+                  },
+                ]}
+              />
+            );
+          })}
+        </Animated.View>
+      </Animated.View>
     </SafeAreaView>
   );
 
@@ -3296,8 +3929,9 @@ function AppInner() {
     const welcomeName = normalizeText(
       personalization.name || (currentUser?.email || "friend").split("@")[0] || "friend"
     );
-    const today = todayIso();
-    const todayEvents = orderedVisibleEvents.filter((e) => (e.date || "") === today);
+    const todayEvents = orderedVisibleEvents.filter(
+      (e) => (e.date || "") === today && !isEventPastNow(e),
+    );
     const thisWeekEvents = orderedVisibleEvents
       .filter((e) => (e.date || "") > today && (e.date || "") <= plusDaysIso(7))
       .slice(0, 5);
@@ -3307,12 +3941,53 @@ function AppInner() {
           .sort((a, b) => Number(a.distance_miles ?? 9999) - Number(b.distance_miles ?? 9999))
           .slice(0, 3)
       : [];
+    // Closest masjid to the user's saved home location (if any), with their
+    // next few upcoming events. Lets the user answer "what's happening at *my*
+    // masjid?" without opening the map.
+    const homeLatRaw = Number(profileDraft.home_lat);
+    const homeLonRaw = Number(profileDraft.home_lon);
+    const hasHomeCoords =
+      Number.isFinite(homeLatRaw) && Number.isFinite(homeLonRaw) && (homeLatRaw !== 0 || homeLonRaw !== 0);
+    let nearestMasjidKey = "";
+    let nearestMasjidMiles: number | null = null;
+    if (hasHomeCoords) {
+      let bestMi = Infinity;
+      for (const [key, coord] of Object.entries(MASJID_COORDS)) {
+        const mi = haversineMiles(homeLatRaw, homeLonRaw, coord.latitude, coord.longitude);
+        if (mi < bestMi) {
+          bestMi = mi;
+          nearestMasjidKey = key;
+        }
+      }
+      if (Number.isFinite(bestMi)) nearestMasjidMiles = bestMi;
+    }
+    const nearestMasjidEvents = nearestMasjidKey
+      ? orderedVisibleEvents
+          .filter(
+            (e) =>
+              normalizeText(e.source).toLowerCase() === nearestMasjidKey.toLowerCase() &&
+              (e.date || "") >= today &&
+              !isEventPastNow(e),
+          )
+          .slice(0, 3)
+      : [];
     const followedWithNext: Array<{ source: string; next: EventItem | null }> = followedMasjids.map((src) => ({
       source: src,
       next:
         orderedVisibleEvents.find((e) => normalizeText(e.source).toLowerCase() === src.toLowerCase() && (e.date || "") >= today) || null,
     }));
-    const nextDate = orderedVisibleEvents[0]?.date ? new Date(`${orderedVisibleEvents[0].date}T00:00:00`) : null;
+    // "First upcoming" must be min(date >= today), NOT orderedVisibleEvents[0]
+    // (which is sorted by the user's chosen sortMode, so it can lead with a
+    // relevance-boosted event that isn't actually the soonest).
+    const soonestUpcoming = orderedVisibleEvents
+      .filter((e) => (e.date || "") >= today && !isEventPastNow(e))
+      .reduce<EventItem | null>((acc, cur) => {
+        const candidate = `${cur.date || ""} ${cur.start_time || "99:99"}`;
+        const incumbent = acc ? `${acc.date || ""} ${acc.start_time || "99:99"}` : "";
+        if (!acc || candidate.localeCompare(incumbent) < 0) return cur;
+        return acc;
+      }, null);
+    const nextDate = soonestUpcoming?.date ? new Date(`${soonestUpcoming.date}T00:00:00`) : null;
     const daysUntil = nextDate
       ? Math.max(0, Math.ceil((nextDate.getTime() - new Date().setHours(0, 0, 0, 0)) / (1000 * 60 * 60 * 24)))
       : null;
@@ -3336,6 +4011,7 @@ function AppInner() {
       const rsvpState = rsvpStatuses[key];
       const saved = isSavedEvent(e);
       const poster = pickPoster(e.image_urls);
+      const liveNow = isEventLiveNow(e);
     return (
         <Pressable
           key={`home-row-${keyHint}`}
@@ -3350,9 +4026,17 @@ function AppInner() {
             </View>
           )}
           <View style={{ flex: 1 }}>
-            <Text style={[styles.homeEventRowWhen, isDarkTheme && { color: "#c4cee8" }]}>
-              {formatHumanDate(e.date)} · {eventTime(e)}
-            </Text>
+            <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap" }}>
+              {liveNow ? (
+                <View style={styles.liveNowBadge}>
+                  <View style={styles.liveNowDot} />
+                  <Text style={styles.liveNowText}>LIVE NOW</Text>
+                </View>
+              ) : null}
+              <Text style={[styles.homeEventRowWhen, isDarkTheme && { color: "#c4cee8" }]}>
+                {formatHumanDate(e.date)} · {eventTime(e)}
+              </Text>
+            </View>
             <Text style={[styles.homeEventRowTitle, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={2}>
               {e.title}
             </Text>
@@ -3538,6 +4222,39 @@ function AppInner() {
         </View>
         ) : null}
 
+        {nearestMasjidKey ? (
+          <View style={styles.homeSection}>
+            <View style={styles.homeSectionHeader}>
+              <Text style={[styles.homeSectionTitle, isDarkTheme && { color: "#f4f7ff" }]}>
+                Your closest masjid
+              </Text>
+              <Pressable onPress={() => switchTab("explore")} hitSlop={6}>
+                <Text style={[styles.homeSectionCount, { color: "#ff7d50" }]}>See on map →</Text>
+              </Pressable>
+            </View>
+            <Pressable
+              style={[styles.nearestMasjidCard, isDarkTheme && styles.nearestMasjidCardDark]}
+              onPress={() => setSelectedMasjidProfile(nearestMasjidKey)}
+            >
+              <View style={styles.nearestMasjidRow}>
+                <Text style={[styles.nearestMasjidPin, emojiFontStyle]}>📍</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.nearestMasjidName, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={1}>
+                    {formatSourceLabel(nearestMasjidKey)}
+                  </Text>
+                  <Text style={[styles.nearestMasjidMeta, isDarkTheme && { color: "#a6b4d4" }]} numberOfLines={1}>
+                    {nearestMasjidMiles != null ? `${nearestMasjidMiles.toFixed(1)} mi away` : "Near you"}
+                    {nearestMasjidEvents.length > 0
+                      ? ` · ${nearestMasjidEvents.length} upcoming`
+                      : " · no upcoming events"}
+                  </Text>
+                </View>
+              </View>
+            </Pressable>
+            {nearestMasjidEvents.map((e, idx) => renderMiniEventRow(e, `nearest-${idx}`))}
+          </View>
+        ) : null}
+
         {nearYouEvents.length ? (
           <View style={styles.homeSection}>
             <View style={styles.homeSectionHeader}>
@@ -3683,7 +4400,11 @@ function AppInner() {
           <View style={styles.cardActionRow}>
             <Pressable
               hitSlop={6}
-              style={[styles.cardActionChip, rsvpState === "going" && styles.cardActionChipActive]}
+              style={({ pressed }) => [
+                styles.cardActionChip,
+                rsvpState === "going" && styles.cardActionChipActive,
+                pressed && styles.cardActionChipPressed,
+              ]}
               onPress={(ev) => {
                 ev.stopPropagation?.();
                 toggleRsvp(e, "going");
@@ -3695,7 +4416,11 @@ function AppInner() {
                 </Pressable>
             <Pressable
               hitSlop={6}
-              style={[styles.cardActionChip, rsvpState === "interested" && styles.cardActionChipActive]}
+              style={({ pressed }) => [
+                styles.cardActionChip,
+                rsvpState === "interested" && styles.cardActionChipActive,
+                pressed && styles.cardActionChipPressed,
+              ]}
               onPress={(ev) => {
                 ev.stopPropagation?.();
                 toggleRsvp(e, "interested");
@@ -3707,7 +4432,11 @@ function AppInner() {
                 </Pressable>
             <Pressable
               hitSlop={6}
-              style={[styles.cardActionChip, saved && styles.cardActionChipActive]}
+              style={({ pressed }) => [
+                styles.cardActionChip,
+                saved && styles.cardActionChipActive,
+                pressed && styles.cardActionChipPressed,
+              ]}
               onPress={(ev) => {
                 ev.stopPropagation?.();
                 toggleSavedEvent(e);
@@ -3719,7 +4448,10 @@ function AppInner() {
             </Pressable>
             <Pressable
               hitSlop={6}
-              style={styles.cardActionChip}
+              style={({ pressed }) => [
+                styles.cardActionChip,
+                pressed && styles.cardActionChipPressed,
+              ]}
               onPress={(ev) => {
                 ev.stopPropagation?.();
                 shareEvent(e);
@@ -3735,13 +4467,63 @@ function AppInner() {
 
   const exploreMapHeight = Math.round(windowHeight * 0.55);
 
-  const renderExploreHeroMap = () => (
-    <View style={[styles.exploreMapHero, { height: exploreMapHeight }]}>
+  const recenterMapOnMe = useCallback(() => {
+    const lat = Number(profileDraft.home_lat);
+    const lon = Number(profileDraft.home_lon);
+    if (Number.isFinite(lat) && Number.isFinite(lon) && (lat !== 0 || lon !== 0)) {
+      mapRef.current?.animateToRegion(
+        { latitude: lat, longitude: lon, latitudeDelta: 0.2, longitudeDelta: 0.2 },
+        450,
+      );
+      return;
+    }
+    // Fall back to requesting a fresh location; will update profileDraft and
+    // center when it completes.
+    requestLocationAndSave();
+  }, [profileDraft.home_lat, profileDraft.home_lon]);
+
+  const renderExploreHeroMap = () => {
+    const homeLat = Number(profileDraft.home_lat);
+    const homeLon = Number(profileDraft.home_lon);
+    const hasHome =
+      Number.isFinite(homeLat) && Number.isFinite(homeLon) && (homeLat !== 0 || homeLon !== 0);
+    return (
+      <View style={[styles.exploreMapHero, { height: exploreMapHeight }]}>
       <MapView
+        ref={mapRef}
         style={StyleSheet.absoluteFillObject}
-        region={mapRegion}
-        onRegionChangeComplete={setMapRegion}
+        initialRegion={mapRegionRef.current}
+        showsUserLocation
+        showsMyLocationButton={false}
+        onRegionChangeComplete={(r) => {
+          mapRegionRef.current = r;
+        }}
       >
+        {hasHome ? (
+          <Marker
+            key="home-location"
+            coordinate={{ latitude: homeLat, longitude: homeLon }}
+            anchor={{ x: 0.5, y: 0.5 }}
+            tracksViewChanges={false}
+          >
+            <View style={styles.mapHomePinWrap}>
+              <View style={styles.mapHomePinOuter}>
+                <View style={styles.mapHomePinInner} />
+              </View>
+              <View style={styles.mapHomePinLabelWrap}>
+                <Text style={styles.mapHomePinLabel}>You</Text>
+              </View>
+            </View>
+            <Callout>
+              <View style={styles.mapCallout}>
+                <Text style={styles.mapCalloutTitle}>Your location</Text>
+                <Text style={styles.mapCalloutSub}>
+                  Events within {radius || "35"} mi are prioritized here.
+                </Text>
+              </View>
+            </Callout>
+          </Marker>
+        ) : null}
         {masjidPinsForExplore.map((pin) => (
           <Marker
             key={`masjid-${pin.sourceKey}`}
@@ -3794,24 +4576,56 @@ function AppInner() {
           {masjidPinsForExplore.reduce((s, p) => s + p.count, 0)} events across {masjidPinsForExplore.filter((p) => p.count > 0).length} masjids
         </Text>
         </View>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Recenter map on my location"
+        onPress={recenterMapOnMe}
+        style={styles.mapRecenterBtn}
+        hitSlop={10}
+      >
+        <Text style={[styles.mapRecenterEmoji, emojiFontStyle]}>📍</Text>
+      </Pressable>
     </View>
-  );
+    );
+  };
 
-  const renderExplore = () => (
-    <ScrollView
-      ref={exploreScrollRef}
-      style={{ flex: 1 }}
-      contentContainerStyle={[
-        { paddingBottom: 120 },
-        isMidnight && styles.scrollBodyMidnight,
-        isNeo && styles.scrollBodyNeo,
-        isVitaria && styles.scrollBodyVitaria,
-        isInferno && styles.scrollBodyInferno,
-        isEmerald && styles.scrollBodyEmerald,
-      ]}
-      showsVerticalScrollIndicator={false}
-    >
-      {renderExploreHeroMap()}
+  const renderExplore = () => {
+    const visibleSections = exploreSections.slice(0, exploreSectionLimit);
+    const hasMore = exploreSections.length > exploreSectionLimit;
+    const header = (
+      <>
+        {renderExploreHeroMap()}
+
+        {!profileDraft.home_lat && !profileDraft.home_lon && !locationBannerDismissed ? (
+        <View style={[styles.locPromptCard, isDarkTheme && styles.locPromptCardDark]}>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.locPromptTitle, isDarkTheme && { color: "#f4f7ff" }]}>
+              See masjids near you
+            </Text>
+            <Text style={[styles.locPromptSub, isDarkTheme && { color: "#b6bdd0" }]}>
+              Share your location to see which masjids are closest and sort events by distance.
+            </Text>
+          </View>
+          <View style={styles.locPromptBtnRow}>
+            <Pressable
+              style={styles.locPromptSecondaryBtn}
+              onPress={() => setLocationBannerDismissed(true)}
+              disabled={locationRequesting}
+            >
+              <Text style={styles.locPromptSecondaryBtnText}>Not now</Text>
+            </Pressable>
+            <Pressable
+              style={styles.locPromptPrimaryBtn}
+              onPress={requestLocationAndSave}
+              disabled={locationRequesting}
+            >
+              <Text style={styles.locPromptPrimaryBtnText}>
+                {locationRequesting ? "Locating…" : "Use my location"}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
 
       <View style={[styles.exploreFilterBar, isDarkTheme && styles.exploreFilterBarDark, isNeo && styles.exploreFilterBarNeo]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.exploreAudienceStrip}>
@@ -3875,7 +4689,7 @@ function AppInner() {
             All topics
           </Text>
         </Pressable>
-        {HALAQA_FILTER_TOPICS.map((t) => (
+        {availableTopicChips.map((t) => (
           <Pressable
             key={`topic-${t}`}
             onPress={() => setHalaqaFilter((prev) => (prev === t ? null : t))}
@@ -3924,42 +4738,89 @@ function AppInner() {
         </View>
       ) : null}
 
-      <View style={styles.exploreListWrap}>
-        {exploreSections.length === 0 ? (
-          <View style={styles.exploreEmpty}>
-            <Text style={[styles.exploreEmptyTitle, isDarkTheme && { color: "#f4f7ff" }]}>No events match</Text>
-            <Text style={[styles.exploreEmptySub, isDarkTheme && { color: "#c4cee8" }]}>
-              Try clearing filters or switching audience.
-            </Text>
-            <Pressable
-              onPress={() => {
-                setQuery("");
-                setReference("");
-                setRadius("35");
-                setStartDate(todayIso());
-                setEndDate(plusDaysIso(45));
-                setAudienceFilter("all");
-                setQuickFilters([]);
-                setHalaqaFilter(null);
-              }}
-              style={styles.exploreEmptyBtn}
-            >
-              <Text style={styles.exploreEmptyBtnText}>Reset filters</Text>
-            </Pressable>
-          </View>
-        ) : (
-          exploreSections.map((section) => (
-            <View key={`section-${section.title}`} style={styles.exploreDaySection}>
-              <Text style={[styles.dayHeader, isDarkTheme && styles.dayHeaderDark, isNeo && styles.dayHeaderNeo]}>
-                {formatHumanDate(section.title)}
-                </Text>
-              {section.data.map((e, idx) => renderEventListCard(e, `${section.title}-${idx}`))}
-              </View>
-          ))
-        )}
+      </>
+    );
+
+    const emptyNode = (
+      <View style={styles.exploreEmpty}>
+        <Text style={[styles.exploreEmptyTitle, isDarkTheme && { color: "#f4f7ff" }]}>No events match</Text>
+        <Text style={[styles.exploreEmptySub, isDarkTheme && { color: "#c4cee8" }]}>
+          Try clearing filters or switching audience.
+        </Text>
+        <Pressable
+          onPress={() => {
+            setQuery("");
+            setReference("");
+            setRadius("35");
+            setStartDate(todayIso());
+            setEndDate(plusDaysIso(365));
+            setAudienceFilter("all");
+            setQuickFilters([]);
+            setHalaqaFilter(null);
+          }}
+          style={styles.exploreEmptyBtn}
+        >
+          <Text style={styles.exploreEmptyBtnText}>Reset filters</Text>
+        </Pressable>
       </View>
-    </ScrollView>
-  );
+    );
+
+    const footerNode = hasMore ? (
+      <Pressable
+        onPress={() => setExploreSectionLimit((n) => n + EXPLORE_SECTIONS_BATCH)}
+        style={styles.exploreLoadMoreBtn}
+      >
+        <Text style={styles.exploreLoadMoreBtnText}>
+          {`Show ${Math.min(
+            EXPLORE_SECTIONS_BATCH,
+            exploreSections.length - exploreSectionLimit,
+          )} more days`}
+        </Text>
+      </Pressable>
+    ) : null;
+
+    return (
+      <SectionList
+        ref={exploreScrollRef}
+        style={{ flex: 1 }}
+        contentContainerStyle={[
+          { paddingBottom: 120 },
+          isMidnight && styles.scrollBodyMidnight,
+          isNeo && styles.scrollBodyNeo,
+          isVitaria && styles.scrollBodyVitaria,
+          isInferno && styles.scrollBodyInferno,
+          isEmerald && styles.scrollBodyEmerald,
+        ]}
+        showsVerticalScrollIndicator={false}
+        sections={visibleSections}
+        keyExtractor={(item, index) => `${eventStorageKey(item)}-${index}`}
+        renderItem={({ item, index, section }) =>
+          renderEventListCard(item, `${section.title}-${index}`)
+        }
+        renderSectionHeader={({ section }) => (
+          <Text
+            style={[
+              styles.dayHeader,
+              styles.exploreSectionHeader,
+              isDarkTheme && styles.dayHeaderDark,
+              isNeo && styles.dayHeaderNeo,
+            ]}
+          >
+            {formatHumanDate(section.title)}
+          </Text>
+        )}
+        ListHeaderComponent={header}
+        ListEmptyComponent={emptyNode}
+        ListFooterComponent={footerNode}
+        stickySectionHeadersEnabled={false}
+        initialNumToRender={8}
+        maxToRenderPerBatch={8}
+        windowSize={7}
+        removeClippedSubviews
+        SectionSeparatorComponent={() => <View style={{ height: 6 }} />}
+      />
+    );
+  };
 
   const renderCalendar = () => {
     const datedUpcoming = calendarScheduleEvents;
@@ -3970,23 +4831,52 @@ function AppInner() {
       bucket.push(e);
       eventsByDate.set(key, bucket);
     }
-    const dateKeys = Array.from(eventsByDate.keys()).sort((a, b) => a.localeCompare(b));
-    const activeDate = selectedCalendarDate && eventsByDate.has(selectedCalendarDate) ? selectedCalendarDate : dateKeys[0] || "";
-    const activeDateEvents = activeDate ? eventsByDate.get(activeDate) || [] : [];
 
-    const monthKeys = Array.from(
-      new Set(
-        datedUpcoming
-          .map((e) => {
-            const d = new Date(`${e.date}T00:00:00`);
-            if (!Number.isFinite(d.getTime())) return "";
-            return `${d.getFullYear()}-${d.getMonth()}`;
-          })
-          .filter(Boolean)
-      )
-    ).sort((a, b) => a.localeCompare(b));
-    const monthGridKeys = monthKeys.slice(0, 10);
-    const monthGridOverflow = monthKeys.length > monthGridKeys.length;
+    const viewedDate = new Date(`${calendarAnchorIso}T00:00:00`);
+    const viewedYear = viewedDate.getFullYear();
+    const viewedMonth = viewedDate.getMonth();
+    const monthStart = new Date(viewedYear, viewedMonth, 1);
+    const daysInMonth = new Date(viewedYear, viewedMonth + 1, 0).getDate();
+    const leadingBlanks = monthStart.getDay();
+    const monthLabel = monthStart.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+    const cells: Array<{ iso: string | null; day: number | null }> = [];
+    for (let i = 0; i < leadingBlanks; i += 1) cells.push({ iso: null, day: null });
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const iso = `${viewedYear}-${String(viewedMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      cells.push({ iso, day });
+    }
+    while (cells.length % 7 !== 0) cells.push({ iso: null, day: null });
+
+    // Active agenda day — prefer the user's current selection; fall back to
+    // today when today is within the visible month; else the first day in the
+    // visible month that actually has events; else the 1st.
+    const inSameMonth = (iso: string) => iso.startsWith(`${viewedYear}-${String(viewedMonth + 1).padStart(2, "0")}`);
+    let activeDate = "";
+    if (selectedCalendarDate && inSameMonth(selectedCalendarDate)) {
+      activeDate = selectedCalendarDate;
+    } else if (inSameMonth(today)) {
+      activeDate = today;
+    } else {
+      const firstEventDay = Array.from(eventsByDate.keys())
+        .filter(inSameMonth)
+        .sort()[0];
+      activeDate = firstEventDay || `${viewedYear}-${String(viewedMonth + 1).padStart(2, "0")}-01`;
+    }
+    const activeDateEvents = eventsByDate.get(activeDate) || [];
+
+    const shiftMonth = (delta: number) => {
+      const next = new Date(viewedYear, viewedMonth + delta, 1);
+      const iso = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}-01`;
+      setCalendarAnchorIso(iso);
+      // Clear the single-day pin so the agenda auto-picks today / first-event
+      // when the user lands on the new month.
+      setSelectedCalendarDate("");
+    };
+
+    const goToToday = () => {
+      setCalendarAnchorIso(today);
+      setSelectedCalendarDate(today);
+    };
 
     return (
     <ScrollView ref={calendarScrollRef} contentContainerStyle={[styles.scrollBody, isMidnight && styles.scrollBodyMidnight, isNeo && styles.scrollBodyNeo, isVitaria && styles.scrollBodyVitaria, isInferno && styles.scrollBodyInferno, isEmerald && styles.scrollBodyEmerald]}>
@@ -3998,127 +4888,207 @@ function AppInner() {
       >
           <Text style={[styles.premiumSectionTitle, isDarkTheme && styles.premiumSectionTitleDark, isNeo && styles.premiumSectionTitleNeo]}>Calendar</Text>
         <Text style={[styles.premiumSectionSub, isDarkTheme && styles.premiumSectionSubDark, isNeo && styles.premiumSectionSubNeo]}>
-            See event days at a glance, then open Export List when ready.
+            Tap a day to see what's happening. Swipe months with the arrows.
         </Text>
       </LinearGradient>
 
         <View style={[styles.calendarViewSwitch, isDarkTheme && styles.calendarViewSwitchDark]}>
           <Pressable style={[styles.calendarViewChip, calendarView === "month" && styles.calendarViewChipActive]} onPress={() => setCalendarView("month")}>
-            <Text style={[styles.calendarViewChipText, calendarView === "month" && styles.calendarViewChipTextActive]}>Calendar View</Text>
+            <Text style={[styles.calendarViewChipText, calendarView === "month" && styles.calendarViewChipTextActive]}>Month</Text>
           </Pressable>
           <Pressable style={[styles.calendarViewChip, calendarView === "list" && styles.calendarViewChipActive]} onPress={() => setCalendarView("list")}>
-            <Text style={[styles.calendarViewChipText, calendarView === "list" && styles.calendarViewChipTextActive]}>Export List</Text>
+            <Text style={[styles.calendarViewChipText, calendarView === "list" && styles.calendarViewChipTextActive]}>Export list</Text>
           </Pressable>
         </View>
 
         {calendarView === "month" ? (
           <>
-            {!monthGridKeys.length ? (
-        <View style={styles.emptyCard}>
-                <Text style={[styles.emptyText, isDarkTheme && styles.emptyTextDark, isNeo && styles.emptyTextNeo]}>No upcoming events available yet.</Text>
-        </View>
-      ) : null}
-            {monthGridOverflow ? (
-              <Text style={[styles.metaInfoLine, isMidnight && styles.metaInfoLineMidnight, isNeo && styles.metaInfoLineNeo, isVitaria && styles.metaInfoLineVitaria, isInferno && styles.metaInfoLineInferno, isEmerald && styles.metaInfoLineEmerald]}>
-                Showing the next {monthGridKeys.length} month grids — Export list includes every event.
-              </Text>
-      ) : null}
+            <View style={[styles.calendarMonthBar, isDarkTheme && styles.calendarMonthBarDark]}>
+              <Pressable onPress={() => shiftMonth(-1)} hitSlop={12} style={styles.calendarMonthArrowBtn}>
+                <Text style={styles.calendarMonthArrow}>‹</Text>
+              </Pressable>
+              <Pressable onPress={goToToday} style={{ flex: 1, alignItems: "center" }}>
+                <Text style={[styles.calendarMonthLabel, isDarkTheme && { color: "#f4f7ff" }]}>{monthLabel}</Text>
+                <Text style={[styles.calendarMonthLabelSub, isDarkTheme && { color: "#8793ab" }]}>
+                  Tap to jump to today
+                </Text>
+              </Pressable>
+              <Pressable onPress={() => shiftMonth(1)} hitSlop={12} style={styles.calendarMonthArrowBtn}>
+                <Text style={styles.calendarMonthArrow}>›</Text>
+              </Pressable>
+            </View>
 
-            {monthGridKeys.map((mk) => {
-              const [yearRaw, monthRaw] = mk.split("-");
-              const year = Number(yearRaw);
-              const monthIndex = Number(monthRaw);
-              const monthStart = new Date(year, monthIndex, 1);
-              const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
-              const leadingBlanks = monthStart.getDay();
-              const monthLabel = monthStart.toLocaleDateString(undefined, { month: "long", year: "numeric" });
-              const cells: Array<{ iso: string | null; day: number | null }> = [];
-              for (let i = 0; i < leadingBlanks; i += 1) cells.push({ iso: null, day: null });
-              for (let day = 1; day <= daysInMonth; day += 1) {
-                const iso = `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-                cells.push({ iso, day });
-              }
-              while (cells.length % 7 !== 0) cells.push({ iso: null, day: null });
-
-              return (
-                <View key={`month-${mk}`} style={[styles.controlsCard, isMidnight && styles.controlsCardMidnight, isNeo && styles.controlsCardNeo, isVitaria && styles.controlsCardVitaria, isInferno && styles.controlsCardInferno, isEmerald && styles.controlsCardEmerald]}>
-                  <Text style={[styles.sectionTitle, isMinera && styles.sectionTitleMinera, isMidnight && styles.sectionTitleMidnight, isNeo && styles.sectionTitleNeo, isVitaria && styles.sectionTitleVitaria, isInferno && styles.sectionTitleInferno, isEmerald && styles.sectionTitleEmerald]}>
-                    {monthLabel}
+            <View style={[styles.controlsCard, isMidnight && styles.controlsCardMidnight, isNeo && styles.controlsCardNeo, isVitaria && styles.controlsCardVitaria, isInferno && styles.controlsCardInferno, isEmerald && styles.controlsCardEmerald]}>
+              <View style={styles.calendarWeekRow}>
+                {CALENDAR_WEEKDAYS.map((d) => (
+                  <Text key={`wd-${d}`} style={[styles.calendarWeekday, isDarkTheme && styles.calendarWeekdayDark, isNeo && styles.calendarWeekdayNeo]}>
+                    {d}
                   </Text>
-                  <View style={styles.calendarWeekRow}>
-                    {CALENDAR_WEEKDAYS.map((d) => (
-                      <Text key={`${mk}-${d}`} style={[styles.calendarWeekday, isDarkTheme && styles.calendarWeekdayDark, isNeo && styles.calendarWeekdayNeo]}>
-                        {d}
+                ))}
+              </View>
+              <View style={styles.calendarGrid}>
+                {cells.map((cell, idx) => {
+                  if (!cell.iso || !cell.day) return <View key={`blank-${idx}`} style={styles.calendarDayEmpty} />;
+                  const dayEvents = eventsByDate.get(cell.iso) || [];
+                  const hasEvents = dayEvents.length > 0;
+                  const active = activeDate === cell.iso;
+                  const isToday = cell.iso === today;
+                  return (
+                    <Pressable
+                      key={`day-${cell.iso}`}
+                      onPress={() => {
+                        setSelectedCalendarDate(cell.iso || "");
+                      }}
+                      onLongPress={() => {
+                        if (cell.iso) setSelectedCalendarModalDate(cell.iso);
+                      }}
+                      style={[
+                        styles.calendarDay,
+                        hasEvents && styles.calendarDayHasEvents,
+                        active && styles.calendarDayActive,
+                        isDarkTheme && hasEvents && styles.calendarDayHasEventsDark,
+                        isNeo && hasEvents && styles.calendarDayHasEventsNeo,
+                        isToday && !active && styles.calendarDayToday,
+                        hasEvents
+                          ? {
+                              backgroundColor:
+                                dayEvents.length >= 5
+                                  ? "rgba(244, 135, 37, 0.28)"
+                                  : dayEvents.length >= 3
+                                    ? "rgba(244, 135, 37, 0.20)"
+                                    : "rgba(244, 135, 37, 0.13)",
+                            }
+                          : null,
+                      ]}
+                    >
+                      <Text style={[styles.calendarDayText, hasEvents && styles.calendarDayTextStrong, active && styles.calendarDayTextActive, isToday && styles.calendarDayTextToday, isDarkTheme && styles.calendarDayTextDark]}>
+                        {cell.day}
                       </Text>
-                    ))}
-                  </View>
-                  <View style={styles.calendarGrid}>
-                    {cells.map((cell, idx) => {
-                      if (!cell.iso || !cell.day) return <View key={`blank-${mk}-${idx}`} style={styles.calendarDayEmpty} />;
-                      const dayEvents = eventsByDate.get(cell.iso) || [];
-                      const hasEvents = dayEvents.length > 0;
-                      const active = activeDate === cell.iso;
-                      return (
-                        <Pressable
-                          key={`day-${mk}-${cell.iso}`}
-                          onPress={() => {
-                            setSelectedCalendarDate(cell.iso || "");
-                            if (hasEvents && cell.iso) setSelectedCalendarModalDate(cell.iso);
-                          }}
-                          style={[
-                            styles.calendarDay,
-                            hasEvents && styles.calendarDayHasEvents,
-                            active && styles.calendarDayActive,
-                            isDarkTheme && hasEvents && styles.calendarDayHasEventsDark,
-                            isNeo && hasEvents && styles.calendarDayHasEventsNeo,
-                            hasEvents
-                              ? {
-                                  backgroundColor:
-                                    dayEvents.length >= 5
-                                      ? "rgba(244, 135, 37, 0.28)"
-                                      : dayEvents.length >= 3
-                                        ? "rgba(244, 135, 37, 0.20)"
-                                        : "rgba(244, 135, 37, 0.13)",
-                                }
-                              : null,
-                          ]}
-                        >
-                          <Text style={[styles.calendarDayText, hasEvents && styles.calendarDayTextStrong, active && styles.calendarDayTextActive, isDarkTheme && styles.calendarDayTextDark]}>
-                            {cell.day}
-                          </Text>
-                          {hasEvents ? <View style={[styles.calendarDayDot, active && styles.calendarDayDotActive]} /> : null}
-                        </Pressable>
-                      );
-                    })}
-                  </View>
+                      {hasEvents ? (
+                        <View style={styles.calendarDayDotRow}>
+                          {Array.from({ length: Math.min(3, dayEvents.length) }).map((_, dotIdx) => (
+                            <View
+                              key={`dot-${cell.iso}-${dotIdx}`}
+                              style={[styles.calendarDayDot, active && styles.calendarDayDotActive]}
+                            />
+                          ))}
+                        </View>
+                      ) : null}
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <View style={styles.calendarLegendRow}>
+                <View style={styles.calendarLegendItem}>
+                  <View style={styles.calendarLegendSwatchToday} />
+                  <Text style={[styles.calendarLegendText, isDarkTheme && { color: "#c4cee8" }]}>Today</Text>
                 </View>
-              );
-            })}
+                <View style={styles.calendarLegendItem}>
+                  <View style={styles.calendarLegendSwatchEvents} />
+                  <Text style={[styles.calendarLegendText, isDarkTheme && { color: "#c4cee8" }]}>Has events</Text>
+                </View>
+                <View style={styles.calendarLegendItem}>
+                  <View style={styles.calendarLegendSwatchSelected} />
+                  <Text style={[styles.calendarLegendText, isDarkTheme && { color: "#c4cee8" }]}>Selected</Text>
+                </View>
+              </View>
+            </View>
 
-            {activeDateEvents.length ? (
-              <View style={[styles.controlsCard, isMidnight && styles.controlsCardMidnight, isNeo && styles.controlsCardNeo, isVitaria && styles.controlsCardVitaria, isInferno && styles.controlsCardInferno, isEmerald && styles.controlsCardEmerald]}>
+            <View style={[styles.controlsCard, isMidnight && styles.controlsCardMidnight, isNeo && styles.controlsCardNeo, isVitaria && styles.controlsCardVitaria, isInferno && styles.controlsCardInferno, isEmerald && styles.controlsCardEmerald]}>
+              <View style={{ flexDirection: "row", alignItems: "baseline", justifyContent: "space-between" }}>
                 <Text style={[styles.sectionTitle, isMinera && styles.sectionTitleMinera, isMidnight && styles.sectionTitleMidnight, isNeo && styles.sectionTitleNeo, isVitaria && styles.sectionTitleVitaria, isInferno && styles.sectionTitleInferno, isEmerald && styles.sectionTitleEmerald]}>
                   {formatHumanDate(activeDate)}
                 </Text>
-                {activeDateEvents.slice(0, 4).map((e, idx) => (
-                  <View key={`active-day-${eventStorageKey(e)}-${idx}`} style={styles.calendarMiniRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.calendarMiniTitle, isDarkTheme && styles.modalEventTitleDark, isNeo && styles.modalEventTitleNeo]} numberOfLines={1}>
-                        {e.title}
-                      </Text>
-                      <Text style={[styles.calendarMiniMeta, isDarkTheme && styles.hospitalListMetaDark, isNeo && styles.hospitalListMetaNeo]} numberOfLines={1}>
-                        {eventTime(e)} • {formatSourceLabel(e.source)}
-                      </Text>
-                    </View>
-                    {e.event_uid ? (
-                      <Pressable style={styles.roundGhostBtn} onPress={() => openCalendarExportPicker(e)}>
-                        <Text style={[styles.roundGhostText, emojiFontStyle]}>📅</Text>
-                      </Pressable>
-                    ) : null}
-                  </View>
-                ))}
+                <Text style={[styles.calendarAgendaCount, isDarkTheme && { color: "#c4cee8" }]}>
+                  {activeDateEvents.length} event{activeDateEvents.length === 1 ? "" : "s"}
+                </Text>
               </View>
-            ) : null}
+              {activeDateEvents.length === 0 ? (
+                <Text style={[styles.metaInfoLine, isDarkTheme && styles.metaInfoLineMidnight, { marginTop: 10 }]}>
+                  No events on this day. Try another day or switch to Explore.
+                </Text>
+              ) : (
+                <View style={{ gap: 10, marginTop: 8 }}>
+                  {activeDateEvents.map((e, idx) => {
+                    const poster = pickPoster(e.image_urls);
+                    const rsvpState = rsvpStatuses[eventStorageKey(e)];
+                    const saved = isSavedEvent(e);
+                    return (
+                      <Pressable
+                        key={`cal-agenda-${eventStorageKey(e)}-${idx}`}
+                        style={[styles.calendarAgendaRow, isDarkTheme && styles.calendarAgendaRowDark]}
+                        onPress={() => setSelectedEvent(e)}
+                      >
+                        {poster ? (
+                          <Image source={{ uri: poster }} style={styles.calendarAgendaPoster} />
+                        ) : (
+                          <View style={[styles.calendarAgendaPoster, { alignItems: "center", justifyContent: "center", backgroundColor: masjidBrandColor(e.source) }]}>
+                            <Text style={{ color: "#fff", fontWeight: "900", fontSize: 16 }}>{masjidInitials(e.source)}</Text>
+                          </View>
+                        )}
+                        <View style={{ flex: 1, gap: 4 }}>
+                          <Text style={[styles.calendarAgendaWhen, isDarkTheme && { color: "#c4cee8" }]}>
+                            {eventTime(e)} · {formatSourceLabel(e.source)}
+                          </Text>
+                          <Text style={[styles.calendarAgendaTitle, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={2}>
+                            {e.title}
+                          </Text>
+                          <View style={styles.cardActionRow}>
+                            <Pressable
+                              hitSlop={6}
+                              style={({ pressed }) => [
+                                styles.cardActionChip,
+                                rsvpState === "going" && styles.cardActionChipActive,
+                                pressed && styles.cardActionChipPressed,
+                              ]}
+                              onPress={(ev) => {
+                                ev.stopPropagation?.();
+                                toggleRsvp(e, "going");
+                              }}
+                            >
+                              <Text style={[styles.cardActionChipText, rsvpState === "going" && styles.cardActionChipTextActive]}>
+                                {rsvpState === "going" ? "Going ✓" : "Going"}
+                              </Text>
+                            </Pressable>
+                            <Pressable
+                              hitSlop={6}
+                              style={({ pressed }) => [
+                                styles.cardActionChip,
+                                saved && styles.cardActionChipActive,
+                                pressed && styles.cardActionChipPressed,
+                              ]}
+                              onPress={(ev) => {
+                                ev.stopPropagation?.();
+                                toggleSavedEvent(e);
+                              }}
+                            >
+                              <Text style={[styles.cardActionChipText, saved && styles.cardActionChipTextActive, emojiFontStyle]}>
+                                {saved ? "♥" : "♡"}
+                              </Text>
+                            </Pressable>
+                            {e.event_uid ? (
+                              <Pressable
+                                hitSlop={6}
+                                style={({ pressed }) => [
+                                  styles.cardActionChip,
+                                  pressed && styles.cardActionChipPressed,
+                                ]}
+                                onPress={(ev) => {
+                                  ev.stopPropagation?.();
+                                  openCalendarExportPicker(e);
+                                }}
+                              >
+                                <Text style={[styles.cardActionChipText, emojiFontStyle]}>📅</Text>
+                              </Pressable>
+                            ) : null}
+                          </View>
+                        </View>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
           </>
         ) : (
           <>
@@ -4169,8 +5139,8 @@ function AppInner() {
   );
   };
 
-  const renderSaved = () => (
-    <ScrollView ref={savedScrollRef} contentContainerStyle={[styles.scrollBody, isMidnight && styles.scrollBodyMidnight, isNeo && styles.scrollBodyNeo, isVitaria && styles.scrollBodyVitaria, isInferno && styles.scrollBodyInferno, isEmerald && styles.scrollBodyEmerald]}>
+  const renderSaved = () => {
+    const savedHeader = (
       <LinearGradient
         colors={isMidnight ? ["#0c0f19", "#151b2a"] : isNeo ? ["#d8d8d8", "#d2d2d2"] : isVitaria ? ["#8f7680", "#b3949d"] : isInferno ? ["#070607", "#1b0901"] : isEmerald ? ["#b8e5c9", "#8fd5ad"] : ["#f0f2f7", "#e8ebf3"]}
         start={{ x: 0, y: 0 }}
@@ -4182,14 +5152,29 @@ function AppInner() {
           Your shortlist for quick follow-up and reminders.
         </Text>
       </LinearGradient>
-      {!savedEvents.length ? (
-        <View style={styles.emptyCard}>
-          <Text style={[styles.emptyText, isDarkTheme && styles.emptyTextDark, isNeo && styles.emptyTextNeo]}>No saved events yet. Open an event and tap Save.</Text>
-        </View>
-      ) : null}
-      {savedEvents.map((e, idx) => renderEventListCard(e, `saved-${idx}`))}
-    </ScrollView>
-  );
+    );
+    const emptyNode = (
+      <View style={styles.emptyCard}>
+        <Text style={[styles.emptyText, isDarkTheme && styles.emptyTextDark, isNeo && styles.emptyTextNeo]}>No saved events yet. Open an event and tap Save.</Text>
+      </View>
+    );
+    return (
+      <FlatList
+        ref={savedScrollRef}
+        data={savedEvents}
+        keyExtractor={(item, index) => `saved-${eventStorageKey(item)}-${index}`}
+        renderItem={({ item, index }) => renderEventListCard(item, `saved-${index}`)}
+        ListHeaderComponent={savedHeader}
+        ListEmptyComponent={emptyNode}
+        contentContainerStyle={[styles.scrollBody, isMidnight && styles.scrollBodyMidnight, isNeo && styles.scrollBodyNeo, isVitaria && styles.scrollBodyVitaria, isInferno && styles.scrollBodyInferno, isEmerald && styles.scrollBodyEmerald]}
+        initialNumToRender={8}
+        maxToRenderPerBatch={8}
+        windowSize={7}
+        removeClippedSubviews
+        showsVerticalScrollIndicator={false}
+      />
+    );
+  };
 
   const renderSettings = () => (
     <ScrollView contentContainerStyle={[styles.scrollBody, isMidnight && styles.scrollBodyMidnight, isNeo && styles.scrollBodyNeo, isVitaria && styles.scrollBodyVitaria, isInferno && styles.scrollBodyInferno, isEmerald && styles.scrollBodyEmerald]}>
@@ -4230,19 +5215,61 @@ function AppInner() {
       </View>
 
       <View style={[styles.controlsCard, isMidnight && styles.controlsCardMidnight, isNeo && styles.controlsCardNeo, isVitaria && styles.controlsCardVitaria, isInferno && styles.controlsCardInferno, isEmerald && styles.controlsCardEmerald]}>
-        <Text style={[styles.sectionTitle, isMidnight && styles.sectionTitleMidnight, isNeo && styles.sectionTitleNeo, isVitaria && styles.sectionTitleVitaria, isInferno && styles.sectionTitleInferno, isEmerald && styles.sectionTitleEmerald]}>Connection</Text>
+        <Text style={[styles.sectionTitle, isMidnight && styles.sectionTitleMidnight, isNeo && styles.sectionTitleNeo, isVitaria && styles.sectionTitleVitaria, isInferno && styles.sectionTitleInferno, isEmerald && styles.sectionTitleEmerald]}>Account</Text>
         <Text style={[styles.metaInfoLine, isMidnight && styles.metaInfoLineMidnight, isNeo && styles.metaInfoLineNeo, isVitaria && styles.metaInfoLineVitaria, isInferno && styles.metaInfoLineInferno, isEmerald && styles.metaInfoLineEmerald]}>
-          API Base: {API_BASE_URL}. Set EXPO_PUBLIC_API_BASE_URL for device testing.
+          {personalization.name ? `Signed in as ${personalization.name}` : currentUser?.email ? `Signed in as ${currentUser.email}` : "You're browsing as a guest"}
         </Text>
         <Text style={[styles.metaInfoLine, isMidnight && styles.metaInfoLineMidnight, isNeo && styles.metaInfoLineNeo, isVitaria && styles.metaInfoLineVitaria, isInferno && styles.metaInfoLineInferno, isEmerald && styles.metaInfoLineEmerald]}>
-          Push token: {pushToken ? `${pushToken.slice(0, 18)}...` : "Not registered"}
+          Events attended this month: {streakCount}/{goalCount}
         </Text>
         <Text style={[styles.metaInfoLine, isMidnight && styles.metaInfoLineMidnight, isNeo && styles.metaInfoLineNeo, isVitaria && styles.metaInfoLineVitaria, isInferno && styles.metaInfoLineInferno, isEmerald && styles.metaInfoLineEmerald]}>
-          Weekly goal: {streakCount}/{goalCount} attended this month
+          Share code: {referralCode || "Generating…"}
         </Text>
+        <View style={{ flexDirection: "row", gap: 10, marginTop: 6 }}>
+          <Pressable
+            style={[styles.utilityActionBtn, { flex: 1 }, isDarkTheme && styles.utilityActionBtnDark]}
+            onPress={() => setEntryScreen("welcome")}
+          >
+            <Text style={[styles.utilityActionBtnText, isDarkTheme && styles.utilityActionBtnTextDark]}>Edit your details</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.utilityActionBtn, { flex: 1 }, isDarkTheme && styles.utilityActionBtnDark]}
+            onPress={() =>
+              Alert.alert(
+                "Send feedback",
+                "Email us at hello@masjidly.app with questions, feature requests, or masjids we should add.",
+                [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Open mail",
+                    onPress: () => Linking.openURL("mailto:hello@masjidly.app?subject=Masjidly%20feedback"),
+                  },
+                ],
+              )
+            }
+          >
+            <Text style={[styles.utilityActionBtnText, isDarkTheme && styles.utilityActionBtnTextDark]}>Send feedback</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={[styles.controlsCard, isMidnight && styles.controlsCardMidnight, isNeo && styles.controlsCardNeo, isVitaria && styles.controlsCardVitaria, isInferno && styles.controlsCardInferno, isEmerald && styles.controlsCardEmerald]}>
+        <Text style={[styles.sectionTitle, isMidnight && styles.sectionTitleMidnight, isNeo && styles.sectionTitleNeo, isVitaria && styles.sectionTitleVitaria, isInferno && styles.sectionTitleInferno, isEmerald && styles.sectionTitleEmerald]}>Notifications</Text>
         <Text style={[styles.metaInfoLine, isMidnight && styles.metaInfoLineMidnight, isNeo && styles.metaInfoLineNeo, isVitaria && styles.metaInfoLineVitaria, isInferno && styles.metaInfoLineInferno, isEmerald && styles.metaInfoLineEmerald]}>
-          Referral code: {referralCode || "Generating..."}
+          {pushToken
+            ? "Push is on. You'll get nudges about events you saved, iqama changes, and masjids you follow."
+            : "Push isn't on yet. Enable system notifications to hear about new events from the masjids you follow."}
         </Text>
+        <View style={{ flexDirection: "row", gap: 10, marginTop: 6 }}>
+          <Pressable
+            style={[styles.utilityActionBtn, { flex: 1 }, isDarkTheme && styles.utilityActionBtnDark]}
+            onPress={() => Linking.openSettings()}
+          >
+            <Text style={[styles.utilityActionBtnText, isDarkTheme && styles.utilityActionBtnTextDark]}>
+              {pushToken ? "Manage in iOS Settings" : "Enable in iOS Settings"}
+            </Text>
+          </Pressable>
+        </View>
       </View>
 
       <View style={[styles.controlsCard, isMidnight && styles.controlsCardMidnight, isNeo && styles.controlsCardNeo, isVitaria && styles.controlsCardVitaria, isInferno && styles.controlsCardInferno, isEmerald && styles.controlsCardEmerald]}>
@@ -4331,6 +5358,42 @@ function AppInner() {
           </Pressable>
                 </View>
               </View>
+
+      <Pressable
+        onPress={() => {
+          const nextCount = devTapCount + 1;
+          setDevTapCount(nextCount);
+          if (nextCount >= 7) {
+            setDeveloperPanelOpen((v) => !v);
+            setDevTapCount(0);
+            hapticTap("success");
+          }
+        }}
+        style={styles.settingsVersionRow}
+        hitSlop={8}
+      >
+        <Text style={[styles.settingsVersionText, isDarkTheme && { color: "#6b778c" }]}>
+          Masjidly · {APP_BUILD_VERSION}
+        </Text>
+      </Pressable>
+
+      {developerPanelOpen ? (
+        <View style={[styles.controlsCard, isMidnight && styles.controlsCardMidnight, isNeo && styles.controlsCardNeo, isVitaria && styles.controlsCardVitaria, isInferno && styles.controlsCardInferno, isEmerald && styles.controlsCardEmerald]}>
+          <Text style={[styles.sectionTitle, isMidnight && styles.sectionTitleMidnight, isNeo && styles.sectionTitleNeo, isVitaria && styles.sectionTitleVitaria, isInferno && styles.sectionTitleInferno, isEmerald && styles.sectionTitleEmerald]}>Developer</Text>
+          <Text style={[styles.metaInfoLine, isMidnight && styles.metaInfoLineMidnight, isNeo && styles.metaInfoLineNeo, isVitaria && styles.metaInfoLineVitaria, isInferno && styles.metaInfoLineInferno, isEmerald && styles.metaInfoLineEmerald]}>
+            API Base: {API_BASE_URL}
+          </Text>
+          <Text style={[styles.metaInfoLine, isMidnight && styles.metaInfoLineMidnight, isNeo && styles.metaInfoLineNeo, isVitaria && styles.metaInfoLineVitaria, isInferno && styles.metaInfoLineInferno, isEmerald && styles.metaInfoLineEmerald]}>
+            Push token: {pushToken ? `${pushToken.slice(0, 24)}…` : "Not registered"}
+          </Text>
+          <Text style={[styles.metaInfoLine, isMidnight && styles.metaInfoLineMidnight, isNeo && styles.metaInfoLineNeo, isVitaria && styles.metaInfoLineVitaria, isInferno && styles.metaInfoLineInferno, isEmerald && styles.metaInfoLineEmerald]}>
+            Events loaded: {events.length} · Haptics: {hapticsModule ? "native" : "fallback"}
+          </Text>
+          <Text style={[styles.metaInfoLine, isMidnight && styles.metaInfoLineMidnight, isNeo && styles.metaInfoLineNeo, isVitaria && styles.metaInfoLineVitaria, isInferno && styles.metaInfoLineInferno, isEmerald && styles.metaInfoLineEmerald]}>
+            Today anchor: {today}
+          </Text>
+        </View>
+      ) : null}
     </ScrollView>
   );
 
@@ -4349,8 +5412,8 @@ function AppInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       exploreSections,
+      exploreSectionLimit,
       masjidPinsForExplore,
-      mapRegion,
       exploreMapHeight,
       audienceFilter,
       savedEventsMap,
@@ -4359,6 +5422,10 @@ function AppInner() {
       halaqaFilter,
       eventSeries,
       followedMasjids,
+      profileDraft.home_lat,
+      profileDraft.home_lon,
+      locationBannerDismissed,
+      locationRequesting,
     ]
   );
   const calendarSceneNode = useMemo(
@@ -4368,6 +5435,10 @@ function AppInner() {
       calendarScheduleEvents,
       calendarView,
       selectedCalendarDate,
+      calendarAnchorIso,
+      today,
+      rsvpStatuses,
+      savedEventsMap,
       themeMode,
     ]
   );
@@ -4376,13 +5447,25 @@ function AppInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [savedEvents, savedEventsMap, rsvpStatuses, themeMode]
   );
+  // Memoize home and settings too so tab switching is instant — these only
+  // rebuild when their real data inputs change.
+  const homeSceneNode = useMemo(
+    () => renderHome(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [upcoming, featuredEvent, savedEventsMap, rsvpStatuses, themeMode, meta, lastSyncedAt, futureVisibleCount]
+  );
+  const settingsSceneNode = useMemo(
+    () => renderSettings(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [profileDraft, themeMode, meta, currentUser, followedMasjids]
+  );
 
   const renderTabScene = (sceneTab: "home" | "explore" | "calendar" | "saved" | "settings") => {
-    if (sceneTab === "home") return renderHome();
+    if (sceneTab === "home") return homeSceneNode;
     if (sceneTab === "explore") return exploreSceneNode;
     if (sceneTab === "calendar") return calendarSceneNode;
     if (sceneTab === "saved") return savedSceneNode;
-    return renderSettings();
+    return settingsSceneNode;
   };
 
   if (entryScreen === "welcome") return renderWelcomeScreen();
@@ -4467,12 +5550,43 @@ function AppInner() {
 
       <Modal
         visible={!!selectedEvent}
-        animationType="slide"
+        animationType="fade"
         presentationStyle="fullScreen"
         statusBarTranslucent={false}
         onRequestClose={() => setSelectedEvent(null)}
       >
-        {selectedEvent ? (() => {
+        {selectedEvent && !detailReady ? (
+          <View style={[styles.eventModalContainer, isDarkTheme && styles.eventModalContainerDark, styles.eventModalSkeleton]}>
+            <View style={[styles.eventHero, { height: Math.min(windowHeight * 0.5, 420), backgroundColor: masjidBrandColor(selectedEvent.source) }]}>
+              <LinearGradient
+                colors={["rgba(0,0,0,0.45)", "rgba(0,0,0,0)", "rgba(0,0,0,0.85)"]}
+                locations={[0, 0.35, 1]}
+                style={StyleSheet.absoluteFillObject}
+              />
+              <View style={[styles.eventHeroTopRow, { paddingTop: insets.top + 10 }]}>
+                <Pressable
+                  style={styles.eventHeroIconBtn}
+                  hitSlop={10}
+                  onPress={() => setSelectedEvent(null)}
+                >
+                  <Text style={styles.eventHeroIconText}>✕</Text>
+                </Pressable>
+              </View>
+              <View style={styles.eventModalSkeletonTitleWrap}>
+                <Text style={styles.eventModalSkeletonTitle} numberOfLines={2}>
+                  {selectedEvent.title}
+                </Text>
+                <Text style={styles.eventModalSkeletonSub} numberOfLines={1}>
+                  {formatHumanDate(selectedEvent.date)}
+                </Text>
+              </View>
+            </View>
+            <View style={styles.eventModalSkeletonBody}>
+              <ActivityIndicator size="small" color={isDarkTheme ? "#f4f7ff" : "#173664"} />
+            </View>
+          </View>
+        ) : null}
+        {selectedEvent && detailReady ? (() => {
           const ev = selectedEvent;
           const rsvpKey = eventStorageKey(ev);
           const rsvpState = rsvpStatuses[rsvpKey];
@@ -4959,13 +6073,18 @@ function AppInner() {
                 <Text style={styles.bottomSheetCloseText}>✕</Text>
               </Pressable>
             </View>
-            <ScrollView
+            <FlatList
               style={{ flex: 1 }}
               contentContainerStyle={{ gap: 14, paddingTop: 12 }}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator
-            >
-              {calendarModalEvents.length === 0 ? (
+              data={calendarModalEvents}
+              keyExtractor={(e, idx) => `day-modal-${eventStorageKey(e)}-${idx}`}
+              initialNumToRender={6}
+              maxToRenderPerBatch={6}
+              windowSize={5}
+              removeClippedSubviews
+              ListEmptyComponent={
                 <View style={{ alignItems: "center", paddingVertical: 24, gap: 12 }}>
                   <Text style={[styles.bottomSheetTitle, isDarkTheme && styles.bottomSheetTitleDark]}>No events today</Text>
                   <Text style={[styles.bottomSheetSub, { textAlign: "center" }, isDarkTheme && styles.bottomSheetSubDark]}>
@@ -4981,15 +6100,14 @@ function AppInner() {
                     <Text style={styles.exploreEmptyBtnText}>Browse all events</Text>
                   </Pressable>
                 </View>
-              ) : (
-                calendarModalEvents.map((e, idx) => {
-                  const key = eventStorageKey(e);
-                  const rsvpState = rsvpStatuses[key];
-                  const saved = isSavedEvent(e);
-                  const poster = pickPoster(e.image_urls);
-                  return (
+              }
+              renderItem={({ item: e }) => {
+                const key = eventStorageKey(e);
+                const rsvpState = rsvpStatuses[key];
+                const saved = isSavedEvent(e);
+                const poster = pickPoster(e.image_urls);
+                return (
                     <Pressable
-                      key={`day-modal-${key}-${idx}`}
                       style={[styles.calendarDayEventCard, isDarkTheme && styles.calendarDayEventCardDark]}
                       onPress={() => setSelectedEvent(e)}
                     >
@@ -5002,6 +6120,12 @@ function AppInner() {
                       )}
                       <View style={{ padding: 12, gap: 6 }}>
                         <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          {isEventLiveNow(e) ? (
+                            <View style={styles.liveNowBadge}>
+                              <View style={styles.liveNowDot} />
+                              <Text style={styles.liveNowText}>LIVE NOW</Text>
+                            </View>
+                          ) : null}
                           <Text style={styles.mapTag}>{inferAudience(e)}</Text>
                           <Text style={[styles.bottomSheetSub, isDarkTheme && styles.bottomSheetSubDark]}>
                             {eventTime(e)} · {formatSourceLabel(e.source)}
@@ -5058,9 +6182,8 @@ function AppInner() {
                       </View>
                     </Pressable>
                   );
-                })
-              )}
-            </ScrollView>
+              }}
+            />
           </View>
         </View>
       </Modal>
@@ -5296,14 +6419,78 @@ function AppInner() {
                 );
               })()}
 
-              {orderedVisibleEvents
-                .filter((ev) => normalizeText(ev.source).toLowerCase() === selectedMasjidSheet.toLowerCase())
-                .map((ev, idx) => renderEventListCard(ev, `sheet-${idx}`))}
-              {orderedVisibleEvents.filter((ev) => normalizeText(ev.source).toLowerCase() === selectedMasjidSheet.toLowerCase()).length === 0 ? (
-                <Text style={[styles.bottomSheetSub, { textAlign: "center", marginTop: 24 }, isDarkTheme && styles.bottomSheetSubDark]}>
-                  No events match the current filters for this masjid yet.
-                </Text>
-              ) : null}
+              {(() => {
+                const masjidEvents = orderedVisibleEvents.filter(
+                  (ev) => normalizeText(ev.source).toLowerCase() === selectedMasjidSheet.toLowerCase(),
+                );
+                if (!masjidEvents.length) {
+                  return (
+                    <Text style={[styles.bottomSheetSub, { textAlign: "center", marginTop: 24 }, isDarkTheme && styles.bottomSheetSubDark]}>
+                      No events match the current filters for this masjid yet.
+                    </Text>
+                  );
+                }
+                return (
+                  <FlatList
+                    data={masjidEvents}
+                    keyExtractor={(ev, idx) => `sheet-poster-${eventStorageKey(ev)}-${idx}`}
+                    horizontal
+                    pagingEnabled
+                    showsHorizontalScrollIndicator={false}
+                    decelerationRate="fast"
+                    snapToInterval={masjidPosterWidth + 16}
+                    snapToAlignment="start"
+                    contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 8, gap: 16 }}
+                    initialNumToRender={3}
+                    maxToRenderPerBatch={3}
+                    windowSize={5}
+                    removeClippedSubviews
+                    renderItem={({ item: ev, index: idx }) => {
+                      const poster = pickPoster(ev.image_urls);
+                      return (
+                        <Pressable
+                          style={[
+                            styles.masjidPosterCard,
+                            { width: masjidPosterWidth },
+                            isDarkTheme && styles.masjidPosterCardDark,
+                          ]}
+                          onPress={() => {
+                            setSelectedMasjidSheet("");
+                            setSelectedEvent(ev);
+                          }}
+                        >
+                          {poster ? (
+                            <Image source={{ uri: poster }} style={styles.masjidPosterImage} resizeMode="cover" />
+                          ) : (
+                            <View style={[styles.masjidPosterImage, styles.masjidPosterImageEmpty]}>
+                              <Text style={[styles.masjidPosterEmptyEmoji, emojiFontStyle]}>🕌</Text>
+                            </View>
+                          )}
+                          <View style={styles.masjidPosterCaption}>
+                            <View style={styles.masjidPosterCaptionMeta}>
+                              <Text style={styles.masjidPosterCaptionDate} numberOfLines={1}>
+                                {formatHumanDate(ev.date)}
+                              </Text>
+                              <Text style={styles.masjidPosterCaptionDot}>·</Text>
+                              <Text style={styles.masjidPosterCaptionTime} numberOfLines={1}>
+                                {eventTime(ev)}
+                              </Text>
+                            </View>
+                            <Text style={styles.masjidPosterCaptionTitle} numberOfLines={2}>
+                              {ev.title}
+                            </Text>
+                            <View style={styles.masjidPosterCaptionHint}>
+                              <Text style={styles.masjidPosterCaptionHintText}>
+                                {idx + 1} / {masjidEvents.length} · tap to open
+                              </Text>
+                            </View>
+                          </View>
+                        </Pressable>
+                      );
+                    }}
+                  />
+                );
+              })()}
             </ScrollView>
           </View>
         </View>
@@ -5405,7 +6592,7 @@ function AppInner() {
                   setReference("");
                   setRadius("35");
                   setStartDate(todayIso());
-                  setEndDate(plusDaysIso(45));
+                  setEndDate(plusDaysIso(365));
                   setQuickFilters([]);
                 }}
               >
@@ -6149,6 +7336,21 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   captureBackPillText: { color: "#fff2e8", fontSize: 12, fontWeight: "800", letterSpacing: 0.15 },
+  welcomeSkipPill: {
+    position: "absolute",
+    top: 14,
+    right: 14,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.55)",
+    backgroundColor: "rgba(255,255,255,0.16)",
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    zIndex: 2,
+  },
+  welcomeSkipPillText: { color: "#fff2e8", fontSize: 12, fontWeight: "800", letterSpacing: 0.4 },
+  welcomeSkipPillTextNeo: { color: "#2e2e2e" },
+  welcomeSkipPillTextEmerald: { color: "#2f6245" },
   captureTitle: { color: "#fff8f2", fontSize: 26, fontWeight: "900", letterSpacing: -0.6, lineHeight: 32, maxWidth: "100%" },
   captureSub: { color: "#ffe8d6", fontSize: 15, lineHeight: 22, marginBottom: 4 },
   captureFieldGroup: { gap: 7, marginTop: 6 },
@@ -6244,6 +7446,21 @@ const styles = StyleSheet.create({
   },
   launchGreetingNeo: { color: "#8f4a25" },
   launchGreetingEmerald: { color: "#1f5137" },
+  launchDotsRow: {
+    position: "absolute",
+    bottom: 96,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+  launchDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#d68750",
+  },
+  launchDotDark: { backgroundColor: "#ffb486" },
   launchTitle: { color: "#ffffff", fontSize: 30, fontWeight: "900", letterSpacing: -0.4, textAlign: "center" },
   launchTitleDark: { color: "#eef2ff" },
   launchTitleNeo: { color: "#1f1f1f" },
@@ -6547,6 +7764,48 @@ const styles = StyleSheet.create({
   mapMasjidMarkerDim: { backgroundColor: "#6b778c" },
   mapMasjidEmoji: { fontSize: 17 },
   mapMasjidPinWrap: { alignItems: "center", justifyContent: "flex-end" },
+  mapHomePinWrap: { alignItems: "center", justifyContent: "center" },
+  mapHomePinOuter: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(45,112,255,0.25)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#ffffff",
+  },
+  mapHomePinInner: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: "#2d70ff",
+  },
+  mapHomePinLabelWrap: {
+    marginTop: 2,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+    backgroundColor: "rgba(12,15,25,0.85)",
+  },
+  mapHomePinLabel: { color: "#ffffff", fontSize: 11, fontWeight: "800", letterSpacing: 0.4 },
+  mapRecenterBtn: {
+    position: "absolute",
+    right: 14,
+    bottom: 18,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#0b1220",
+    shadowOpacity: 0.22,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+  mapRecenterEmoji: { fontSize: 20 },
   mapMasjidLogo: {
     width: 44,
     height: 44,
@@ -6852,15 +8111,110 @@ const styles = StyleSheet.create({
   calendarDayTextActive: { color: "#5c250f", fontWeight: "900" },
   calendarDayTextDark: { color: "#d2dbf3" },
   calendarDayDot: {
-    position: "absolute",
-    bottom: 4,
     width: 5,
     height: 5,
     borderRadius: 999,
     backgroundColor: "#ff7d50",
   },
+  calendarDayDotRow: {
+    position: "absolute",
+    bottom: 4,
+    flexDirection: "row",
+    gap: 2,
+  },
   calendarDayDotActive: { backgroundColor: "#a2401f" },
   calendarDayEmpty: { width: "14.285%", aspectRatio: 1, marginBottom: 8 },
+  calendarDayToday: {
+    borderColor: "#2d70ff",
+    borderWidth: 2,
+  },
+  calendarDayTextToday: { color: "#1849b8" },
+  calendarMonthBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e3e8f1",
+    marginVertical: 10,
+  },
+  calendarMonthBarDark: { backgroundColor: "#111728", borderColor: "#2b334b" },
+  calendarMonthArrowBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#f4f7fd",
+  },
+  calendarMonthArrow: { fontSize: 24, fontWeight: "800", color: "#2e4f82", lineHeight: 26 },
+  calendarMonthLabel: { fontSize: 18, fontWeight: "800", color: "#1e2740" },
+  calendarMonthLabelSub: { fontSize: 11, fontWeight: "600", color: "#8793ab", marginTop: 2 },
+  calendarLegendRow: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    marginTop: 10,
+    paddingHorizontal: 6,
+  },
+  calendarLegendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
+  calendarLegendText: { fontSize: 11, fontWeight: "600", color: "#4e5c77" },
+  calendarLegendSwatchToday: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: "#2d70ff",
+    backgroundColor: "#ffffff",
+  },
+  calendarLegendSwatchEvents: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: "#fff0e8",
+    borderWidth: 1,
+    borderColor: "#f9a77f",
+  },
+  calendarLegendSwatchSelected: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: "#ffd8c6",
+    borderWidth: 2,
+    borderColor: "#ff7d50",
+  },
+  calendarAgendaCount: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#4e5c77",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  },
+  calendarAgendaRow: {
+    flexDirection: "row",
+    gap: 12,
+    padding: 10,
+    borderRadius: 16,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e3e8f1",
+  },
+  calendarAgendaRowDark: { backgroundColor: "#111728", borderColor: "#2b334b" },
+  calendarAgendaPoster: {
+    width: 72,
+    height: 72,
+    borderRadius: 12,
+    backgroundColor: "#e3e8f1",
+  },
+  calendarAgendaWhen: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#4e5c77",
+    letterSpacing: 0.3,
+  },
+  calendarAgendaTitle: { fontSize: 15, fontWeight: "800", color: "#1e2740" },
   calendarMiniRow: {
     borderRadius: 14,
     borderWidth: 1,
@@ -7227,6 +8581,33 @@ const styles = StyleSheet.create({
 
   eventModalContainer: { flex: 1, backgroundColor: "#f6f8fc" },
   eventModalContainerDark: { backgroundColor: "#0b1220" },
+  eventModalSkeleton: {},
+  eventModalSkeletonTitleWrap: {
+    position: "absolute",
+    left: 20,
+    right: 20,
+    bottom: 28,
+  },
+  eventModalSkeletonTitle: {
+    color: "#ffffff",
+    fontSize: 28,
+    fontWeight: "900",
+    letterSpacing: -0.6,
+    lineHeight: 34,
+  },
+  eventModalSkeletonSub: {
+    color: "rgba(255,255,255,0.82)",
+    fontSize: 14,
+    fontWeight: "700",
+    marginTop: 8,
+    letterSpacing: 0.2,
+  },
+  eventModalSkeletonBody: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 40,
+  },
 
   eventHero: { width: "100%", overflow: "hidden" },
   eventHeroTopRow: {
@@ -7640,6 +9021,21 @@ const styles = StyleSheet.create({
     marginHorizontal: 14,
     gap: 10,
   },
+  nearestMasjidCard: {
+    backgroundColor: "#fff5ef",
+    borderColor: "#ffd3bd",
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+  },
+  nearestMasjidCardDark: {
+    backgroundColor: "#1f2335",
+    borderColor: "#354165",
+  },
+  nearestMasjidRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  nearestMasjidPin: { fontSize: 22 },
+  nearestMasjidName: { fontSize: 16, fontWeight: "800", color: "#1f2a3d" },
+  nearestMasjidMeta: { fontSize: 12, color: "#6b7894", marginTop: 2, fontWeight: "600" },
   homeSectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   homeSectionHeaderRight: { flexDirection: "row", alignItems: "center", gap: 10 },
   homeSectionTitle: { fontSize: 18, fontWeight: "900", color: "#1f2a3d", letterSpacing: -0.2 },
@@ -7659,6 +9055,29 @@ const styles = StyleSheet.create({
   homeEventRowDark: { backgroundColor: "#121a29", borderColor: "#22304d" },
   homeEventRowPoster: { width: 72, height: 72, borderRadius: 12, backgroundColor: "#eef2f9" },
   homeEventRowWhen: { color: "#ff7d50", fontWeight: "800", fontSize: 11 },
+  liveNowBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#ff2d55",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    marginRight: 6,
+    marginBottom: 2,
+  },
+  liveNowDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#fff",
+    marginRight: 5,
+  },
+  liveNowText: {
+    color: "#fff",
+    fontWeight: "900",
+    fontSize: 9.5,
+    letterSpacing: 0.6,
+  },
   homeEventRowTitle: { color: "#1b2333", fontWeight: "800", fontSize: 15, marginTop: 2, letterSpacing: -0.2 },
   homeEventRowMeta: { color: "#6b7894", fontSize: 12, marginTop: 2 },
 
@@ -7728,6 +9147,40 @@ const styles = StyleSheet.create({
     backgroundColor: "#f7f9fc",
   },
   exploreFilterBarDark: { backgroundColor: "#10131d", borderBottomColor: "#1f2433" },
+  locPromptCard: {
+    marginHorizontal: 16,
+    marginTop: 12,
+    padding: 14,
+    backgroundColor: "#f2f5fb",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#dfe4ef",
+    gap: 10,
+  },
+  locPromptCardDark: {
+    backgroundColor: "#161a26",
+    borderColor: "#242b3b",
+  },
+  locPromptTitle: { fontSize: 15, fontWeight: "800", color: "#15203b", letterSpacing: -0.2 },
+  locPromptSub: { fontSize: 13, color: "#5a6679", marginTop: 2 },
+  locPromptBtnRow: { flexDirection: "row", gap: 8, marginTop: 6 },
+  locPromptPrimaryBtn: {
+    flex: 1,
+    backgroundColor: "#2a63ff",
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: "center",
+  },
+  locPromptPrimaryBtnText: { color: "#fff", fontSize: 14, fontWeight: "800" },
+  locPromptSecondaryBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: "transparent",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  locPromptSecondaryBtnText: { color: "#5a6679", fontSize: 14, fontWeight: "700" },
   exploreFilterBarNeo: { backgroundColor: "#d8d8d8", borderBottomColor: "#b9b9b9" },
   exploreAudienceStrip: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 4 },
   exploreMoreChip: {
@@ -7760,6 +9213,17 @@ const styles = StyleSheet.create({
     backgroundColor: "#ff7d50",
   },
   exploreEmptyBtnText: { color: "#fff", fontWeight: "800", fontSize: 14 },
+  exploreLoadMoreBtn: {
+    alignSelf: "center",
+    marginTop: 8,
+    marginBottom: 18,
+    paddingHorizontal: 22,
+    paddingVertical: 12,
+    borderRadius: 999,
+    backgroundColor: "#173664",
+  },
+  exploreLoadMoreBtnText: { color: "#ffffff", fontWeight: "800", fontSize: 14, letterSpacing: 0.2 },
+  exploreSectionHeader: { paddingHorizontal: 12, paddingTop: 6, paddingBottom: 6 },
   exploreChipsGroup: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 6 },
 
   cardTagsRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 4 },
@@ -8023,21 +9487,32 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   topicChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "#dde5f4",
-    backgroundColor: "#f4f7ff",
+    borderColor: "#e4e9f4",
+    backgroundColor: "#ffffff",
+    shadowColor: "#0a1f3f",
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 1,
   },
   topicChipActive: {
-    borderColor: "#6d53e8",
-    backgroundColor: "#6d53e8",
+    borderColor: "#ff7d50",
+    backgroundColor: "#ff7d50",
+    shadowColor: "#ff7d50",
+    shadowOpacity: 0.28,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
   },
   topicChipText: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "700",
     color: "#4a556a",
+    letterSpacing: 0.1,
   },
   topicChipTextActive: {
     color: "#fff",
@@ -8101,6 +9576,18 @@ const styles = StyleSheet.create({
   },
   cardActionChipText: { fontSize: 12, fontWeight: "800", color: "#2e4f82" },
   cardActionChipTextActive: { color: "#fff" },
+  cardActionChipPressed: { opacity: 0.7, transform: [{ scale: 0.94 }] },
+  settingsVersionRow: {
+    alignItems: "center",
+    paddingVertical: 22,
+  },
+  settingsVersionText: {
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.5,
+    color: "#8793ab",
+    textTransform: "uppercase",
+  },
 
   bottomSheetBackdrop: {
     flex: 1,
@@ -8172,5 +9659,41 @@ const styles = StyleSheet.create({
   calendarDayEventPosterEmpty: { alignItems: "center", justifyContent: "center", backgroundColor: "#eef2f9" },
   calendarDayEventPosterEmptyText: { fontSize: 42, color: "#a3b0c8" },
   calendarDayEventTitle: { color: "#1b2333", fontSize: 16, fontWeight: "800", letterSpacing: -0.2 },
+  masjidPosterCard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 22,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#ebeef5",
+    shadowColor: "#0b1220",
+    shadowOpacity: 0.12,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 4,
+  },
+  masjidPosterCardDark: {
+    backgroundColor: "#121a29",
+    borderColor: "#22304d",
+    shadowOpacity: 0.4,
+  },
+  masjidPosterImage: {
+    width: "100%",
+    aspectRatio: 3 / 4,
+    backgroundColor: "#e7ecf4",
+  },
+  masjidPosterImageEmpty: {
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#eef2f9",
+  },
+  masjidPosterEmptyEmoji: { fontSize: 56, color: "#a3b0c8" },
+  masjidPosterCaption: { padding: 14, gap: 6 },
+  masjidPosterCaptionMeta: { flexDirection: "row", alignItems: "center", gap: 6 },
+  masjidPosterCaptionDate: { color: "#6b778c", fontSize: 12, fontWeight: "700", letterSpacing: 0.3 },
+  masjidPosterCaptionDot: { color: "#6b778c", fontSize: 12, fontWeight: "700" },
+  masjidPosterCaptionTime: { color: "#6b778c", fontSize: 12, fontWeight: "700", letterSpacing: 0.3 },
+  masjidPosterCaptionTitle: { color: "#1b2333", fontSize: 16, fontWeight: "800", letterSpacing: -0.2 },
+  masjidPosterCaptionHint: { marginTop: 2 },
+  masjidPosterCaptionHintText: { color: "#8793ab", fontSize: 11, fontWeight: "600", letterSpacing: 0.5 },
 });
 

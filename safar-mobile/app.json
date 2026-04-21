@@ -14,12 +14,19 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
+      "bundleIdentifier": "app.masjidly",
       "supportsTablet": true,
       "associatedDomains": [
         "applinks:masjidly.app"
-      ]
+      ],
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Safar uses your location to show nearby masjids and sort events by distance.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "buildNumber": "6"
     },
     "android": {
+      "package": "app.masjidly",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
@@ -47,7 +54,13 @@
     "plugins": [
       "expo-notifications",
       "expo-secure-store",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Safar uses your location to show nearby masjids and sort events by distance."
+        }
+      ]
     ],
     "web": {
       "favicon": "./assets/favicon.png"

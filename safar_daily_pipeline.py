@@ -399,6 +399,54 @@ def ensure_masjid_event_json_stubs() -> None:
             save_json(p, [])
 
 
+def _apply_seed_weekday_overrides(events: list) -> None:
+    """Mirror the backend's weekday_overrides.json rules onto the bundled seed
+    so offline/cold-start data matches what the API will serve. Shifts any
+    matching event's `date` by the rule's weekday_shift_days. Safe no-op if the
+    overrides file is missing or malformed.
+    """
+    from datetime import date as _date, timedelta as _td
+
+    ov_path = Path(__file__).resolve().parent / "weekday_overrides.json"
+    try:
+        raw = json.loads(ov_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    rules = raw.get("overrides", []) if isinstance(raw, dict) else []
+    norm = []
+    for r in rules:
+        if not isinstance(r, dict):
+            continue
+        src = (r.get("source") or "").strip().lower()
+        tc = (r.get("title_contains") or "").strip().lower()
+        try:
+            shift = int(r.get("weekday_shift_days", 0))
+        except Exception:
+            shift = 0
+        if src and tc and shift:
+            norm.append((src, tc, shift))
+    if not norm:
+        return
+    fixed = 0
+    for e in events:
+        src = (e.get("source") or "").strip().lower()
+        title = (e.get("title") or "").strip().lower()
+        for rule_src, rule_tc, rule_shift in norm:
+            if rule_src != src or rule_tc not in title:
+                continue
+            iso = (e.get("date") or "").strip()
+            try:
+                y, m, dd = [int(x) for x in iso.split("-")]
+                new_d = _date(y, m, dd) + _td(days=rule_shift)
+                e["date"] = new_d.isoformat()
+                fixed += 1
+            except Exception:
+                pass
+            break
+    if fixed:
+        print(f"[seed] applied {fixed} weekday-override shifts")
+
+
 def write_mobile_seed() -> None:
     """Dump a compact seed of future events + meta into the mobile bundle so the
     app shows real data on first launch / airplane mode, before any network call.
@@ -417,6 +465,8 @@ def write_mobile_seed() -> None:
     except Exception as exc:
         print(f"[seed] could not read events json: {exc}")
         return
+
+    _apply_seed_weekday_overrides(future)
 
     sources: List[str] = sorted({(e.get("source") or "").strip() for e in future if e.get("source")})
     dates = [e.get("date") for e in future if e.get("date")]
