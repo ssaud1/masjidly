@@ -27,6 +27,12 @@
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "ios": {
+        "ascAppId": "6762652447",
+        "appleId": "shaheersaud@icloud.com",
+        "appleTeamId": "MFQNQ74K92"
+      }
+    }
   }
 }
