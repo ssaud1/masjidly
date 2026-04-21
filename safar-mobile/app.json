@@ -23,7 +23,7 @@
         "NSLocationWhenInUseUsageDescription": "Safar uses your location to show nearby masjids and sort events by distance.",
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "9",
+      "buildNumber": "10",
       "privacyManifests": {
         "NSPrivacyAccessedAPITypes": [
           {
