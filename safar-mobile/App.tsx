@@ -185,7 +185,7 @@ const WELCOME_FLOW_DONE_KEY = "masjidly_welcome_flow_done_v1";
 const GUIDED_TOUR_DONE_KEY = "masjidly_guided_tour_done_v5";
 // Bump on every EAS update so the badge on the welcome screen reflects what's
 // actually running on device. v2 = post-"always-welcome" build + Explore perf.
-const APP_BUILD_VERSION = "v39";
+const APP_BUILD_VERSION = "v41";
 
 // Static hosted URLs referenced from several places (Settings, About,
 // PrivacyInfo).  Mirrored from `app.json > expo.extra.urls` so the app
@@ -4590,7 +4590,36 @@ function AppInner() {
               </View>
             </View>
 
-            <View style={[styles.welcomeSlide, { width: pagerWidth }]}>
+            <View
+              style={[
+                styles.welcomeSlide,
+                styles.welcomeSlideSetup,
+                {
+                  width: pagerWidth,
+                  // Explicit height is required: the parent is a horizontal
+                  // ScrollView and its children otherwise size to content,
+                  // which would collapse the inner vertical ScrollView
+                  // (flex:1 with no parent height ⇒ 0px tall).
+                  height: Math.max(windowHeight - insets.top - insets.bottom - 40, 480),
+                },
+              ]}
+            >
+              <KeyboardAvoidingView
+                style={styles.welcomeSetupKAV}
+                behavior={Platform.OS === "ios" ? "padding" : undefined}
+                keyboardVerticalOffset={0}
+              >
+              <ScrollView
+                style={styles.welcomeSetupScroll}
+                contentContainerStyle={[
+                  styles.welcomeSetupScrollContent,
+                  { paddingTop: 12, paddingBottom: Math.max(insets.bottom, 24) + 60 },
+                ]}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+                nestedScrollEnabled
+                directionalLockEnabled
+              >
               <Animated.View
                 style={[
                   styles.welcomeHeroCard,
@@ -4890,6 +4919,8 @@ function AppInner() {
                   </Text>
                 </Pressable>
               </Animated.View>
+              </ScrollView>
+              </KeyboardAvoidingView>
             </View>
           </Animated.ScrollView>
 
@@ -11471,7 +11502,24 @@ const styles = StyleSheet.create({
   welcomePrimaryBtnTextInferno: { color: "#2a1306" },
   welcomePrimaryBtnTextInsideCard: { color: "#2b3040" },
   captureBody: { paddingBottom: 30, flexGrow: 1, justifyContent: "center" },
-  captureCard: { minHeight: 680, justifyContent: "center", gap: 12, paddingTop: 22 },
+  captureCard: { gap: 12, paddingTop: 22, paddingBottom: 24 },
+  // Slide-3 (Quick setup) overrides: content must anchor to the top and be
+  // scrollable because on shorter phones (SE/mini/11) the form is taller
+  // than the viewport. Without these the card was centered inside a
+  // too-tall container and the title + Name field got pushed above the
+  // status bar with no way to reach them.
+  welcomeSlideSetup: {
+    justifyContent: "flex-start",
+    paddingTop: 0,
+    paddingBottom: 0,
+  },
+  welcomeSetupKAV: { flex: 1, width: "100%" },
+  welcomeSetupScroll: { flex: 1, width: "100%" },
+  welcomeSetupScrollContent: {
+    flexGrow: 1,
+    justifyContent: "flex-start",
+    paddingHorizontal: 0,
+  },
   captureGlowOne: { top: -70, right: -40, width: 190, height: 190 },
   captureGlowTwo: { bottom: -34, left: -18, width: 124, height: 124 },
   captureBackPill: {
