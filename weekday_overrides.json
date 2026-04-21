@@ -1,0 +1,7 @@
+{
+  "_comment": "Corrects day-of-week for recurring events whose posters say Mondays but actually happen on a different day. Each rule matches on (source, title_contains) and shifts date by weekday_shift_days. Applied server-side in safar_custom_app.load_events().",
+  "overrides": [
+    { "source": "alfalah", "title_contains": "My Deen Program", "weekday_shift_days": 1 },
+    { "source": "alfalah", "title_contains": "Secrets of Shari",  "weekday_shift_days": 1 }
+  ]
+}

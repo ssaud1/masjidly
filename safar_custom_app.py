@@ -457,9 +457,61 @@ def pick_data_file() -> Path:
     raise FileNotFoundError(f"No dataset found. Expected one of: {', '.join(DATA_FILES)}")
 
 
+def _load_weekday_overrides() -> List[Dict]:
+    """Load title-based date-shift overrides so we can fix scraped events whose
+    day-of-week is wrong on the masjid's own poster (e.g. ALFALAH posters still
+    say 'Mondays' but the program actually runs Tuesdays). Returns a list of
+    {source, title_contains, weekday_shift_days} rules; empty list if missing.
+    """
+    ov_path = PROJECT_ROOT / "weekday_overrides.json"
+    try:
+        data = json.loads(ov_path.read_text(encoding="utf-8"))
+        rules = data.get("overrides", []) if isinstance(data, dict) else []
+        out: List[Dict] = []
+        for r in rules:
+            if not isinstance(r, dict):
+                continue
+            src = clean(r.get("source", "")).lower()
+            tc = clean(r.get("title_contains", "")).lower()
+            try:
+                shift = int(r.get("weekday_shift_days", 0))
+            except Exception:
+                shift = 0
+            if src and tc and shift:
+                out.append({"source": src, "title_contains": tc, "shift": shift})
+        return out
+    except Exception:
+        return []
+
+
+def _apply_weekday_override(event: Dict, rules: List[Dict]) -> None:
+    """Mutates the event in place: shifts both `date` and `parsed_date` by the
+    matching rule's weekday_shift_days if any rule matches. Safe no-op if no
+    rule matches or the date is unparseable.
+    """
+    if not rules:
+        return
+    src = clean(event.get("source", "")).lower()
+    title = clean(event.get("title", "")).lower()
+    for r in rules:
+        if r["source"] != src:
+            continue
+        if r["title_contains"] not in title:
+            continue
+        iso = clean(event.get("date", ""))
+        d = parse_iso_date(iso)
+        if not d:
+            return
+        shifted = d + timedelta(days=r["shift"])
+        event["date"] = shifted.isoformat()
+        event["parsed_date"] = shifted.isoformat()
+        return
+
+
 def load_events() -> List[Dict]:
     path = pick_data_file()
     raw = json.loads(path.read_text(encoding="utf-8"))
+    weekday_rules = _load_weekday_overrides()
     events: List[Dict] = []
     for e in raw:
         title = clean(e.get("title", ""))
@@ -483,32 +535,32 @@ def load_events() -> List[Dict]:
             merged_types = []
         merged_types = [clean(x).lower() for x in merged_types if clean(x)]
         st_primary = clean(e.get("source_type", "")).lower()
-        events.append(
-            {
-                "event_uid": event_uid,
-                "source": source,
-                "source_type": st_primary,
-                "merged_source_types": merged_types,
-                "title": title,
-                "description": clean(e.get("description", "")),
-                "date": clean(e.get("date", "")),
-                "parsed_date": d.isoformat() if d else "",
-                "start_time": clean(e.get("start_time", "")),
-                "end_time": clean(e.get("end_time", "")),
-                "location_name": clean(e.get("location_name", "")),
-                "address": address,
-                "city": clean(e.get("city", "")),
-                "speaker": clean(e.get("speaker", "")),
-                "category": clean(e.get("category", "")),
-                "audience": clean(e.get("audience", "")),
-                "rsvp_link": clean(e.get("rsvp_link", "")),
-                "source_url": source_url,
-                "image_urls": normalize_image_urls(e.get("image_urls", [])),
-                "confidence": float(e.get("confidence", 0) or 0.0),
-                "deep_link": deep_link_for(event_uid),
-                "map_link": f"https://maps.google.com/?q={address.replace(' ', '+')}" if address else "",
-            }
-        )
+        normalized_event = {
+            "event_uid": event_uid,
+            "source": source,
+            "source_type": st_primary,
+            "merged_source_types": merged_types,
+            "title": title,
+            "description": clean(e.get("description", "")),
+            "date": clean(e.get("date", "")),
+            "parsed_date": d.isoformat() if d else "",
+            "start_time": clean(e.get("start_time", "")),
+            "end_time": clean(e.get("end_time", "")),
+            "location_name": clean(e.get("location_name", "")),
+            "address": address,
+            "city": clean(e.get("city", "")),
+            "speaker": clean(e.get("speaker", "")),
+            "category": clean(e.get("category", "")),
+            "audience": clean(e.get("audience", "")),
+            "rsvp_link": clean(e.get("rsvp_link", "")),
+            "source_url": source_url,
+            "image_urls": normalize_image_urls(e.get("image_urls", [])),
+            "confidence": float(e.get("confidence", 0) or 0.0),
+            "deep_link": deep_link_for(event_uid),
+            "map_link": f"https://maps.google.com/?q={address.replace(' ', '+')}" if address else "",
+        }
+        _apply_weekday_override(normalized_event, weekday_rules)
+        events.append(normalized_event)
     events.sort(key=lambda x: (x["parsed_date"] or "9999-12-31", x["start_time"] or "99:99", x["title"]))
     return events
 
