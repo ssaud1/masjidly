@@ -53,3 +53,4 @@ masjidly_app.db
 # --- IDE ---
 .idea/
 .vscode/
+.cursor/

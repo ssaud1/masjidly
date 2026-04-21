@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Privacy Policy — Masjidly</title>
+  <meta name="description" content="Masjidly privacy policy: what data we collect, how we use it, and how to delete it." />
+  <link rel="stylesheet" href="./assets/styles.css" />
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a class="brand" href="./index.html"><span class="brand-dot"></span> Masjidly</a>
+      <div class="nav-links">
+        <a href="./privacy.html">Privacy</a>
+        <a href="./support.html">Support</a>
+        <a href="./terms.html">Terms</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="container">
+    <div class="card">
+      <h1>Privacy Policy</h1>
+      <p class="muted">Last updated: April 20, 2026</p>
+
+      <p>
+        This policy explains what Masjidly ("we", "us", "the app") collects, why we collect it, and what choices you have.
+        Masjidly is a consumer iOS app that helps you discover events and programs at local masjids. We are privacy-first by design —
+        we collect as little as possible and never sell your data.
+      </p>
+
+      <h2>1. What we collect</h2>
+      <ul>
+        <li><strong>Account data (optional):</strong> If you choose to sign in, we store your email and a hashed password. You can use most of the app without an account.</li>
+        <li><strong>Profile preferences:</strong> Followed masjids, followed scholars, saved events, audience filter (brothers / sisters / family / all), and notification preferences. These are stored on our server so they sync across reinstalls.</li>
+        <li><strong>Approximate location (optional):</strong> If you grant location access, we use your coarse location <em>only on your device</em> to sort masjids by distance. We do not store your precise GPS coordinates on our servers. You can deny or revoke this permission at any time in iOS Settings.</li>
+        <li><strong>Push token (optional):</strong> If you enable notifications, we store an Expo push token so we can send reminders for events you've RSVP'd to and events near you.</li>
+        <li><strong>Diagnostic data:</strong> Basic error logs and counts of API calls. These are not tied to your identity.</li>
+      </ul>
+
+      <h2>2. What we do NOT collect</h2>
+      <ul>
+        <li>We do not collect your name, phone number, contacts, photos, or social graph.</li>
+        <li>We do not track you across other apps or websites.</li>
+        <li>We do not use third-party advertising SDKs.</li>
+        <li>We do not sell or rent any user data to anyone, ever.</li>
+      </ul>
+
+      <h2>3. How we use the data</h2>
+      <p>
+        We use the data above exclusively to operate the app: showing you events, sorting masjids by distance, sending the
+        notifications you opted into, and syncing your preferences across devices.
+      </p>
+
+      <h2>4. Event data</h2>
+      <p>
+        Event listings are scraped or submitted from public masjid websites, newsletters, and official social-media posts. We make a
+        best effort to attribute each event to the correct source masjid. If you believe an event is incorrect or should be removed,
+        please contact us at <a href="mailto:support@masjidly.app">support@masjidly.app</a>.
+      </p>
+
+      <h2>5. Children</h2>
+      <p>
+        Masjidly is rated 4+. It does not collect personal information from anyone, including children. Parents are welcome to use it
+        with their kids to discover family-friendly events.
+      </p>
+
+      <h2>6. Data retention and deletion</h2>
+      <p>
+        You can delete your account at any time from <strong>Settings → Account → Delete my account</strong> inside the app. When you do so:
+      </p>
+      <ul>
+        <li>Your account, saved events, followed masjids, followed scholars, and notification preferences are permanently deleted from our database within 7 days.</li>
+        <li>Your push token is invalidated immediately.</li>
+        <li>Event listings themselves are <em>not</em> user-generated and are unaffected.</li>
+      </ul>
+      <p>
+        If for any reason you can't use the in-app flow, you can email <a href="mailto:support@masjidly.app">support@masjidly.app</a>
+        from the address tied to your account and we will delete it within 7 days. See
+        <a href="./delete-account.html">delete-account.html</a> for details.
+      </p>
+
+      <h2>7. Security</h2>
+      <p>
+        Passwords are stored only as salted hashes (Werkzeug PBKDF2). All API traffic between the app and our servers is encrypted over HTTPS.
+        We store session tokens in Apple's iOS Keychain via <code>expo-secure-store</code>.
+      </p>
+
+      <h2>8. Third-party services</h2>
+      <ul>
+        <li><strong>Expo / EAS</strong> — app delivery and push notifications (Expo Push service).</li>
+        <li><strong>Railway</strong> — hosts our backend API.</li>
+        <li><strong>Apple Maps</strong> — renders the masjid map.</li>
+        <li><strong>Aladhan</strong> — daily prayer times by city.</li>
+      </ul>
+      <p>We only send these services the minimum data required to deliver their feature.</p>
+
+      <h2>9. Changes to this policy</h2>
+      <p>
+        If we change this policy, we'll update the "Last updated" date above and, when changes are material, surface a notice inside
+        the app the next time you open it.
+      </p>
+
+      <h2>10. Contact</h2>
+      <p>
+        Questions, concerns, or takedown requests? Email <a href="mailto:support@masjidly.app">support@masjidly.app</a>. We usually reply within 2 business days.
+      </p>
+    </div>
+  </div>
+
+  <footer>
+    &copy; <span id="y"></span> Masjidly.
+    <script>document.getElementById('y').textContent = new Date().getFullYear();</script>
+  </footer>
+</body>
+</html>

@@ -19,7 +19,7 @@ import secrets
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -275,6 +275,46 @@ def init_db() -> None:
         """
     )
     cur.execute("create index if not exists event_views_event_idx on event_views(event_uid)")
+
+    # --- referrals (merch-raffle bookkeeping) ---
+    # Each row is a single "signed up with someone's code" event. We store
+    # both the inviter and invitee codes verbatim so the client can continue
+    # to be the source of truth for code shape (M-XXXXXX).  user_id is set
+    # only when the invitee is authenticated at the time of submission.
+    cur.execute(
+        """
+        create table if not exists referrals (
+          id integer primary key autoincrement,
+          inviter_code text not null,
+          invitee_code text not null default '',
+          invitee_user_id integer,
+          created_at text not null
+        )
+        """
+    )
+    cur.execute("create index if not exists referrals_inviter_idx on referrals(inviter_code)")
+    cur.execute("create index if not exists referrals_invitee_idx on referrals(invitee_code)")
+    cur.execute(
+        "create unique index if not exists referrals_pair_unique "
+        "on referrals(inviter_code, invitee_code)"
+    )
+
+    # --- soft-added profile columns (v1.0.1 referral + email opt-in) ---
+    # SQLite doesn't support `add column if not exists`, so we try each one
+    # and swallow the error when the column already lives in the schema.
+    profile_additions = [
+        ("contact_email", "text not null default ''"),
+        ("email_opt_in", "integer not null default 0"),
+        ("referral_code", "text not null default ''"),
+        ("referred_by", "text not null default ''"),
+        ("referral_wins", "integer not null default 0"),
+    ]
+    for col, decl in profile_additions:
+        try:
+            cur.execute(f"alter table profiles add column {col} {decl}")
+        except sqlite3.OperationalError:
+            # column already present in an initialized database
+            pass
 
     con.commit()
     con.close()
@@ -1094,6 +1134,90 @@ def api_auth_me():
     )
 
 
+@app.route("/api/account", methods=["DELETE"])
+def api_account_delete():
+    """Permanently delete the authenticated user's account and all linked data.
+
+    Required for App Store Guideline 5.1.1(v) — accounts created in-app must
+    also be deletable in-app. All per-user tables are cleared, sessions are
+    invalidated, and the users row is removed.
+    """
+    user = auth_user()
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    user_id = int(user["id"])
+    con = db_conn()
+    try:
+        # Best-effort clear of every table that stores a user_id. Each call is
+        # wrapped individually so a missing table on an older DB still lets
+        # the rest run.
+        per_user_tables = [
+            "sessions",
+            "profiles",
+            "notification_settings",
+            "moderation_reports",
+            "rsvps",
+            "follows",
+            "reflections",
+            "correction_votes",
+            "passport_stamps",
+            "admin_masjids",
+            "event_views",
+        ]
+        for table in per_user_tables:
+            try:
+                con.execute(f"delete from {table} where user_id = ?", (user_id,))
+            except Exception:
+                # Table may not exist in older deployments.
+                pass
+        con.execute("delete from users where id = ?", (user_id,))
+        con.commit()
+        return jsonify({"ok": True, "deleted_user_id": user_id})
+    finally:
+        con.close()
+
+
+@app.get("/healthz")
+def api_healthz():
+    """Lightweight health-check endpoint for uptime monitors."""
+    try:
+        con = db_conn()
+        try:
+            con.execute("select 1").fetchone()
+        finally:
+            con.close()
+        return jsonify({"ok": True, "time": now_iso()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+def _row_get(row: sqlite3.Row, key: str, default=None):
+    """Safely read a column from a sqlite3.Row even if the column was added
+    in a later migration and is absent from the caller's fetched row.
+    """
+    if row is None:
+        return default
+    try:
+        value = row[key]
+    except (IndexError, KeyError):
+        return default
+    return default if value is None else value
+
+
+def _live_referral_wins(con: sqlite3.Connection, referral_code: str) -> int:
+    code = clean(str(referral_code or ""))
+    if not code:
+        return 0
+    try:
+        row = con.execute(
+            "select count(*) as n from referrals where inviter_code = ?",
+            (code,),
+        ).fetchone()
+        return int(row["n"] or 0) if row else 0
+    except sqlite3.OperationalError:
+        return 0
+
+
 @app.get("/api/profile")
 def api_profile_get():
     user = auth_user()
@@ -1104,6 +1228,12 @@ def api_profile_get():
     try:
         p = con.execute("select * from profiles where user_id = ?", (int(user["id"]),)).fetchone()
         n = con.execute("select * from notification_settings where user_id = ?", (int(user["id"]),)).fetchone()
+        # Referral wins are authoritative from the referrals table whenever a
+        # referral_code is set — fall back to the cached column otherwise so
+        # the mobile client always has a number to render.
+        referral_code = clean(str(_row_get(p, "referral_code", "") or ""))
+        live_wins = _live_referral_wins(con, referral_code) if referral_code else 0
+        cached_wins = int(_row_get(p, "referral_wins", 0) or 0)
         profile = {
             "favorite_sources": json.loads(p["favorite_sources"] or "[]"),
             "audience_filter": clean(p["audience_filter"] or "all"),
@@ -1112,6 +1242,11 @@ def api_profile_get():
             "home_lat": p["home_lat"],
             "home_lon": p["home_lon"],
             "expo_push_token": clean(p["expo_push_token"] or ""),
+            "contact_email": clean(str(_row_get(p, "contact_email", "") or "")),
+            "email_opt_in": bool(int(_row_get(p, "email_opt_in", 0) or 0)),
+            "referral_code": referral_code,
+            "referred_by": clean(str(_row_get(p, "referred_by", "") or "")),
+            "referral_wins": max(cached_wins, live_wins),
             "notifications": {
                 "new_event_followed": bool(int(n["new_event_followed"] or 0)),
                 "tonight_after_maghrib": bool(int(n["tonight_after_maghrib"] or 0)),
@@ -1121,6 +1256,26 @@ def api_profile_get():
         return jsonify({"user": {"id": int(user["id"]), "email": clean(user["email"])}, "profile": profile})
     finally:
         con.close()
+
+
+REFERRAL_CODE_RE = re.compile(r"^M-[A-Z0-9]{4,10}$")
+
+
+def _normalize_referral_code(value: Any) -> str:
+    s = clean(str(value or "")).upper()
+    if not s:
+        return ""
+    if not s.startswith("M-"):
+        s = f"M-{s.lstrip('-')}"
+    return s if REFERRAL_CODE_RE.match(s) else ""
+
+
+def _looks_like_email(value: str) -> bool:
+    v = clean(value)
+    if not v or "@" not in v or " " in v:
+        return False
+    local, _, domain = v.partition("@")
+    return bool(local) and "." in domain
 
 
 @app.put("/api/profile")
@@ -1138,6 +1293,22 @@ def api_profile_put():
     expo_push_token = clean(str(payload.get("expo_push_token", "")))
     notifications = payload.get("notifications", {}) if isinstance(payload.get("notifications"), dict) else {}
     fav_json = json.dumps([clean(str(s)).lower() for s in (favorite_sources or []) if clean(str(s))])
+
+    # New optional fields (v1.0.1): contact email, email opt-in, and referral
+    # bookkeeping.  Each one is only written when the client actually sends
+    # a value so clients that don't know about these fields keep working.
+    has_contact_email = "contact_email" in payload
+    contact_email_raw = clean(str(payload.get("contact_email", "") or ""))
+    contact_email = contact_email_raw.lower() if _looks_like_email(contact_email_raw) else ""
+    has_email_opt_in = "email_opt_in" in payload
+    email_opt_in = 1 if bool(payload.get("email_opt_in", False)) else 0
+
+    has_referral_code = "referral_code" in payload
+    referral_code = _normalize_referral_code(payload.get("referral_code", ""))
+
+    has_referred_by = "referred_by" in payload
+    referred_by = _normalize_referral_code(payload.get("referred_by", ""))
+
     con = db_conn()
     try:
         ensure_profile(int(user["id"]))
@@ -1160,6 +1331,71 @@ def api_profile_put():
                 int(user["id"]),
             ),
         )
+        # Best-effort partial update for the soft-added columns. Each write
+        # is wrapped so an older database schema (missing the column) doesn't
+        # break the main profile save.
+        def _soft_update(sql: str, params: tuple) -> None:
+            try:
+                con.execute(sql, params)
+            except sqlite3.OperationalError:
+                # Column missing — ignore and let the next deploy pick it up.
+                pass
+
+        if has_contact_email:
+            _soft_update(
+                "update profiles set contact_email = ? where user_id = ?",
+                (contact_email, int(user["id"])),
+            )
+        if has_email_opt_in:
+            _soft_update(
+                "update profiles set email_opt_in = ? where user_id = ?",
+                (email_opt_in, int(user["id"])),
+            )
+        if has_referral_code and referral_code:
+            _soft_update(
+                "update profiles set referral_code = ? where user_id = ?",
+                (referral_code, int(user["id"])),
+            )
+        if has_referred_by:
+            # Blank referred_by is also valid (lets a user "untether")
+            _soft_update(
+                "update profiles set referred_by = ? where user_id = ?",
+                (referred_by, int(user["id"])),
+            )
+            if referred_by:
+                invitee_code = ""
+                try:
+                    p_row = con.execute(
+                        "select referral_code from profiles where user_id = ?",
+                        (int(user["id"]),),
+                    ).fetchone()
+                    invitee_code = clean(str(_row_get(p_row, "referral_code", "") or ""))
+                except sqlite3.OperationalError:
+                    invitee_code = ""
+                _soft_update(
+                    """
+                    insert or ignore into referrals
+                      (inviter_code, invitee_code, invitee_user_id, created_at)
+                    values (?, ?, ?, ?)
+                    """,
+                    (referred_by, invitee_code, int(user["id"]), now_iso()),
+                )
+        # Refresh cached referral_wins from the referrals table so the next
+        # GET /api/profile is immediately in sync.
+        try:
+            p_row = con.execute(
+                "select referral_code from profiles where user_id = ?",
+                (int(user["id"]),),
+            ).fetchone()
+            code = clean(str(_row_get(p_row, "referral_code", "") or ""))
+            if code:
+                wins = _live_referral_wins(con, code)
+                _soft_update(
+                    "update profiles set referral_wins = ? where user_id = ?",
+                    (wins, int(user["id"])),
+                )
+        except sqlite3.OperationalError:
+            pass
         con.execute(
             """
             update notification_settings
@@ -1176,6 +1412,121 @@ def api_profile_put():
         )
         con.commit()
         return jsonify({"ok": True})
+    finally:
+        con.close()
+
+
+@app.post("/api/referral")
+def api_referral_post():
+    """Record a referral relationship (someone signed up with an invite code).
+
+    Called by the mobile app when a user enters a referral code during
+    onboarding or from the Settings "Invite a friend" flow.  Authentication
+    is optional — guests can submit a code and the inviter still gets credit.
+
+    Body:
+        {
+          "inviter_code": "M-ABCD12",   // required — the code they were invited with
+          "invitee_code": "M-ZZZZ99"    // optional — the invitee's own share code
+        }
+
+    Response:
+        { "ok": true, "inviter_wins": 4 }
+
+    Behavior:
+        - Referral codes are normalized / validated server-side.
+        - Duplicate (inviter, invitee) pairs are silently ignored.
+        - A user cannot refer themselves.
+        - If the invitee is authenticated, we also stamp their profile with
+          `referred_by` so it persists across devices.
+    """
+    payload = request.get_json(silent=True) or {}
+    inviter_code = _normalize_referral_code(payload.get("inviter_code", ""))
+    invitee_code = _normalize_referral_code(payload.get("invitee_code", ""))
+    if not inviter_code:
+        return jsonify({"error": "inviter_code is required and must look like M-ABCD12."}), 400
+    if invitee_code and invitee_code == inviter_code:
+        return jsonify({"error": "A user cannot refer themselves."}), 400
+
+    user = auth_user()
+    invitee_user_id = int(user["id"]) if user else None
+
+    con = db_conn()
+    try:
+        # Insert the relationship; duplicate (inviter, invitee) pairs are
+        # ignored thanks to the unique index we created at startup.
+        con.execute(
+            """
+            insert or ignore into referrals
+              (inviter_code, invitee_code, invitee_user_id, created_at)
+            values (?, ?, ?, ?)
+            """,
+            (inviter_code, invitee_code, invitee_user_id, now_iso()),
+        )
+        # Mirror the code onto the invitee's profile so it survives reinstalls.
+        if invitee_user_id is not None:
+            ensure_profile(invitee_user_id, con)
+            try:
+                con.execute(
+                    "update profiles set referred_by = ? where user_id = ?",
+                    (inviter_code, invitee_user_id),
+                )
+                if invitee_code:
+                    con.execute(
+                        "update profiles set referral_code = ? where user_id = ? and coalesce(referral_code, '') = ''",
+                        (invitee_code, invitee_user_id),
+                    )
+            except sqlite3.OperationalError:
+                # Columns missing on an older deployment — ignore, the
+                # referrals table is still the source of truth.
+                pass
+
+        # Refresh the inviter's cached wins count so a follow-up GET /api/profile
+        # for the inviter reflects this signup without a reboot.
+        try:
+            wins = _live_referral_wins(con, inviter_code)
+            con.execute(
+                "update profiles set referral_wins = ? where referral_code = ?",
+                (wins, inviter_code),
+            )
+        except sqlite3.OperationalError:
+            wins = 0
+        con.commit()
+        return jsonify({
+            "ok": True,
+            "inviter_code": inviter_code,
+            "invitee_code": invitee_code,
+            "inviter_wins": int(wins),
+        })
+    finally:
+        con.close()
+
+
+@app.get("/api/referral/status")
+def api_referral_status():
+    """Return the authenticated user's referral code and current win count.
+
+    Optional endpoint — lets the client avoid round-tripping the whole
+    profile payload just to refresh the raffle tile.
+    """
+    user = auth_user()
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    con = db_conn()
+    try:
+        ensure_profile(int(user["id"]), con)
+        row = con.execute(
+            "select * from profiles where user_id = ?",
+            (int(user["id"]),),
+        ).fetchone()
+        code = clean(str(_row_get(row, "referral_code", "") or ""))
+        referred_by = clean(str(_row_get(row, "referred_by", "") or ""))
+        wins = _live_referral_wins(con, code) if code else 0
+        return jsonify({
+            "referral_code": code,
+            "referred_by": referred_by,
+            "wins": int(wins),
+        })
     finally:
         con.close()
 
