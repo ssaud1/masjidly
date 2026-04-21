@@ -185,7 +185,7 @@ const WELCOME_FLOW_DONE_KEY = "masjidly_welcome_flow_done_v1";
 const GUIDED_TOUR_DONE_KEY = "masjidly_guided_tour_done_v5";
 // Bump on every EAS update so the badge on the welcome screen reflects what's
 // actually running on device. v2 = post-"always-welcome" build + Explore perf.
-const APP_BUILD_VERSION = "v42";
+const APP_BUILD_VERSION = "v43";
 
 // Static hosted URLs referenced from several places (Settings, About,
 // PrivacyInfo).  Mirrored from `app.json > expo.extra.urls` so the app
@@ -4768,18 +4768,10 @@ function AppInner() {
                     },
                   ]}
                 />
-                <Pressable
-                  onPress={skipOnboarding}
-                  style={styles.welcomeSkipPill}
-                  hitSlop={10}
-                >
-                  <Text style={[styles.welcomeSkipPillText, isNeo && styles.welcomeSkipPillTextNeo, isEmerald && styles.welcomeSkipPillTextEmerald]}>
-                    Skip
-                  </Text>
-                </Pressable>
                 <Text style={[styles.captureTitle, isNeo && styles.welcomeInfoTitleNeo, isEmerald && styles.welcomeInfoTitleEmerald]}>Tell us about yourself</Text>
                 <Text style={[styles.captureSub, isNeo && styles.welcomeInfoSubNeo, isEmerald && styles.welcomeInfoSubEmerald]}>
-                  Quick setup so we can personalize your Masjidly experience.
+                  This isn't a dating app — we just want to personalize your experience.
+                  Nothing's sold to anyone; one brother can't afford that kind of lawsuit anyway.
                 </Text>
 
                 <View style={styles.captureFieldGroup}>
@@ -5093,7 +5085,8 @@ function AppInner() {
           </Pressable>
           <Text style={[styles.captureTitle, isNeo && styles.welcomeInfoTitleNeo, isEmerald && styles.welcomeInfoTitleEmerald]}>Tell us about you</Text>
           <Text style={[styles.captureSub, isNeo && styles.welcomeInfoSubNeo, isEmerald && styles.welcomeInfoSubEmerald]}>
-            Quick setup so we can personalize your Masjidly experience.
+            This isn't a dating app — we just want to personalize your experience.
+            Nothing's sold to anyone; one brother can't afford that kind of lawsuit anyway.
           </Text>
 
           <View style={styles.captureFieldGroup}>
@@ -10603,12 +10596,26 @@ function AppInner() {
           const cardPositionedAtBottom = !isTaskStep && step?.target.kind !== "none";
           const cardPositionedAtTop = isTaskStep;
 
-          // Skip jumps straight to the end (which then fade-closes the
-          // overlay via advanceTour's close branch).
+          // Skip tears down the tour immediately. We don't go via
+          // advanceTour here because that reads guidedTourStep from
+          // the closure (stale) and would just advance one step.
           const skipTour = () => {
             hapticTap("selection");
-            setGuidedTourStep(GUIDED_TOUR_STEPS.length - 1);
-            advanceTour(1);
+            if (tourTransitioningRef.current) return;
+            tourTransitioningRef.current = true;
+            Animated.timing(tourContentOpacity, {
+              toValue: 0,
+              duration: 220,
+              easing: Easing.in(Easing.cubic),
+              useNativeDriver: true,
+            }).start(() => {
+              setGuidedTourOpen(false);
+              setGuidedTourStep(0);
+              SecureStore.setItemAsync(GUIDED_TOUR_DONE_KEY, "1").catch(() => {});
+              tourContentOpacity.setValue(1);
+              tourContentTranslate.setValue(0);
+              tourTransitioningRef.current = false;
+            });
           };
           const nextTour = () => {
             hapticTap("selection");
