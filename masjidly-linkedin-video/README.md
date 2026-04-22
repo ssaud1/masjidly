@@ -27,7 +27,17 @@ Output: `out/masjidly-linkedin-1080p.mp4`
 
 ## Assets
 
-Static files live in `public/` (served via `staticFile()`). They are copied from `safar-mobile/assets` (logos + tab bar icons). To swap in real app screenshots, add PNGs under `public/` and reference them in `src/MasjidlyLinkedIn.tsx`.
+- `public/icon.png` — app icon (intro).
+- `public/screenshots/shot01.png` … `shot08.png` — **real iPhone simulator captures** from `../store-screenshots-1284x2778/`, copied in order. The composition maps:
+  - Intro blur: `shot08`
+  - Large phone: `shot01`
+  - Three-up: `shot02`, `shot03`, `shot04`
+  - CTA full-bleed: `shot05`  
+  To use different frames, replace those PNGs or edit `SHOTS` in `src/MasjidlyLinkedIn.tsx`.
+
+Re-copy from the repo with:
+
+`cp store-screenshots-1284x2778/*.png public/screenshots/` (then rename to `shot01` … `shot08` in a stable order).
 
 ## LinkedIn
 

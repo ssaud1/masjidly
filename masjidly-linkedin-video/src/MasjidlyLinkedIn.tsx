@@ -12,29 +12,51 @@ import {
 const BRAND = {
   cream: "#fff7f0",
   deep: "#0c1018",
-  ink: "#1b2333",
-  accent: "#e85a24",
   accent2: "#ff8c4a",
 };
 
-const PhoneFrame: React.FC<{ children: React.ReactNode; scale?: number }> = ({
-  children,
-  scale = 1,
-}) => (
+/** iPhone-sized PNGs from store-screenshots-1284x2778 (see public/screenshots/) */
+const SHOTS = {
+  introBg: "screenshots/shot08.png",
+  heroPhone: "screenshots/shot01.png",
+  row1: "screenshots/shot02.png",
+  row2: "screenshots/shot03.png",
+  row3: "screenshots/shot04.png",
+  ctaBg: "screenshots/shot05.png",
+} as const;
+
+const PhoneFrame: React.FC<{
+  children: React.ReactNode;
+  scale?: number;
+  w?: number;
+  h?: number;
+}> = ({ children, scale = 1, w = 280, h = 580 }) => (
   <div
     style={{
-      width: 280,
-      height: 580,
+      width: w,
+      height: h,
       borderRadius: 36,
       border: "3px solid rgba(255,255,255,0.22)",
       boxShadow: "0 32px 80px rgba(0,0,0,0.45), inset 0 0 0 1px rgba(255,255,255,0.06)",
       overflow: "hidden",
-      background: "linear-gradient(180deg, #1a1f2e 0%, #0e1219 100%)",
+      background: "#0e1219",
       transform: `scale(${scale})`,
     }}
   >
     {children}
   </div>
+);
+
+const ScreenshotFill: React.FC<{ src: string }> = ({ src }) => (
+  <Img
+    src={staticFile(src)}
+    style={{
+      width: "100%",
+      height: "100%",
+      objectFit: "cover",
+      objectPosition: "center top",
+    }}
+  />
 );
 
 const Ambient: React.FC = () => {
@@ -86,7 +108,26 @@ const SceneIntro: React.FC = () => {
         fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
       }}
     >
-      <div style={{ textAlign: "center" as const, padding: 24 }}>
+      {/* Blurred real app UI — no stock photography */}
+      <AbsoluteFill style={{ zIndex: 0 }}>
+        <Img
+          src={staticFile(SHOTS.introBg)}
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "cover",
+            objectPosition: "center",
+            filter: "blur(28px) saturate(1.1)",
+            transform: "scale(1.08)",
+          }}
+        />
+        <AbsoluteFill
+          style={{
+            background: "linear-gradient(135deg, rgba(12,16,24,0.88) 0%, rgba(30,42,68,0.78) 50%, rgba(45,32,20,0.85) 100%)",
+          }}
+        />
+      </AbsoluteFill>
+      <div style={{ textAlign: "center" as const, padding: 24, zIndex: 1, position: "relative" }}>
         <div
           style={{
             display: "inline-block",
@@ -149,35 +190,7 @@ const ScenePhone: React.FC = () => {
         }}
       >
         <PhoneFrame scale={interpolate(sc, [0, 1], [0.92, 1])}>
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              paddingTop: 64,
-              paddingLeft: 20,
-              paddingRight: 20,
-              minHeight: "100%",
-              boxSizing: "border-box",
-              background: `linear-gradient(180deg, #e85a24 0%, #c94a1a 35%, #0e1219 35%)`,
-            }}
-          >
-            <Img
-              src={staticFile("masjidly3.png")}
-              style={{ width: 200, height: 80, objectFit: "contain", marginTop: 8 }}
-            />
-            <p
-              style={{
-                color: "rgba(255,255,255,0.95)",
-                fontSize: 16,
-                textAlign: "center",
-                marginTop: 24,
-                lineHeight: 1.45,
-              }}
-            >
-              Halaqahs, classes, and community — from masjids you trust.
-            </p>
-          </div>
+          <ScreenshotFill src={SHOTS.heroPhone} />
         </PhoneFrame>
         <div style={{ maxWidth: 640 }}>
           <h2
@@ -199,8 +212,8 @@ const ScenePhone: React.FC = () => {
               lineHeight: 1.4,
             }}
           >
-            Plan your week, see what is on the calendar, and explore nearby — without digging through
-            five different social feeds.
+            This is the real app — the same build users see on their phones: events, maps, and
+            reminders in one place.
           </p>
         </div>
       </div>
@@ -211,6 +224,11 @@ const ScenePhone: React.FC = () => {
 const SceneFeatures: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
+  const items = [
+    { shot: SHOTS.row1, t: "Your week", s: "Home & upcoming events" },
+    { shot: SHOTS.row2, t: "On the map", s: "Masjids and programs nearby" },
+    { shot: SHOTS.row3, t: "Discover", s: "Follow speakers & masjids" },
+  ];
   return (
     <AbsoluteFill
       style={{
@@ -226,24 +244,21 @@ const SceneFeatures: React.FC = () => {
             fontSize: 44,
             fontWeight: 700,
             color: BRAND.cream,
-            marginBottom: 40,
+            marginBottom: 36,
           }}
         >
-          Built for the way you already move
+          Real screens from Masjidly
         </h2>
         <div
           style={{
             display: "flex",
             flexDirection: "row",
             justifyContent: "center",
-            gap: 32,
+            gap: 28,
+            alignItems: "flex-end",
           }}
         >
-          {[
-            { icon: "tabs/home.png", t: "Home", s: "Your week at a glance" },
-            { icon: "tabs/map.png", t: "Map", s: "Masjids near you" },
-            { icon: "tabs/discover.png", t: "Discover", s: "Speakers and events" },
-          ].map((item, i) => {
+          {items.map((item, i) => {
             const s = spring({
               frame: frame - i * 8,
               fps,
@@ -253,21 +268,27 @@ const SceneFeatures: React.FC = () => {
               <div
                 key={item.t}
                 style={{
-                  width: 240,
-                  padding: 28,
-                  borderRadius: 20,
-                  background: "rgba(255,255,255,0.06)",
-                  border: "1px solid rgba(255,255,255,0.1)",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
                   transform: `translateY(${(1 - s) * 40}px)`,
                   opacity: s,
                 }}
               >
-                <Img
-                  src={staticFile(item.icon)}
-                  style={{ width: 56, height: 56, marginBottom: 16 }}
-                />
-                <div style={{ color: BRAND.cream, fontSize: 26, fontWeight: 700 }}>{item.t}</div>
-                <div style={{ color: "rgba(255,247,240,0.7)", fontSize: 19, marginTop: 8 }}>
+                <PhoneFrame w={200} h={420}>
+                  <ScreenshotFill src={item.shot} />
+                </PhoneFrame>
+                <div
+                  style={{
+                    color: BRAND.cream,
+                    fontSize: 24,
+                    fontWeight: 700,
+                    marginTop: 14,
+                  }}
+                >
+                  {item.t}
+                </div>
+                <div style={{ color: "rgba(255,247,240,0.7)", fontSize: 17, marginTop: 4 }}>
                   {item.s}
                 </div>
               </div>
@@ -283,50 +304,60 @@ const SceneCta: React.FC = () => {
   return (
     <AbsoluteFill
       style={{
-        justifyContent: "center",
-        alignItems: "center",
         fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
       }}
     >
-      <div style={{ textAlign: "center" as const, padding: 32 }}>
-        <h2
-          style={{
-            fontSize: 56,
-            fontWeight: 800,
-            color: BRAND.cream,
-            margin: 0,
-          }}
-        >
-          masjidly.app
-        </h2>
-        <p style={{ fontSize: 32, color: "rgba(255,247,240,0.85)", marginTop: 16 }}>
-          Free on the App Store — made for the ummah
-        </p>
-        <div
-          style={{
-            marginTop: 32,
-            display: "flex",
-            justifyContent: "center",
-            gap: 16,
-            opacity: 0.9,
-          }}
-        >
-          {["calendar", "feed", "settings"].map((name) => (
-            <Img
-              key={name}
-              src={staticFile(`tabs/${name}.png`)}
-              style={{ width: 44, height: 44, opacity: 0.85 }}
-            />
-          ))}
+      <Img
+        src={staticFile(SHOTS.ctaBg)}
+        style={{
+          width: "100%",
+          height: "100%",
+          objectFit: "cover",
+          objectPosition: "center",
+        }}
+      />
+      <AbsoluteFill
+        style={{
+          background:
+            "linear-gradient(105deg, rgba(8,10,16,0.88) 0%, rgba(12,16,24,0.55) 45%, rgba(20,14,10,0.75) 100%)",
+        }}
+      />
+      <AbsoluteFill
+        style={{
+          justifyContent: "center",
+          alignItems: "center",
+        }}
+      >
+        <div style={{ textAlign: "center" as const, padding: 32, maxWidth: 960 }}>
+          <h2
+            style={{
+              fontSize: 58,
+              fontWeight: 800,
+              color: BRAND.cream,
+              margin: 0,
+              textShadow: "0 2px 24px rgba(0,0,0,0.5)",
+            }}
+          >
+            masjidly.app
+          </h2>
+          <p
+            style={{
+              fontSize: 32,
+              color: "rgba(255,247,240,0.92)",
+              marginTop: 18,
+              textShadow: "0 1px 12px rgba(0,0,0,0.4)",
+            }}
+          >
+            Free on the App Store — made for the ummah
+          </p>
         </div>
-      </div>
+      </AbsoluteFill>
     </AbsoluteFill>
   );
 };
 
 export const MasjidlyLinkedIn: React.FC = () => {
   const { width, height } = useVideoConfig();
-  // 15s @ 30fps; LinkedIn-friendly 16:9
   return (
     <AbsoluteFill
       style={{
