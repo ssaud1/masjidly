@@ -7,10 +7,12 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "ios:sim": "expo start --ios --localhost --clear",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "test:smoke": "node tests/smoke.mjs"
   },
   "dependencies": {
     "@expo-google-fonts/noto-color-emoji": "^0.4.5",
+    "@expo/vector-icons": "^15.1.1",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-masked-view/masked-view": "^0.3.2",
     "expo": "~54.0.33",

@@ -8,6 +8,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import * as Notifications from "expo-notifications";
 import * as SecureStore from "expo-secure-store";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { MaterialIcons } from "@expo/vector-icons";
 import MapView, { Callout, Marker, type Region } from "react-native-maps";
 
 // Haptics load lazily: native module is only present in builds that bundled
@@ -81,6 +82,13 @@ import {
   View,
 } from "react-native";
 
+/** iOS UIScrollView defers child touches to detect scrolling; this restores instant button taps inside vertical lists. */
+const IOS_SCROLL_INSTANT_TOUCH =
+  Platform.OS === "ios" ? ({ delaysContentTouches: false } as Record<string, unknown>) : {};
+
+/** Drop the default press delay so `Pressable` responds immediately (especially Android inside horizontal lists). */
+const PRESSABLE_INSTANT = { unstable_pressDelay: 0 } as const;
+
 type FreshnessInfo = {
   label: string;
   color: "green" | "yellow" | "orange" | "blue" | "gray" | string;
@@ -97,7 +105,7 @@ type CorrectionInfo = {
   verified: boolean;
 };
 
-type TabKey = "home" | "explore" | "discover" | "calendar" | "saved" | "settings";
+type TabKey = "home" | "explore" | "discover" | "calendar" | "feed" | "settings";
 
 type EventItem = {
   event_uid?: string;
@@ -150,6 +158,67 @@ type Speaker = {
   image_url?: string;
 };
 
+type SpeakerVideo = {
+  video_id: string;
+  title: string;
+  channel: string;
+  published_at: string;
+  duration_seconds: number;
+  duration_label: string;
+  view_count: number;
+  thumbnail_url: string;
+  url: string;
+};
+
+type MasjidAmenities = {
+  amenities: Record<string, boolean | number | string>;
+  description: string;
+  website: string;
+  phone: string;
+  email: string;
+  updated_at: string;
+};
+
+/** Short labels for Discover masjid cards — only keys we want to surface. */
+const DISCOVER_AMENITY_LABELS: Record<string, string> = {
+  basketball_court: "Court",
+  gym: "Gym",
+  sunday_school: "School",
+  full_time_school: "Full-time school",
+  youth_program: "Youth",
+  hifz_program: "Hifz",
+  quran_classes: "Qur'an",
+  library: "Library",
+  livestream_jumuah: "Live Jumu'ah",
+  funeral_services: "Janazah",
+  nikah_services: "Nikah",
+  wheelchair_access: "Accessible",
+  sisters_entrance: "Sisters' entrance",
+  childcare_during_jumuah: "Childcare",
+};
+
+function discoverAmenityChips(
+  amenities: Record<string, boolean | number | string> | undefined,
+  max = 3,
+): string[] {
+  if (!amenities) return [];
+  const out: string[] = [];
+  for (const [key, val] of Object.entries(amenities)) {
+    if (val === true) {
+      const lbl = DISCOVER_AMENITY_LABELS[key];
+      if (lbl) {
+        out.push(lbl);
+        if (out.length >= max) return out;
+      }
+    }
+  }
+  const ps = amenities.parking_spaces;
+  if (typeof ps === "number" && ps > 0 && out.length < max) {
+    out.push(ps >= 100 ? "Large lot" : "Parking");
+  }
+  return out.slice(0, max);
+}
+
 type MetaResponse = {
   sources: string[];
   default_reference: string;
@@ -185,7 +254,7 @@ const WELCOME_FLOW_DONE_KEY = "masjidly_welcome_flow_done_v1";
 const GUIDED_TOUR_DONE_KEY = "masjidly_guided_tour_done_v5";
 // Bump on every EAS update so the badge on the welcome screen reflects what's
 // actually running on device. v2 = post-"always-welcome" build + Explore perf.
-const APP_BUILD_VERSION = "v43";
+const APP_BUILD_VERSION = "v71";
 
 // Static hosted URLs referenced from several places (Settings, About,
 // PrivacyInfo).  Mirrored from `app.json > expo.extra.urls` so the app
@@ -199,6 +268,9 @@ const MASJIDLY_URLS = {
   marketing: "https://ssaud1.github.io/masjidly/",
   supportEmail: "support@masjidly.app",
 } as const;
+
+/** Bump when the hosted privacy policy materially changes — users must re-accept. */
+const PRIVACY_POLICY_VERSION = "1";
 const THEME_KEY = "masjidly_theme_v1";
 const FOLLOWED_MASJIDS_KEY = "masjidly_followed_masjids_v1";
 const FOLLOWED_SCHOLARS_KEY = "masjidly_followed_scholars_v1";
@@ -208,16 +280,17 @@ const FILTER_PRESETS_KEY = "masjidly_filter_presets_v1";
 const FEEDBACK_RESPONSES_KEY = "masjidly_feedback_responses_v1";
 const STREAK_TRACKER_KEY = "masjidly_streak_tracker_v1";
 const REFERRAL_CODE_KEY = "masjidly_referral_code_v1";
+const FEED_SETUP_DONE_KEY = "masjidly_feed_setup_done_v1";
 // Whoever's share code THIS user entered when signing up. Set once during
 // onboarding (or later via Settings) so we can credit the inviter for the
-// monthly Masjidly merch raffle. Empty string until the user enters one.
+// monthly Masjid.ly merch raffle. Empty string until the user enters one.
 const REFERRED_BY_KEY = "masjidly_referred_by_v1";
 // Persisted tally of how many other users have signed up using *this*
 // device's share code. Incremented when the backend tells us our code was
 // used, or locally when we detect an invite chain in dev builds.
 const REFERRAL_WINS_KEY = "masjidly_referral_wins_v1";
 const OFFICIAL_LOGO = require("./assets/masjidly-logo.png");
-const TOPBAR_WORDMARK = require("./assets/masjidly-8-cropped.png");
+const TOPBAR_WORDMARK = require("./assets/masjidly1.png");
 const SPRITE_GREETER = require("./assets/sprite-greeter.png");
 const SPRITE_AVATAR = require("./assets/sprite-avatar.png");
 // Standing smiling Muslim man — current canonical companion art. Used for
@@ -225,7 +298,92 @@ const SPRITE_AVATAR = require("./assets/sprite-avatar.png");
 // older pixel sprites above are kept around for backward-compat only.
 const SPRITE_MAN = require("./assets/sprite-man.png");
 const WELCOME_LOGO = require("./assets/masjidly-6.png");
-const WELCOME_TOAST_TEXT = "Welcome!";
+// Illustrations of a cat using Masjid.ly — shown on the welcome pager as a
+// lighthearted "be like this" cue. Intentionally big and image-forward so the
+// first experience feels warm instead of a wall of text.
+const CAT_READING = require("./assets/cat-reading.jpg");
+// Pixel-art GIF of a cat hammering a monitor — the "our hard workers are
+// working" moment after the user hits Build my feed.
+const FEED_BUILDING_CAT = require("./assets/feed-building-cat.gif");
+// Material Symbols tab icons (rendered from SVG sources the user provided).
+// All are monochrome greyscale PNGs so we recolor them at runtime via
+// `tintColor` to match the active theme.
+const TAB_ICON_HOME = require("./assets/tab-icons/home.png");
+const TAB_ICON_MAP = require("./assets/tab-icons/map.png");
+const TAB_ICON_DISCOVER = require("./assets/tab-icons/discover.png");
+const TAB_ICON_CALENDAR = require("./assets/tab-icons/calendar.png");
+const TAB_ICON_FEED = require("./assets/tab-icons/feed.png");
+const TAB_ICON_SETTINGS = require("./assets/tab-icons/settings.png");
+
+// ── Material Symbols rounded glyphs ────────────────────────────────────────
+// Monochrome 96px PNGs rendered from Google's Material Design Icons repo
+// (symbols/web/<name>/materialsymbolsrounded/<name>_24px.svg). Rendered at
+// runtime via <Mi name="..." size={...} color={...} /> so they adopt the
+// current theme colour via tintColor. This replaces the ad-hoc unicode /
+// emoji glyphs (♥ ✕ ↗ ◇ etc.) the app used to scatter into Text nodes.
+const MI_ICONS = {
+  arrow_downward: require("./assets/mi/arrow_downward.png"),
+  auto_awesome: require("./assets/mi/auto_awesome.png"),
+  bookmark: require("./assets/mi/bookmark.png"),
+  bookmark_fill1: require("./assets/mi/bookmark_fill1.png"),
+  calendar_today: require("./assets/mi/calendar_today.png"),
+  celebration: require("./assets/mi/celebration.png"),
+  chat: require("./assets/mi/chat.png"),
+  check: require("./assets/mi/check.png"),
+  close: require("./assets/mi/close.png"),
+  contrast: require("./assets/mi/contrast.png"),
+  dark_mode: require("./assets/mi/dark_mode.png"),
+  expand_less: require("./assets/mi/expand_less.png"),
+  explore: require("./assets/mi/explore.png"),
+  favorite: require("./assets/mi/favorite.png"),
+  favorite_fill1: require("./assets/mi/favorite_fill1.png"),
+  groups: require("./assets/mi/groups.png"),
+  info: require("./assets/mi/info.png"),
+  lightbulb: require("./assets/mi/lightbulb.png"),
+  location_on: require("./assets/mi/location_on.png"),
+  logout: require("./assets/mi/logout.png"),
+  mail: require("./assets/mi/mail.png"),
+  menu: require("./assets/mi/menu.png"),
+  mosque: require("./assets/mi/mosque.png"),
+  notifications: require("./assets/mi/notifications.png"),
+  open_in_new: require("./assets/mi/open_in_new.png"),
+  palette: require("./assets/mi/palette.png"),
+  pets: require("./assets/mi/pets.png"),
+  play_arrow: require("./assets/mi/play_arrow.png"),
+  refresh: require("./assets/mi/refresh.png"),
+  restart_alt: require("./assets/mi/restart_alt.png"),
+  schedule: require("./assets/mi/schedule.png"),
+  school: require("./assets/mi/school.png"),
+  search: require("./assets/mi/search.png"),
+  share: require("./assets/mi/share.png"),
+  star: require("./assets/mi/star.png"),
+  star_fill1: require("./assets/mi/star_fill1.png"),
+  thumb_up: require("./assets/mi/thumb_up.png"),
+  verified_user: require("./assets/mi/verified_user.png"),
+  warning: require("./assets/mi/warning.png"),
+  waving_hand: require("./assets/mi/waving_hand.png"),
+} as const;
+type MiName = keyof typeof MI_ICONS;
+function Mi({
+  name,
+  size = 18,
+  color,
+  style,
+}: {
+  name: MiName;
+  size?: number;
+  color?: string;
+  style?: any;
+}) {
+  return (
+    <Image
+      source={MI_ICONS[name]}
+      style={[{ width: size, height: size, tintColor: color }, style]}
+      resizeMode="contain"
+    />
+  );
+}
+
 const CALENDAR_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 const MASJID_COORDS: Record<string, { latitude: number; longitude: number }> = {
   iceb: { latitude: 40.4308, longitude: -74.4122 },
@@ -346,6 +504,8 @@ type PersonalizationPrefs = {
   preferredAudience: "all" | "brothers" | "sisters";
   interests: string[];
   completed: boolean;
+  /** Empty = not accepted; otherwise matches `PRIVACY_POLICY_VERSION` at accept time. */
+  privacy_policy_accepted_version: string;
 };
 
 type ThemeMode = "minera" | "midnight" | "neo" | "vitaria" | "inferno" | "emerald";
@@ -478,7 +638,7 @@ function buildGoogleCalendarDates(e: EventItem): string {
 function buildGoogleCalendarUrl(e: EventItem): string {
   const params = new URLSearchParams();
   params.set("action", "TEMPLATE");
-  params.set("text", normalizeText(e.title || "Masjidly Event"));
+  params.set("text", normalizeText(e.title || "Masjid.ly Event"));
   const details = normalizeText(e.description || e.raw_text || "");
   if (details) params.set("details", details);
   const location = normalizeText([e.location_name, e.address].filter(Boolean).join(" - "));
@@ -493,7 +653,7 @@ function buildOutlookCalendarUrl(e: EventItem): string {
   const params = new URLSearchParams();
   params.set("path", "/calendar/action/compose");
   params.set("rru", "addevent");
-  params.set("subject", normalizeText(e.title || "Masjidly Event"));
+  params.set("subject", normalizeText(e.title || "Masjid.ly Event"));
   const details = normalizeText(e.description || e.raw_text || "");
   if (details) params.set("body", details);
   const location = normalizeText([e.location_name, e.address].filter(Boolean).join(" - "));
@@ -558,6 +718,164 @@ function cleanSpeakerName(name: string): string {
   // Cap length for display
   if (cut.length > 40) cut = cut.slice(0, 38).trim() + "…";
   return cut || raw;
+}
+
+// Aligned with SPEAKER_JUNK_WORDS in safar_custom_app.py — any token = reject.
+const SPEAKER_JUNK_TOKENS = new Set([
+  "gallery",
+  "contact",
+  "education",
+  "services",
+  "appointment",
+  "nikkah",
+  "home",
+  "about",
+  "donate",
+  "menu",
+  "team",
+  "privacy",
+  "policy",
+  "terms",
+  "login",
+  "register",
+  "subscribe",
+  "the",
+  "for",
+  "with",
+  "an",
+  "to",
+  "of",
+  "and",
+  "at",
+  "on",
+  "in",
+  "by",
+  "muslim",
+  "center",
+  "masjid",
+  "islamic",
+  "tonight",
+  "night",
+  "reminder",
+  "lesson",
+  "lecture",
+  "khutbah",
+  "reciting",
+  "adhan",
+  "ages",
+  "continuation",
+  "being",
+  "our",
+  "calendar",
+  "volunteers",
+  "volunteer",
+  "staff",
+  "committee",
+  "board",
+  "visit",
+  "phone",
+  "support",
+  "welcome",
+  "newsletter",
+  "resources",
+  "programs",
+  "events",
+  "media",
+]);
+
+const SCHOLAR_TITLE_PREFIX = new Set(["imam", "shaykh", "sheikh", "sheik", "ustadh", "ustad", "dr", "qari"]);
+
+function trimBadScholarTokens(name: string): string {
+  const parts = name.replace(/\s+/g, " ").trim().split(/\s+/).filter(Boolean);
+  const out: string[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const w = parts[i];
+    const letters = w.replace(/[^a-zA-Z]/g, "");
+    const low = letters.toLowerCase();
+    if (!letters) continue;
+    const titleTok = low.replace(/\./g, "");
+    if (i === 0 && SCHOLAR_TITLE_PREFIX.has(titleTok)) {
+      out.push(w);
+      continue;
+    }
+    if (SPEAKER_JUNK_TOKENS.has(low)) break;
+    out.push(w);
+  }
+  if (out.length < 2) return "";
+  return out.join(" ");
+}
+
+function scholarNameIsPlausible(name: string): boolean {
+  const tokens = (name.match(/[A-Za-z]+/g) || []).map((t) => t.toLowerCase());
+  if (!tokens.length || tokens.length > 5) return false;
+  for (const t of tokens) {
+    if (SPEAKER_JUNK_TOKENS.has(t)) return false;
+  }
+  const letters = tokens.join("").length;
+  if (letters < 4) return false;
+  return true;
+}
+
+function finalizeScholarCandidate(raw: string): string {
+  const t = trimBadScholarTokens(cleanSpeakerName(raw)).trim();
+  if (!t || !scholarNameIsPlausible(t)) return "";
+  return t;
+}
+
+function inferSpeakerFromText(text: string): string {
+  const t = normalizeText(text || "");
+  if (!t) return "";
+  const patterns = [
+    /\b(?:imam|shaykh|sheikh|sheik|ustadh|ustad|dr\.?|qari)\s+[A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+){0,3}\b/gi,
+    /\b(?:imam|shaykh|sheikh|sheik|ustadh|ustad|dr\.?|qari)\s+[a-z][a-zA-Z'-]+(?:\s+[a-z][a-zA-Z'-]+){0,3}\b/gi,
+  ];
+  for (const rx of patterns) {
+    const re = new RegExp(rx.source, rx.flags);
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(t)) !== null) {
+      const chunk = normalizeText(m[0]);
+      const fin = finalizeScholarCandidate(chunk);
+      if (fin) return fin;
+    }
+  }
+  return "";
+}
+
+/** Structured speaker + same inference as event sheet; drops nav/blurb junk. */
+function effectiveEventSpeakerName(e: EventItem): string {
+  const direct = (e.speaker || "").trim();
+  if (direct) {
+    const fin = finalizeScholarCandidate(cleanSpeakerName(direct));
+    if (fin) return fin;
+  }
+  return inferSpeakerFromText(
+    `${e.poster_ocr_text || ""} ${e.description || ""} ${e.raw_text || ""} ${e.title || ""}`,
+  );
+}
+
+function eventLineMatchesSpeakerSlug(line: string, slug: string): boolean {
+  if (!line || !slug) return false;
+  return line.includes(slug) || slug.includes(line);
+}
+
+function enrichDiscoverPosterFromEvents(sp: Speaker, pool: EventItem[]): Speaker {
+  if (sp.image_url && !isWeakPosterUrl(sp.image_url)) return sp;
+  const target = (sp.slug || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const nameHay = sp.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  let weak = "";
+  for (const ev of pool) {
+    const sn = effectiveEventSpeakerName(ev);
+    if (!sn) continue;
+    const line = sn.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    const match =
+      (target && eventLineMatchesSpeakerSlug(line, target)) ||
+      (nameHay.length >= 4 && eventLineMatchesSpeakerSlug(line, nameHay));
+    if (!match) continue;
+    const p = eventPosterUrl(ev);
+    if (p && !isWeakPosterUrl(p)) return { ...sp, image_url: p };
+    if (p && !weak) weak = p;
+  }
+  return weak ? { ...sp, image_url: weak } : sp;
 }
 
 /**
@@ -679,15 +997,36 @@ function eventStartDate(e: any): Date | null {
   if (!iso) return null;
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
   if (!m) return null;
-  const startTime = (e?.start_time || "").toString().trim();
-  const hm = /^([0-2]?\d):([0-5]\d)/.exec(startTime);
+  const startMin = parseEventClockMinutes(e?.start_time);
   const year = Number(m[1]);
   const month = Number(m[2]) - 1;
   const day = Number(m[3]);
-  const hour = hm ? Number(hm[1]) : 10;
-  const min = hm ? Number(hm[2]) : 0;
+  const hour = startMin != null ? Math.floor(startMin / 60) : 10;
+  const min = startMin != null ? startMin % 60 : 0;
   const d = new Date(year, month, day, hour, min, 0, 0);
   return isNaN(d.getTime()) ? null : d;
+}
+
+/** Parse event clock text like "7:15 PM", "19:15", "7pm" into minutes since midnight. */
+function parseEventClockMinutes(raw: unknown): number | null {
+  if (!raw) return null;
+  const s = String(raw).trim().toLowerCase();
+  if (!s) return null;
+  const m = /^([0-2]?\d)(?::([0-5]\d))?\s*([ap])?\.?\s*m?\.?$/.exec(s);
+  if (!m) return null;
+  let hour = Number(m[1]);
+  const min = Number(m[2] || "0");
+  if (!Number.isFinite(hour) || !Number.isFinite(min) || min < 0 || min > 59) return null;
+  const suffix = m[3] || "";
+  if (suffix) {
+    if (hour < 1 || hour > 12) return null;
+    // 12am -> 00:xx, 12pm -> 12:xx
+    hour = hour % 12;
+    if (suffix === "p") hour += 12;
+  } else if (hour > 23) {
+    return null;
+  }
+  return hour * 60 + min;
 }
 
 // Local notification scheduling for RSVP'd events. We fire two reminders:
@@ -776,16 +1115,10 @@ function isEventPastNow(e: any): boolean {
   if (isoDate < localTodayIso) return true;
   if (isoDate > localTodayIso) return false;
   // Same-day: use end_time if present, else start_time + 60min, else start_time.
-  const parseHm = (s: any): number | null => {
-    if (!s) return null;
-    const m = /^([0-2]?\d):([0-5]\d)/.exec(s.toString().trim());
-    if (!m) return null;
-    return Number(m[1]) * 60 + Number(m[2]);
-  };
   const nowMin = now.getHours() * 60 + now.getMinutes();
-  const endMin = parseHm(e?.end_time);
+  const endMin = parseEventClockMinutes(e?.end_time);
   if (endMin != null) return nowMin > endMin;
-  const startMin = parseHm(e?.start_time);
+  const startMin = parseEventClockMinutes(e?.start_time);
   if (startMin != null) return nowMin > startMin + 60; // assume 1h duration
   return false;
 }
@@ -796,16 +1129,10 @@ function isEventLiveNow(e: any): boolean {
   if (!isoDate) return false;
   const localTodayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   if (isoDate !== localTodayIso) return false;
-  const parseHm = (s: any): number | null => {
-    if (!s) return null;
-    const m = /^([0-2]?\d):([0-5]\d)/.exec(s.toString().trim());
-    if (!m) return null;
-    return Number(m[1]) * 60 + Number(m[2]);
-  };
-  const startMin = parseHm(e?.start_time);
+  const startMin = parseEventClockMinutes(e?.start_time);
   if (startMin == null) return false;
   const nowMin = now.getHours() * 60 + now.getMinutes();
-  const endMin = parseHm(e?.end_time);
+  const endMin = parseEventClockMinutes(e?.end_time);
   const effectiveEnd = endMin != null ? endMin : startMin + 60; // default 1h duration
   return nowMin >= startMin && nowMin <= effectiveEnd;
 }
@@ -825,7 +1152,7 @@ type GuidedTourTaskId =
   | "open-chatbot";
 
 type GuidedTourTarget =
-  | { kind: "tab"; tab: "home" | "explore" | "discover" | "calendar" | "saved" | "settings"; tabIndex: number }
+  | { kind: "tab"; tab: "home" | "explore" | "discover" | "calendar" | "feed" | "settings"; tabIndex: number }
   | { kind: "chatbot" }
   | {
       // Interactive step — the user must actually do something in the
@@ -846,8 +1173,8 @@ const GUIDED_TOUR_STEPS: Array<{
 }> = [
   // 1. Intro
   {
-    title: "As-salāmu ʿalaykum! 👋",
-    body: "Let's actually use Masjidly together. I'll point, you tap. Takes about 90 seconds — and by the end you'll have a personalized feed.",
+    title: "As-salāmu ʿalaykum!",
+    body: "Let's actually use Masjid.ly together. I'll point, you tap. Takes about 90 seconds — and by the end you'll have a personalized feed.",
     target: { kind: "none" },
   },
   // 2. TASK — go to Map
@@ -866,14 +1193,14 @@ const GUIDED_TOUR_STEPS: Array<{
   },
   // 4. TASK — follow a masjid
   {
-    title: "Love this masjid? Follow it ✨",
-    body: "See the Follow button at the top of the sheet that just opened? That's how you make Masjidly yours. Tap Follow and this masjid's new programs will pop up on your Home screen first — and we'll nudge you when something good is happening near you.",
+    title: "Love this masjid? Follow it",
+    body: "See the Follow button at the top of the sheet that just opened? That's how you make Masjid.ly yours. Tap Follow and this masjid's new programs will pop up on your Home screen first — and we'll nudge you when something good is happening near you.",
     hint: "Waiting for you to hit Follow on a masjid…",
     target: { kind: "task", taskId: "follow-masjid" },
   },
   // 5. Celebration
   {
-    title: "Mashā' Allāh! 🌙",
+    title: "Mashā' Allāh!",
     body: "You just followed your first masjid. Every halaqa, every tafsir session, every guest-speaker program they run this month will now surface on Home — you won't miss a thing.",
     target: { kind: "none" },
   },
@@ -893,7 +1220,7 @@ const GUIDED_TOUR_STEPS: Array<{
   },
   // 8. Celebration
   {
-    title: "Your feed is now personalized ✨",
+    title: "Your feed is now personalized",
     body: "Bārak Allāhu fīk. The more you follow, the richer it gets — and you can browse scholars, masjids, or collections (sisters programs, youth nights, revert circles) any time from this tab.",
     target: { kind: "none" },
   },
@@ -906,14 +1233,14 @@ const GUIDED_TOUR_STEPS: Array<{
   },
   // 10. TASK — open chatbot
   {
-    title: "Last thing — meet your buddy 💬",
+    title: "Last thing — meet your buddy",
     body: "Tap me in the top-right corner any time. I know every event in your area. Try \"what's on tonight?\" or \"sisters halaqas this week\".",
     hint: "Waiting for you to tap the floating buddy…",
     target: { kind: "task", taskId: "open-chatbot", highlight: { kind: "chatbot" } },
   },
   // 11. Outro
   {
-    title: "You're all set ✨",
+    title: "You're all set",
     body: "That's the tour. You followed a masjid, followed a scholar, and met the buddy. You can replay this any time from Settings → Replay walkthrough. See you at the next halaqa, inshā' Allāh.",
     target: { kind: "none" },
   },
@@ -934,9 +1261,31 @@ interface ChatQueryResult {
   reply: string;
   events: any[];
 }
+const CHAT_SUGGESTIONS = [
+  "What's tonight?",
+  "Tomorrow after maghrib",
+  "Sisters this week",
+  "Brothers this week",
+  "Family events this weekend",
+  "Closest event",
+  "Free events",
+  "Any youth programs?",
+  "Tafsir this weekend",
+  "Classes this month",
+  "Fundraisers coming up",
+  "Who made this app?",
+] as const;
 function answerChatQuery(raw: string, ctx: ChatQueryContext): ChatQueryResult {
   const q = (raw || "").toLowerCase().trim();
   if (!q) return { reply: "Ask me anything about events around you.", events: [] };
+  const asksCreator = /\b(who\s+(made|built|created|owns)\s+(this\s+)?(app|masjid\.?ly)|who\s+is\s+shaheer|about\s+shaheer|founder)\b/.test(q);
+  if (asksCreator) {
+    return {
+      reply:
+        "Masjid.ly was made by Shaheer Saud. LinkedIn: https://www.linkedin.com/in/shaheersaud/ . He's open to marriage conversations — serious inquiries can reach out respectfully.",
+      events: [],
+    };
+  }
   const today = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
   const isoOf = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -963,8 +1312,14 @@ function answerChatQuery(raw: string, ctx: ChatQueryContext): ChatQueryResult {
   const wantsClosest = /\b(closest|nearest|near\s*me|nearby|around\s*me)\b/.test(q);
   const wantsSisters = /\b(sisters?|women|ladies|female)\b/.test(q);
   const wantsBrothers = /\b(brothers?|men|male)\b/.test(q);
+  const wantsFamily = /\b(family|families|parents?|kids?\s+friendly|children)\b/.test(q);
   const wantsYouth = /\b(youth|teen|kids?|children|young)\b/.test(q);
   const wantsFree = /\b(free|no\s*cost|donation[-\s]?based)\b/.test(q);
+  const wantsClasses = /\b(class|classes|course|courses|workshop|workshops)\b/.test(q);
+  const wantsLecture = /\b(lecture|talk|khatira|dars|seminar)\b/.test(q);
+  const wantsFundraiser = /\b(fundraiser|gala|banquet|charity\s+night)\b/.test(q);
+  const wantsLivestream = /\b(live\s*stream|livestream|virtual|online|zoom)\b/.test(q);
+  const wantsThisMonth = /\b(this\s+month|month)\b/.test(q);
   const topicMap: Array<{ re: RegExp; label: string }> = [
     { re: /\btafsir|tafs[iī]r|quran|qur'?an\b/, label: "tafsir" },
     { re: /\bseerah|prophet'?s? life\b/, label: "seerah" },
@@ -996,14 +1351,22 @@ function answerChatQuery(raw: string, ctx: ChatQueryContext): ChatQueryResult {
   } else if (wantsWeek) {
     const cutoff = addDays(7);
     pool = pool.filter((e) => e.date >= todayIso && e.date <= cutoff);
+  } else if (wantsThisMonth) {
+    const monthPrefix = todayIso.slice(0, 7);
+    pool = pool.filter((e) => (e.date || "").startsWith(monthPrefix));
   }
 
   // Audience filters
   const audOf = (e: any) => (e.gender_filter || e.audience || "").toString().toLowerCase();
   if (wantsSisters) pool = pool.filter((e) => /sister|women|female/.test(audOf(e)) || /sister|women|ladies/.test((e.title || "").toLowerCase()));
   if (wantsBrothers) pool = pool.filter((e) => /brother|men|male/.test(audOf(e)) || /brothers/.test((e.title || "").toLowerCase()));
+  if (wantsFamily) pool = pool.filter((e) => /family|parents?|kids?|children/.test(`${e.title || ""} ${e.description || ""} ${e.audience || ""}`.toLowerCase()));
   if (wantsYouth) pool = pool.filter((e) => /youth|teen|kids|children/.test(`${e.title || ""} ${e.topic_tag || ""}`.toLowerCase()));
   if (wantsFree) pool = pool.filter((e) => !(e.cost || "").toString().match(/\$\d|\bpaid\b/i));
+  if (wantsClasses) pool = pool.filter((e) => /class|course|workshop|halaqa|study/.test(`${e.title || ""} ${e.description || ""}`.toLowerCase()));
+  if (wantsLecture) pool = pool.filter((e) => /lecture|talk|khatira|dars|seminar|guest/.test(`${e.title || ""} ${e.description || ""}`.toLowerCase()));
+  if (wantsFundraiser) pool = pool.filter((e) => /fundraiser|gala|banquet|charity/.test(`${e.title || ""} ${e.description || ""}`.toLowerCase()));
+  if (wantsLivestream) pool = pool.filter((e) => /youtube|instagram|live|livestream|zoom|virtual|online/.test(`${e.title || ""} ${e.description || ""} ${e.rsvp_link || ""}`.toLowerCase()));
 
   // Topic filter
   if (matchedTopic) {
@@ -1013,7 +1376,7 @@ function answerChatQuery(raw: string, ctx: ChatQueryContext): ChatQueryResult {
   // Free-text match against title/speaker/masjid when nothing else narrowed it down
   // (e.g. "bayonne", "shaykh omar").
   const keywords = q.replace(/[?.,!]/g, "").split(/\s+/).filter((w) => w.length > 2 && !["the", "and", "for", "are", "any", "what", "when", "where", "show", "me", "near", "next", "this", "that", "events", "event"].includes(w));
-  if (!wantsToday && !wantsTomorrow && !wantsWeekend && !wantsWeek && !wantsSisters && !wantsBrothers && !wantsYouth && !wantsFree && !matchedTopic && !wantsClosest && !wantsNext && keywords.length) {
+  if (!wantsToday && !wantsTomorrow && !wantsWeekend && !wantsWeek && !wantsThisMonth && !wantsSisters && !wantsBrothers && !wantsFamily && !wantsYouth && !wantsFree && !wantsClasses && !wantsLecture && !wantsFundraiser && !wantsLivestream && !matchedTopic && !wantsClosest && !wantsNext && keywords.length) {
     pool = pool.filter((e) => {
       const blob = `${e.title || ""} ${e.speaker || ""} ${e.source || ""} ${e.description || ""}`.toLowerCase();
       return keywords.some((k) => blob.includes(k));
@@ -1045,7 +1408,7 @@ function answerChatQuery(raw: string, ctx: ChatQueryContext): ChatQueryResult {
       reply:
         wantsToday || wantsTomorrow
           ? "No events match that window. Pull down on Home to refresh, or widen your filters in Map."
-          : "I couldn't find events matching that. Try \"sisters this week\" or \"closest event\" — or refresh the feed from Home.",
+          : "I couldn't find events matching that. Try \"family events this weekend\", \"classes this month\", or \"closest event\".",
       events: [],
     };
   }
@@ -1058,7 +1421,12 @@ function answerChatQuery(raw: string, ctx: ChatQueryContext): ChatQueryResult {
     wantsClosest ? `Closest events to you:` :
     wantsSisters ? `Events for sisters:` :
     wantsBrothers ? `Events for brothers:` :
+    wantsFamily ? `Family-friendly events:` :
     wantsYouth ? `Youth programs coming up:` :
+    wantsClasses ? `Classes and workshops:` :
+    wantsLecture ? `Talks and lectures:` :
+    wantsFundraiser ? `Fundraisers coming up:` :
+    wantsLivestream ? `Livestream / online options:` :
     matchedTopic ? `On "${matchedTopic.label}" — here's what I found:` :
     `Here's what I found:`;
 
@@ -1069,6 +1437,8 @@ function answerChatQuery(raw: string, ctx: ChatQueryContext): ChatQueryResult {
 function isProgramNotEvent(e: any): boolean {
   const title = (e?.title || "").toLowerCase();
   const blob = `${title} ${(e?.description || "").toLowerCase().slice(0, 400)}`;
+  // Explicitly hide weekly school listings from the consumer feed.
+  if (/\b(weekend|weekday|sunday|saturday|summer|after[-\s]?school)\s+school\b/.test(blob)) return true;
   // If the event carries a concrete date AND time, treat it as a real event
   // even if the title says "class" or "course" — those are still scheduled
   // things users might want to attend. Previously we were dropping all
@@ -1093,15 +1463,71 @@ function isProgramNotEvent(e: any): boolean {
   return false;
 }
 
-function inferSpeakerFromText(text: string): string {
-  const t = normalizeText(text || "");
-  if (!t) return "";
-  const rx = /\b(?:imam|shaykh|sheikh|ustadh|dr\.?|qari)\s+[A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+){0,3}/i;
-  const m = t.match(rx);
-  return m ? normalizeText(m[0]) : "";
+function isJumuahEvent(e: Partial<EventItem> | null | undefined): boolean {
+  if (!e) return false;
+  const st = normalizeText((e.source_type || "").toString()).toLowerCase();
+  if (st === "synthetic_jummah") return true;
+  const topics = Array.isArray(e.topics) ? e.topics.join(" ") : "";
+  const blob = `${e.title || ""} ${e.description || ""} ${e.category || ""} ${topics}`.toLowerCase();
+  return /\bjumu'?ah|jumm?ah|friday\s+prayer|khutbah\b/.test(blob);
 }
 
-function pickPoster(urls: string[] = []): string {
+function isWeakEventTitle(raw: string): boolean {
+  const s = normalizeText(raw).toLowerCase();
+  if (!s) return true;
+  if (/^(when|time|date|where)\b[:\-\s]*/.test(s)) return true;
+  if (/^\*?\s*time\*?\s*[:\-]/.test(s)) return true;
+  if (/\b(mon|tue|wed|thu|fri|sat|sun)\b/.test(s) && /\b\d{1,2}:\d{2}\s*(am|pm)\b/.test(s) && s.split(/\s+/).length <= 10) {
+    return true;
+  }
+  return false;
+}
+
+function eventDisplayTitle(e: Partial<EventItem> | null | undefined): string {
+  const primary = normalizeText((e?.title || "").toString());
+  if (primary && !isWeakEventTitle(primary)) return primary;
+  const blob = `${e?.poster_ocr_text || ""}\n${e?.description || ""}\n${e?.raw_text || ""}`;
+  const lines = blob
+    .split(/\r?\n+/)
+    .map((x) => normalizeText(x))
+    .filter(Boolean);
+  for (const line of lines) {
+    if (line.length < 8 || line.length > 120) continue;
+    if (isWeakEventTitle(line)) continue;
+    if (/(going|interested|save|follow|register|rsvp|www\.|http|@)/i.test(line) && line.split(/\s+/).length <= 8) {
+      continue;
+    }
+    return line;
+  }
+  return primary || "Untitled event";
+}
+
+/** Normalize API/cache shapes into a list of http(s) image URLs. */
+function coercePosterUrls(raw: unknown): string[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) {
+    const out: string[] = [];
+    for (const x of raw) {
+      if (typeof x === "string") {
+        const u = x.trim();
+        if (u.startsWith("http")) out.push(u);
+      } else if (x && typeof (x as { url?: string }).url === "string") {
+        const u = (x as { url: string }).url.trim();
+        if (u.startsWith("http")) out.push(u);
+      }
+    }
+    return out;
+  }
+  if (typeof raw === "string" && raw.trim().startsWith("http")) return [raw.trim()];
+  return [];
+}
+
+/**
+ * Best flyer/poster URL for an event. Prefer non-placeholder images, then any
+ * non-weak URL, then any URL so lists and modals still show art when the only
+ * asset is a generic CDN path.
+ */
+function pickPoster(urls: unknown): string {
   const bad = [
     "logo",
     "icon",
@@ -1114,9 +1540,17 @@ function pickPoster(urls: string[] = []): string {
     "loading.gif",
     "blank.gif",
   ];
-  const cleaned = urls.filter((u) => typeof u === "string" && u.startsWith("http"));
+  const cleaned = coercePosterUrls(urls);
+  if (!cleaned.length) return "";
   const good = cleaned.find((u) => !bad.some((k) => u.toLowerCase().includes(k)));
-  return good || "";
+  if (good) return good;
+  const notWeak = cleaned.find((u) => !isWeakPosterUrl(u));
+  if (notWeak) return notWeak;
+  return cleaned[0] || "";
+}
+
+function eventPosterUrl(e: Pick<EventItem, "image_urls">): string {
+  return pickPoster(e.image_urls);
 }
 
 function isWeakPosterUrl(url: string): boolean {
@@ -1265,16 +1699,26 @@ function eventStorageKey(e: EventItem): string {
   return normalizeText(e.event_uid || fallback).toLowerCase();
 }
 
+/** Sync normalization for M-AB12C-style share codes (same rules as commitReferralCode). */
+function normalizeMasjidlyShareCode(raw: string): string {
+  const cleaned = (raw || "")
+    .toString()
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "")
+    .replace(/^MASJIDLY[-\s]*/i, "")
+    .replace(/^INVITE[-\s]*/i, "");
+  if (!cleaned) return "";
+  if (/^M-[A-Z0-9]{3,8}$/.test(cleaned)) return cleaned;
+  if (/^M[A-Z0-9]{3,8}$/.test(cleaned)) return `M-${cleaned.slice(1)}`;
+  if (/^[A-Z0-9]{3,8}$/.test(cleaned)) return `M-${cleaned}`;
+  return "";
+}
+
 function AppInner() {
   const [meta, setMeta] = useState<MetaResponse | null>(null);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [loading, setLoading] = useState(true);
-  // Ref-tracked "events have at least once populated" flag used by the welcome
-  // flow to hold the final hand-off until the app is ready to display content.
-  const eventsReadyRef = useRef<boolean>(false);
-  useEffect(() => {
-    if (events.length > 0) eventsReadyRef.current = true;
-  }, [events.length]);
   const [error, setError] = useState("");
   // Re-rendered at midnight and whenever the app returns to foreground so any
   // logic keyed off `today` advances without a cold start. Derived from the
@@ -1293,13 +1737,15 @@ function AppInner() {
   const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set());
   const [tab, setTab] = useState<TabKey>("home");
   const [mountedTabs, setMountedTabs] = useState<Set<TabKey>>(
-    () => new Set<TabKey>(["home", "explore", "discover", "calendar", "saved", "settings"])
+    () => new Set<TabKey>(["home", "explore", "discover", "calendar", "feed", "settings"])
   );
   // Outer Explore list is now a SectionList (virtualized); keep the ref loose
   // so switchTab can call scrollToLocation without type gymnastics.
   const exploreScrollRef = useRef<SectionList<EventItem> | null>(null);
   const calendarScrollRef = useRef<ScrollView | null>(null);
-  const savedScrollRef = useRef<FlatList<EventItem> | null>(null);
+  const feedScrollRef = useRef<ScrollView | null>(null);
+  const settingsScrollRef = useRef<ScrollView | null>(null);
+  const settingsJumuahOffsetRef = useRef(0);
   const switchTab = useCallback((next: TabKey) => {
     // Fire haptic synchronously so the tap feels instant even if React takes a
     // frame or two to paint the target tab. This is the single biggest
@@ -1311,21 +1757,23 @@ function AppInner() {
     // land on the most relevant content (e.g. today's events on Explore).
     requestAnimationFrame(() => {
       if (next === "explore") {
+        // For the Map tab we want the hero map at the very top, not the first
+        // event row; `scrollToLocation(section=0,item=0)` can land halfway
+        // down by skipping the large header.
         try {
-          exploreScrollRef.current?.scrollToLocation({
-            sectionIndex: 0,
-            itemIndex: 0,
-            viewPosition: 0,
-            animated: false,
-          });
+          (
+            exploreScrollRef.current as unknown as {
+              scrollToOffset?: (args: { offset: number; animated: boolean }) => void;
+            } | null
+          )?.scrollToOffset?.({ offset: 0, animated: false });
         } catch {
-          // SectionList throws if the list is empty; safe to ignore.
+          // Safe no-op if list isn't mounted yet.
         }
       }
       if (next === "calendar") calendarScrollRef.current?.scrollTo({ y: 0, animated: false });
-      if (next === "saved") {
+      if (next === "feed") {
         try {
-          savedScrollRef.current?.scrollToOffset({ offset: 0, animated: false });
+          feedScrollRef.current?.scrollTo({ y: 0, animated: false });
         } catch {
           // safe no-op if list isn't mounted yet
         }
@@ -1338,6 +1786,7 @@ function AppInner() {
   // drives tab navigation + highlights so the user sees each part live.
   const [guidedTourOpen, setGuidedTourOpen] = useState(false);
   const [guidedTourStep, setGuidedTourStep] = useState(0);
+  const guidedTourAutoOpenTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tourPulse = useRef(new Animated.Value(0)).current;
   // Cross-fade values used to smoothly swap the tour card + highlight ring
   // between steps. We apply them to both the card container and the ring
@@ -1356,12 +1805,13 @@ function AppInner() {
   const chatScrollRef = useRef<ScrollView | null>(null);
   // Persistent bob for the floating sprite button so it feels alive
   const floatingSpriteBob = useRef(new Animated.Value(0)).current;
+  // Orange halo behind the avatar — continuous breathe (never stops while on Home).
+  const floatingSpriteHaloPulse = useRef(new Animated.Value(0)).current;
   // Slow, looping drift for the two decorative circles in the home logo
   // box (`topBarGlow` + `topBarGlowB`) so the brand feels alive without
-  // being distracting. Driven by two offset phases so the lights don't
-  // move in lockstep.
+  // being distracting. Both circles share one phase so they move together
+  // as a single connected visual rhythm.
   const logoGlowA = useRef(new Animated.Value(0)).current;
-  const logoGlowB = useRef(new Animated.Value(0)).current;
   const [selectedEvent, setSelectedEvent] = useState<EventItem | null>(null);
   // Two-phase mount for the event detail modal: when a user taps an event we
   // want the Modal's fade animation to start immediately, so we render a cheap
@@ -1384,9 +1834,10 @@ function AppInner() {
   const [pushToken, setPushToken] = useState("");
   const [savedEventsMap, setSavedEventsMap] = useState<Record<string, EventItem>>({});
   const [themeMode, setThemeMode] = useState<ThemeMode>("minera");
-  const [welcomeTypedText, setWelcomeTypedText] = useState("");
   const [onboardingError, setOnboardingError] = useState("");
   const [pendingWelcomeSlide, setPendingWelcomeSlide] = useState<number | null>(null);
+  const welcomeSetupScrollRef = useRef<ScrollView | null>(null);
+  const welcomeSetupScrollYRef = useRef(0);
   const [calendarView, setCalendarView] = useState<"month" | "list">("month");
   // "My Plan" mode filters the calendar to events the user has RSVP'd to
   // (going or interested). Great for checking what your own week looks like
@@ -1406,6 +1857,30 @@ function AppInner() {
   const [showTermsOfUse, setShowTermsOfUse] = useState(false);
   const [showAboutPanel, setShowAboutPanel] = useState(false);
   const [quickFilters, setQuickFilters] = useState<QuickFilterId[]>([]);
+  const [feedTopicFilter, setFeedTopicFilter] = useState<string | null>(null);
+  // Top-level view switch inside Your Feed: "all" shows the personalized feed
+  // sections (For You / Masjids / Scholars / Interests / Saved); "saved"
+  // switches the whole screen to a dedicated saved & RSVP list so users can
+  // get back to anything they hearted or marked going without scrolling past
+  // the feed.
+  const [feedView, setFeedView] = useState<"all" | "saved">("all");
+  const [feedSetupDone, setFeedSetupDone] = useState(false);
+  const [feedSetupOpen, setFeedSetupOpen] = useState(false);
+  // When true, re-open the inline Your Feed wizard in-place (replacing the
+  // feed body) even though the user already completed setup once. This is
+  // how the "Edit Your Feed" card and Settings entry invite users to change
+  // their masjids/speakers/topics without popping a modal over the feed.
+  const [feedEditMode, setFeedEditMode] = useState(false);
+  const [feedSetupStep, setFeedSetupStep] = useState<0 | 1 | 2 | 3>(0);
+  const [feedSetupMasjids, setFeedSetupMasjids] = useState<string[]>([]);
+  const [feedSetupScholars, setFeedSetupScholars] = useState<string[]>([]);
+  const [feedSetupTopics, setFeedSetupTopics] = useState<string[]>([]);
+  const [feedSetupApplying, setFeedSetupApplying] = useState(false);
+  const [feedBuildPhase, setFeedBuildPhase] = useState<"building" | "success" | null>(null);
+  const feedBuildProgress = useRef(new Animated.Value(0)).current;
+  const feedBuildHammerTilt = useRef(new Animated.Value(0)).current;
+  const feedBuildSuccessScale = useRef(new Animated.Value(0.6)).current;
+  const feedSetupHydratedRef = useRef(false);
   const [savedFilterPresets, setSavedFilterPresets] = useState<SavedFilterPreset[]>([]);
   const [presetDraftLabel, setPresetDraftLabel] = useState("");
   const [editingPresetId, setEditingPresetId] = useState("");
@@ -1452,6 +1927,18 @@ function AppInner() {
   const [speakers, setSpeakers] = useState<Speaker[]>([]);
   const [scholarScreenOpen, setScholarScreenOpen] = useState(false);
   const [selectedSpeaker, setSelectedSpeaker] = useState<string | null>(null);
+  // Past YouTube talks per speaker slug. Populated lazily when a user
+  // opens a scholar; the backend keeps a fresh copy in SQLite so we can
+  // show lectures even when YouTube is temporarily unreachable.
+  const [speakerVideos, setSpeakerVideos] = useState<
+    Record<string, { videos: SpeakerVideo[]; loading: boolean; status?: string }>
+  >({});
+  // Per-source amenities loaded once at startup (see loadMasjidAmenities).
+  // The map key is the lowercased source slug and each entry is the
+  // exact payload the admin panel wrote, minus the row-id metadata.
+  const [masjidAmenities, setMasjidAmenities] = useState<
+    Record<string, MasjidAmenities>
+  >({});
   // Discover > Collections preview. When set, we show a full-screen modal
   // listing exactly the events that match the selected editorial collection.
   // This way every collection tile lands somewhere concrete (not a dead-end
@@ -1476,7 +1963,7 @@ function AppInner() {
         id: string;
         title: string;
         sub: string;
-        emoji: string;
+        mi: MiName;
         color: string;
         events: EventItem[];
       }
@@ -1592,6 +2079,7 @@ function AppInner() {
     preferredAudience: "all",
     interests: [],
     completed: false,
+    privacy_policy_accepted_version: "",
   });
   const heroOpacity = useRef(new Animated.Value(0)).current;
   const heroTranslate = useRef(new Animated.Value(18)).current;
@@ -1602,9 +2090,18 @@ function AppInner() {
   const badgeScale = useRef(new Animated.Value(1)).current;
   const buttonScale = useRef(new Animated.Value(1)).current;
   const bubbleDrift = useRef(new Animated.Value(0)).current;
-  const welcomeToastOpacity = useRef(new Animated.Value(0)).current;
-  const welcomeToastTranslateY = useRef(new Animated.Value(-18)).current;
   const welcomeScrollX = useRef(new Animated.Value(0)).current;
+  // Step transition animations: fade + slide when moving between sub-steps
+  // of the onboarding form and the inline feed-setup wizard. Direction refs
+  // let us slide in from the right when advancing (Next) and from the left
+  // when going back (Back).
+  const setupStepAnim = useRef(new Animated.Value(1)).current;
+  const setupStepDirRef = useRef<1 | -1>(1);
+  const feedStepAnim = useRef(new Animated.Value(1)).current;
+  const feedStepDirRef = useRef<1 | -1>(1);
+  /** Same horizontal travel as welcome cardFlipTranslateX edge (58px) for a consistent wipe. */
+  const STEP_TRANSITION_PX = 58;
+  const STEP_TRANSITION_MS = 280;
   // Muslim pixel sprite that drops in, grabs the welcome card, lifts it,
   // greets the user with a salam + welcome, then releases and flies away.
   // Plays once per welcome mount when slide 0 is active.
@@ -1622,7 +2119,7 @@ function AppInner() {
   // onboarding. We use this to:
   //   1. Always route first-timers through the `launch` celebration screen
   //      instead of jumping straight to Home (so they see "Welcome to
-  //      Masjidly!" for ~2s before the feed).
+  //      Masjid.ly!" for ~2s before the feed).
   //   2. Swap the launch screen's subtitle from "Welcome back, <name>" to
   //      a proper first-time greeting.
   const justCompletedOnboardingRef = useRef(false);
@@ -1656,13 +2153,54 @@ function AppInner() {
   const homeHeroGlowDrift = useRef(new Animated.Value(0)).current;
   const homeHeroGlowLoopRef = useRef<Animated.CompositeAnimation | null>(null);
   // Spins the refresh icon while the event list is being re-fetched.
-  // Also drives the Masjidly hero logo's extra pulse on manual refresh.
+  // Also drives the Masjid.ly hero logo's extra pulse on manual refresh.
   const refreshSpin = useRef(new Animated.Value(0)).current;
   const refreshSpinLoopRef = useRef<Animated.CompositeAnimation | null>(null);
   const heroRefreshPulse = useRef(new Animated.Value(0)).current;
   // (legacy explore intro-motion removed; tabs now stay mounted and switch instantly)
   const welcomeSlidesRef = useRef<ScrollView | null>(null);
   const [welcomeSlideIndex, setWelcomeSlideIndex] = useState(0);
+  const welcomeContinueTapTsRef = useRef(0);
+  // Sub-step within the third welcome slide ("Tell us about yourself").
+  // 0: name + how-heard + email (+ opt-in)
+  // 1: gender + what events + friend code
+  // 2: privacy consent
+  // 3: finish setup (review/confirm)
+  const [setupSubStep, setSetupSubStep] = useState<0 | 1 | 2 | 3>(0);
+  // Keeps step-1 interest taps snappy by deferring the expensive
+  // app-wide personalization re-rank until the user taps "Next".
+  const [setupInterestsDraft, setSetupInterestsDraft] = useState<string[] | null>(null);
+  // Clean loading overlay shown while onboarding is being persisted.
+  const [onboardingSaving, setOnboardingSaving] = useState(false);
+  // Run a quick slide+fade enter animation whenever the onboarding sub-step
+  // or feed-setup wizard step changes. The direction refs are updated in the
+  // Back/Next handlers so the new content slides in from the correct side.
+  useEffect(() => {
+    setupStepAnim.setValue(0);
+    Animated.timing(setupStepAnim, {
+      toValue: 1,
+      duration: STEP_TRANSITION_MS,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [setupSubStep, setupStepAnim]);
+  useEffect(() => {
+    feedStepAnim.setValue(0);
+    Animated.timing(feedStepAnim, {
+      toValue: 1,
+      duration: STEP_TRANSITION_MS,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [feedSetupStep, feedStepAnim]);
+  useEffect(() => {
+    if (entryScreen !== "welcome" || welcomeSlideIndex !== 2 || setupSubStep !== 1) return;
+    setSetupInterestsDraft((prev) => (prev === null ? [...personalization.interests] : prev));
+  }, [entryScreen, welcomeSlideIndex, setupSubStep, personalization.interests]);
+  useEffect(() => {
+    if (entryScreen === "welcome") return;
+    setSetupInterestsDraft(null);
+  }, [entryScreen]);
   const { width: screenWidth, height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const eventModalPosterHeight = Math.min(240, Math.round(windowHeight * 0.26));
@@ -1757,6 +2295,10 @@ function AppInner() {
             ? parsed.interests.map((x) => normalizeText(String(x))).filter(Boolean)
             : [],
           completed: !!parsed.completed,
+          privacy_policy_accepted_version:
+            typeof (parsed as any).privacy_policy_accepted_version === "string"
+              ? (parsed as any).privacy_policy_accepted_version
+              : "",
         });
       } catch {
         // ignore invalid cached personalization
@@ -1782,7 +2324,7 @@ function AppInner() {
   useEffect(() => {
     const loadLocalBehavior = async () => {
       try {
-        const [followedRaw, rsvpRaw, presetsRaw, feedbackRaw, streakRaw, referralRaw, scholarsRaw, referredByRaw, referralWinsRaw] = await Promise.all([
+        const [followedRaw, rsvpRaw, presetsRaw, feedbackRaw, streakRaw, referralRaw, scholarsRaw, referredByRaw, referralWinsRaw, feedSetupDoneRaw] = await Promise.all([
           SecureStore.getItemAsync(FOLLOWED_MASJIDS_KEY),
           SecureStore.getItemAsync(RSVP_STATUSES_KEY),
           SecureStore.getItemAsync(FILTER_PRESETS_KEY),
@@ -1792,6 +2334,7 @@ function AppInner() {
           SecureStore.getItemAsync(FOLLOWED_SCHOLARS_KEY),
           SecureStore.getItemAsync(REFERRED_BY_KEY),
           SecureStore.getItemAsync(REFERRAL_WINS_KEY),
+          SecureStore.getItemAsync(FEED_SETUP_DONE_KEY),
         ]);
         if (followedRaw) {
           const parsed = JSON.parse(followedRaw);
@@ -1844,8 +2387,11 @@ function AppInner() {
           const n = Number(referralWinsRaw);
           if (Number.isFinite(n) && n >= 0) setReferralWins(n);
         }
+        setFeedSetupDone(feedSetupDoneRaw === "1");
       } catch {
         // ignore non-blocking local behavior cache errors
+      } finally {
+        feedSetupHydratedRef.current = true;
       }
     };
     loadLocalBehavior();
@@ -1884,9 +2430,6 @@ function AppInner() {
     footerOpacity.setValue(0);
     footerTranslate.setValue(24);
     bubbleDrift.setValue(0);
-    welcomeToastOpacity.setValue(0);
-    welcomeToastTranslateY.setValue(-18);
-    setWelcomeTypedText("");
 
     Animated.sequence([
       Animated.parallel([
@@ -1965,60 +2508,11 @@ function AppInner() {
         }),
       ])
     );
-    const welcomeToast = Animated.sequence([
-      Animated.delay(450),
-      Animated.parallel([
-        Animated.timing(welcomeToastOpacity, {
-          toValue: 1,
-          duration: 300,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(welcomeToastTranslateY, {
-          toValue: 0,
-          duration: 340,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]),
-      Animated.delay(1700),
-      Animated.parallel([
-        Animated.timing(welcomeToastOpacity, {
-          toValue: 0,
-          duration: 280,
-          easing: Easing.in(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(welcomeToastTranslateY, {
-          toValue: -16,
-          duration: 280,
-          easing: Easing.in(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]),
-    ]);
-    let typingInterval: ReturnType<typeof setInterval> | null = null;
-    const typingStart = setTimeout(() => {
-      let nextLength = 0;
-      setWelcomeTypedText("");
-      typingInterval = setInterval(() => {
-        nextLength += 1;
-        setWelcomeTypedText(WELCOME_TOAST_TEXT.slice(0, nextLength));
-        if (nextLength >= WELCOME_TOAST_TEXT.length && typingInterval) {
-          clearInterval(typingInterval);
-          typingInterval = null;
-        }
-      }, 120);
-    }, 560);
     pulse.start();
     bubbleFloat.start();
-    welcomeToast.start();
     return () => {
-      clearTimeout(typingStart);
-      if (typingInterval) clearInterval(typingInterval);
       pulse.stop();
       bubbleFloat.stop();
-      welcomeToast.stop();
     };
   }, [
     bubbleDrift,
@@ -2033,8 +2527,6 @@ function AppInner() {
     screenWidth,
     stepsOpacity,
     stepsTranslate,
-    welcomeToastOpacity,
-    welcomeToastTranslateY,
     welcomeScrollX,
     welcomeSlidesRef,
   ]);
@@ -2177,7 +2669,7 @@ function AppInner() {
     let exitStarted = false;
     let waitingInterval: ReturnType<typeof setInterval> | null = null;
     // For first-time users, guarantee the launch celebration sits on screen
-    // long enough to actually read "Welcome to Masjidly!" before we fade to
+    // long enough to actually read "Welcome to Masjid.ly!" before we fade to
     // Home. Returning users get the short version (no min dwell) so the
     // app boots as fast as possible.
     const launchMountedAt = Date.now();
@@ -2287,7 +2779,8 @@ function AppInner() {
             easing: Easing.inOut(Easing.sin),
             useNativeDriver: true,
           }),
-        ])
+        ]),
+        { iterations: -1 },
       );
       homeHeroGlowLoopRef.current.start();
     };
@@ -2438,6 +2931,7 @@ function AppInner() {
   };
 
   const saveOnboarding = async () => {
+    if (onboardingSaving) return;
     try {
       setOnboardingError("");
       const cleanedName = normalizeText(personalization.name);
@@ -2448,7 +2942,7 @@ function AppInner() {
         return;
       }
       if (!cleanedHeardFrom) {
-        setOnboardingError("Please share how you heard about Masjidly.");
+        setOnboardingError("Please share how you heard about Masjid.ly.");
         return;
       }
       if (!personalization.gender) {
@@ -2462,29 +2956,38 @@ function AppInner() {
         setOnboardingError("That email doesn't look right. Double-check or leave it blank.");
         return;
       }
+      if (personalization.privacy_policy_accepted_version !== PRIVACY_POLICY_VERSION) {
+        setOnboardingError("Please read and agree to the Privacy Policy to continue.");
+        return;
+      }
+      const finalInterests = Array.from(
+        new Set((setupInterestsDraft ?? personalization.interests).map((x) => normalizeText(x)).filter(Boolean))
+      );
+      setOnboardingSaving(true);
       const nextPersonalization: PersonalizationPrefs = {
         ...personalization,
         name: cleanedName,
         heardFrom: cleanedHeardFrom,
         email: cleanedEmail,
+        interests: finalInterests,
         // If they didn't give us an email, opt-in can't be true regardless
         // of the toggle state — keeps the data model honest.
         emailOptIn: cleanedEmail ? personalization.emailOptIn : false,
         completed: true,
+        privacy_policy_accepted_version: PRIVACY_POLICY_VERSION,
       };
       setPersonalization(nextPersonalization);
       await SecureStore.setItemAsync(PERSONALIZATION_KEY, JSON.stringify(nextPersonalization));
       await SecureStore.setItemAsync(WELCOME_FLOW_DONE_KEY, "1");
-      // If the user typed a friend's share code during onboarding, commit
-      // it now so the inviter gets credit toward the merch raffle. We
-      // don't block finishing onboarding on a bad code — the user can
-      // always try again from Settings.
-      let committedReferrer = referredByCode;
-      if (!committedReferrer && referralInput.trim()) {
-        committedReferrer = await commitReferralCode(referralInput);
+      let referredByForApi = referredByCode || normalizeMasjidlyShareCode(referralInput);
+      if (referralCode && referredByForApi === referralCode) referredByForApi = "";
+      if (referralInput.trim()) {
+        const n = normalizeMasjidlyShareCode(referralInput);
+        if (n && (!referralCode || n !== referralCode)) {
+          void commitReferralCode(referralInput);
+        }
       }
-      try {
-      await apiJson("/api/profile", {
+      void apiJson("/api/profile", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2495,49 +2998,35 @@ function AppInner() {
           audience_filter: audienceFilter,
           expo_push_token: pushToken || profileDraft.expo_push_token || "",
           referral_code: referralCode,
-          referred_by: committedReferrer || "",
+          referred_by: referredByForApi || "",
           contact_email: cleanedEmail,
           email_opt_in: cleanedEmail ? personalization.emailOptIn : false,
         }),
-      });
-      } catch {
-        // local onboarding completion is sufficient for welcome gating
-      }
-      // Wait briefly for events to hydrate so the hand-off into the app feels
-      // seamless (no "launch screen flicker" gap). Cap at 2s so we never leave
-      // the user stranded on the welcome button.
-      const deadline = Date.now() + 2000;
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        if (eventsReadyRef.current) break;
-        if (Date.now() > deadline) break;
-        await new Promise((r) => setTimeout(r, 80));
-      }
-      finishExitProgress.setValue(0);
-      await new Promise<void>((resolve) => {
-        Animated.timing(finishExitProgress, {
-          toValue: 1,
-          duration: 620,
-          easing: Easing.inOut(Easing.cubic),
-          useNativeDriver: true,
-        }).start(() => resolve());
-      });
-      // First-timers always pass through the launch screen so they see a
-      // proper "Welcome to Masjidly!" celebration before the home feed,
-      // regardless of whether events are already hydrated.
+      }).catch(() => {});
+      finishExitProgress.setValue(1);
+      // Launch screen shows As-salāmu ʿalaykum + dots; it waits for the feed
+      // there (see launch useEffect) so Finish Setup can jump over instantly.
       justCompletedOnboardingRef.current = true;
+      setSetupInterestsDraft(null);
       setEntryScreen("launch");
     } catch (e) {
       setOnboardingError((e as Error).message || "Could not save onboarding.");
+    } finally {
+      setOnboardingSaving(false);
     }
   };
 
   const skipOnboarding = async () => {
     try {
       setOnboardingError("");
+      if (personalization.privacy_policy_accepted_version !== PRIVACY_POLICY_VERSION) {
+        setOnboardingError("Please accept the Privacy Policy before continuing.");
+        return;
+      }
       const nextPersonalization: PersonalizationPrefs = {
         ...personalization,
         completed: true,
+        privacy_policy_accepted_version: PRIVACY_POLICY_VERSION,
       };
       setPersonalization(nextPersonalization);
       try {
@@ -2546,22 +3035,7 @@ function AppInner() {
       } catch {
         // non-fatal — skip should still work even if SecureStore blips
       }
-      const deadline = Date.now() + 2000;
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        if (eventsReadyRef.current) break;
-        if (Date.now() > deadline) break;
-        await new Promise((r) => setTimeout(r, 80));
-      }
-      finishExitProgress.setValue(0);
-      await new Promise<void>((resolve) => {
-        Animated.timing(finishExitProgress, {
-          toValue: 1,
-          duration: 320,
-          easing: Easing.inOut(Easing.cubic),
-          useNativeDriver: true,
-        }).start(() => resolve());
-      });
+      finishExitProgress.setValue(1);
       // Same as finishOnboarding: always show the launch celebration on
       // first entry so the jump to Home doesn't feel abrupt.
       justCompletedOnboardingRef.current = true;
@@ -2573,6 +3047,14 @@ function AppInner() {
   };
 
   const toggleInterest = (interest: string) => {
+    if (entryScreen === "welcome" && welcomeSlideIndex === 2 && setupSubStep === 1) {
+      setSetupInterestsDraft((prev) => {
+        const base = prev ?? personalization.interests;
+        const has = base.includes(interest);
+        return has ? base.filter((x) => x !== interest) : [...base, interest];
+      });
+      return;
+    }
     setPersonalization((prev) => {
       const has = prev.interests.includes(interest);
       return {
@@ -2580,6 +3062,78 @@ function AppInner() {
         interests: has ? prev.interests.filter((x) => x !== interest) : [...prev.interests, interest],
       };
     });
+  };
+
+  const renderPrivacyPolicyConsent = (opts: { welcomeHero?: boolean }) => {
+    const accepted = personalization.privacy_policy_accepted_version === PRIVACY_POLICY_VERSION;
+    const legalColor = opts.welcomeHero
+      ? isNeo
+        ? "#2a2a2a"
+        : isEmerald
+          ? "#1f3d29"
+          : isDarkTheme
+            ? "#e8ecff"
+            : "#fff2e8"
+      : isDarkTheme
+        ? "#c4cee8"
+        : "#3d4a63";
+    const linkColor = opts.welcomeHero
+      ? isNeo
+        ? "#5c4dcc"
+        : isEmerald
+          ? "#0d5c2e"
+          : "#fff2e8"
+      : isDarkTheme
+        ? "#9db0db"
+        : "#b84818";
+    return (
+      <View style={styles.captureFieldGroup}>
+        <Text
+          style={[
+            styles.captureLabel,
+            opts.welcomeHero && isNeo && styles.welcomeInfoStepTextNeo,
+            opts.welcomeHero && isEmerald && styles.welcomeInfoStepTextEmerald,
+            !opts.welcomeHero && isDarkTheme && { color: "#f4f7ff" },
+          ]}
+        >
+          Privacy
+        </Text>
+        <View style={styles.capturePrivacyRow}>
+          <Pressable {...PRESSABLE_INSTANT} 
+            hitSlop={6}
+            onPress={() => {
+              hapticTap("selection");
+              setPersonalization((prev) => ({
+                ...prev,
+                privacy_policy_accepted_version:
+                  prev.privacy_policy_accepted_version === PRIVACY_POLICY_VERSION ? "" : PRIVACY_POLICY_VERSION,
+              }));
+            }}
+            style={styles.capturePrivacyCheckWrap}
+          >
+            <View style={[styles.capturePrivacyCheck, accepted && styles.capturePrivacyCheckOn]}>
+              {accepted ? <Text style={styles.capturePrivacyCheckMark}>✓</Text> : null}
+            </View>
+          </Pressable>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.capturePrivacyLegalText, { color: legalColor }]}>
+              I have read and agree to the{" "}
+              <Text
+                style={[styles.capturePrivacyLink, { color: linkColor }]}
+                onPress={() => {
+                  hapticTap("selection");
+                  void Linking.openURL(MASJIDLY_URLS.privacy);
+                }}
+              >
+                Privacy Policy
+              </Text>
+              . You can also open it anytime in Settings. We use your answers here to personalize events; the policy
+              explains location, notifications, and optional email.
+            </Text>
+          </View>
+        </View>
+      </View>
+    );
   };
 
   const applyThemeMode = async (mode: ThemeMode) => {
@@ -2801,7 +3355,10 @@ function AppInner() {
         }
         byKey.set(k, item);
       }
-      const unioned = Array.from(byKey.values());
+      const unioned = Array.from(byKey.values()).map((ev) => ({
+        ...(ev as EventItem),
+        image_urls: coercePosterUrls((ev as EventItem).image_urls),
+      }));
       setEvents(unioned);
       setLastSyncedAt(Date.now());
       // Persist the union so next cold start already has the full set.
@@ -2917,15 +3474,32 @@ function AppInner() {
       }
       if (cancelled) return;
       // Brief delay so the app has settled into Home before the overlay appears
-      setTimeout(() => {
-        if (!cancelled) {
-          setGuidedTourStep(0);
-          setGuidedTourOpen(true);
-        }
+      if (guidedTourAutoOpenTimeoutRef.current) {
+        clearTimeout(guidedTourAutoOpenTimeoutRef.current);
+        guidedTourAutoOpenTimeoutRef.current = null;
+      }
+      guidedTourAutoOpenTimeoutRef.current = setTimeout(() => {
+        void (async () => {
+          if (cancelled) return;
+          try {
+            const doneNow = await SecureStore.getItemAsync(GUIDED_TOUR_DONE_KEY);
+            if (doneNow === "1") return;
+          } catch {
+            // non-fatal
+          }
+          if (!cancelled) {
+            setGuidedTourStep(0);
+            setGuidedTourOpen(true);
+          }
+        })();
       }, 900);
     })();
     return () => {
       cancelled = true;
+      if (guidedTourAutoOpenTimeoutRef.current) {
+        clearTimeout(guidedTourAutoOpenTimeoutRef.current);
+        guidedTourAutoOpenTimeoutRef.current = null;
+      }
     };
   }, [entryScreen]);
 
@@ -3084,6 +3658,10 @@ function AppInner() {
           easing: Easing.in(Easing.cubic),
           useNativeDriver: true,
         }).start(() => {
+          if (guidedTourAutoOpenTimeoutRef.current) {
+            clearTimeout(guidedTourAutoOpenTimeoutRef.current);
+            guidedTourAutoOpenTimeoutRef.current = null;
+          }
           setGuidedTourOpen(false);
           SecureStore.setItemAsync(GUIDED_TOUR_DONE_KEY, "1").catch(() => {});
           // Reset for next replay
@@ -3138,44 +3716,59 @@ function AppInner() {
     [guidedTourStep, tourContentOpacity, tourContentTranslate],
   );
 
-  // Persistent idle bob for the floating sprite button (starts once user is
-  // in the main app shell, stays running for the lifetime of the session).
+  // Persistent idle bob + halo pulse for the floating sprite (infinite loops
+  // for the whole time the main shell is visible).
   useEffect(() => {
     if (entryScreen !== "app") return;
-    const loop = Animated.loop(
+    const bobLoop = Animated.loop(
       Animated.sequence([
         Animated.timing(floatingSpriteBob, { toValue: 1, duration: 1400, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
         Animated.timing(floatingSpriteBob, { toValue: 0, duration: 1400, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
-      ])
+      ]),
+      { iterations: -1 },
     );
-    loop.start();
-    return () => loop.stop();
-  }, [entryScreen, floatingSpriteBob]);
+    const haloLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(floatingSpriteHaloPulse, {
+          toValue: 1,
+          duration: 2200,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(floatingSpriteHaloPulse, {
+          toValue: 0,
+          duration: 2200,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+      ]),
+      { iterations: -1 },
+    );
+    bobLoop.start();
+    haloLoop.start();
+    return () => {
+      bobLoop.stop();
+      haloLoop.stop();
+    };
+  }, [entryScreen, floatingSpriteBob, floatingSpriteHaloPulse]);
 
   // Slow, continuous drift for the two decorative circles in the home
-  // logo box. Two different cycle lengths keep the orbs from looking
-  // synced and give the brand a subtle "breathing" feel.
+  // logo box. We intentionally keep them in sync so the two orbs feel
+  // connected top-to-bottom as one seamless brand motion.
   useEffect(() => {
     if (entryScreen !== "app") return;
     const loopA = Animated.loop(
       Animated.sequence([
         Animated.timing(logoGlowA, { toValue: 1, duration: 5200, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
         Animated.timing(logoGlowA, { toValue: 0, duration: 5200, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
-      ])
-    );
-    const loopB = Animated.loop(
-      Animated.sequence([
-        Animated.timing(logoGlowB, { toValue: 1, duration: 7000, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
-        Animated.timing(logoGlowB, { toValue: 0, duration: 7000, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
-      ])
+      ]),
+      { iterations: -1 },
     );
     loopA.start();
-    loopB.start();
     return () => {
       loopA.stop();
-      loopB.stop();
     };
-  }, [entryScreen, logoGlowA, logoGlowB]);
+  }, [entryScreen, logoGlowA]);
 
   useEffect(() => {
     const handleIncoming = (url: string) => {
@@ -3221,7 +3814,10 @@ function AppInner() {
     const loadDetail = async () => {
       try {
         const detail = await apiJson(`/api/events/${encodeURIComponent(deepLinkEventUid)}`);
-        if (detail?.event) setSelectedEvent(detail.event as EventItem);
+        if (detail?.event) {
+          const ev = detail.event as EventItem;
+          setSelectedEvent({ ...ev, image_urls: coercePosterUrls(ev.image_urls) });
+        }
       } catch {
         // ignore if event not found
       } finally {
@@ -3287,7 +3883,7 @@ function AppInner() {
     if (normalizeText(e.start_time)) confidence += 20;
     if (normalizeText(e.end_time)) confidence += 8;
     if (normalizeText(e.source_url)) confidence += 10;
-    if (pickPoster(e.image_urls)) confidence += 8;
+    if (eventPosterUrl(e)) confidence += 8;
     if (normalizeText(e.description).length > 45) confidence += 8;
     if (normalizeText(e.event_uid || "")) confidence += 6;
 
@@ -3402,6 +3998,7 @@ function AppInner() {
   const visibleEvents = useMemo(() => {
     return events.filter((e) => {
       if (isProgramNotEvent(e)) return false;
+      if (isJumuahEvent(e)) return false;
       if (audienceFilter !== "all" && inferAudience(e) !== audienceFilter) return false;
       if (quickFilters.length && !quickFilters.every((f) => matchesQuickFilter(e, f))) return false;
       return true;
@@ -3427,6 +4024,30 @@ function AppInner() {
     );
     });
   }, [personalization.interests, personalization.preferredAudience, rsvpStatuses, followedMasjids, savedEventsMap, sortMode, visibleEvents]);
+
+  // Masjid map sheet should always show everything upcoming for that masjid,
+  // independent of active Explore filters/chips/search. Users tap a masjid on
+  // the map expecting the full board, not just the currently-filtered subset.
+  const upcomingEventsBySource = useMemo(() => {
+    const out: Record<string, EventItem[]> = {};
+    for (const ev of events) {
+      const src = normalizeText(ev.source).toLowerCase();
+      const d = normalizeText(ev.date);
+      if (!src || !d) continue;
+      if (d < today) continue;
+      if (isEventPastNow(ev)) continue;
+      if (!out[src]) out[src] = [];
+      out[src].push(ev);
+    }
+    for (const src of Object.keys(out)) {
+      out[src].sort((a, b) =>
+        `${a.date || "9999-12-31"} ${a.start_time || "99:99"}`.localeCompare(
+          `${b.date || "9999-12-31"} ${b.start_time || "99:99"}`
+        )
+      );
+    }
+    return out;
+  }, [events, today]);
 
   const grouped = useMemo(() => {
     const map = new Map<string, EventItem[]>();
@@ -3498,20 +4119,472 @@ function AppInner() {
     [savedEventsMap]
   );
 
-  const upcoming = useMemo(() => {
-    return events
-      .filter((e) => (e.date || "") >= today && !isProgramNotEvent(e) && !isEventPastNow(e))
-      .sort((a, b) => {
-        const scoreDelta = scoreEventForPersonalization(b) - scoreEventForPersonalization(a);
-        if (scoreDelta !== 0) return scoreDelta;
-        return `${a.date || ""} ${a.start_time || ""}`.localeCompare(
-          `${b.date || ""} ${b.start_time || ""}`
-        );
-      })
-      .slice(0, 16);
-  }, [events, personalization.interests, personalization.preferredAudience, rsvpStatuses, followedMasjids, savedEventsMap, today]);
+  const feedUpcomingEvents = useMemo(
+    () => orderedVisibleEvents.filter((e) => (e.date || "") >= today && !isEventPastNow(e)),
+    [orderedVisibleEvents, today]
+  );
 
-  /** All upcoming visible events (same filters as Explore), for Calendar month grid + export list — not the home-card `upcoming` slice. */
+  const followedMasjidSet = useMemo(
+    () => new Set(followedMasjids.map((s) => normalizeText(s).toLowerCase()).filter(Boolean)),
+    [followedMasjids]
+  );
+
+  const followedScholarSlugSet = useMemo(() => {
+    const slugify = (value: string) =>
+      normalizeText(value)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    return new Set(followedScholars.map(slugify).filter(Boolean));
+  }, [followedScholars]);
+
+  const normalizedInterestTerms = useMemo(
+    () => Array.from(new Set(personalization.interests.map((x) => normalizeText(x).toLowerCase()).filter(Boolean))),
+    [personalization.interests]
+  );
+
+  const feedTopicOptions = useMemo(() => {
+    const options = [...normalizedInterestTerms];
+    for (const topic of availableTopicChips) {
+      const low = normalizeText(topic).toLowerCase();
+      if (low && !options.includes(low)) options.push(low);
+    }
+    return options.slice(0, 7);
+  }, [normalizedInterestTerms, availableTopicChips]);
+
+  useEffect(() => {
+    if (feedTopicFilter && !feedTopicOptions.includes(feedTopicFilter)) {
+      setFeedTopicFilter(null);
+    }
+  }, [feedTopicFilter, feedTopicOptions]);
+
+  const feedRankedEvents = useMemo(() => {
+    const slugify = (value: string) =>
+      normalizeText(value)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    return feedUpcomingEvents
+      .map((event) => {
+        const scoreBase = scoreEventForPersonalization(event);
+        const reasons: string[] = [];
+        let score = scoreBase;
+        const sourceKey = normalizeText(event.source).toLowerCase();
+        const speakerSlug = slugify(effectiveEventSpeakerName(event));
+        const fromFollowedMasjid = followedMasjidSet.has(sourceKey);
+        const fromFollowedScholar = !!speakerSlug && followedScholarSlugSet.has(speakerSlug);
+        const eventKey = eventStorageKey(event);
+        const blob = `${event.title || ""} ${event.description || ""} ${event.category || ""} ${(event.topics || []).join(" ")}`.toLowerCase();
+        const topicHits = normalizedInterestTerms.filter((term) => blob.includes(term)).length;
+        if (fromFollowedMasjid) {
+          score += 22;
+          reasons.push("From a masjid you follow");
+        }
+        if (fromFollowedScholar) {
+          score += 20;
+          reasons.push("From a scholar you follow");
+        }
+        if (topicHits > 0) {
+          score += 12 + topicHits * 4;
+          reasons.push(topicHits > 1 ? "Matches multiple interests" : "Matches your interests");
+        }
+        const rsvp = rsvpStatuses[eventKey];
+        if (rsvp === "going") {
+          score += 10;
+          reasons.push("You're going");
+        } else if (rsvp === "interested") {
+          score += 7;
+          reasons.push("You're interested");
+        }
+        if (savedEventsMap[eventKey]) {
+          score += 8;
+          reasons.push("Saved by you");
+        }
+        if (typeof event.freshness?.days_old === "number") {
+          score += Math.max(0, 6 - Math.min(6, event.freshness.days_old));
+        }
+        return {
+          event,
+          score,
+          reasons,
+          fromFollowedMasjid,
+          fromFollowedScholar,
+        };
+      })
+      .sort(
+        (a, b) =>
+          Number(b.fromFollowedMasjid || b.fromFollowedScholar) - Number(a.fromFollowedMasjid || a.fromFollowedScholar) ||
+          Number(b.fromFollowedMasjid) - Number(a.fromFollowedMasjid) ||
+          Number(b.fromFollowedScholar) - Number(a.fromFollowedScholar) ||
+          b.score - a.score ||
+          `${a.event.date || "9999-12-31"} ${a.event.start_time || "99:99"}`.localeCompare(
+            `${b.event.date || "9999-12-31"} ${b.event.start_time || "99:99"}`
+          )
+      );
+  }, [
+    feedUpcomingEvents,
+    followedMasjidSet,
+    followedScholarSlugSet,
+    normalizedInterestTerms,
+    rsvpStatuses,
+    savedEventsMap,
+    scoreEventForPersonalization,
+  ]);
+
+  const forYouFeedEvents = useMemo(() => feedRankedEvents.slice(0, 6).map((x) => x.event), [feedRankedEvents]);
+  const followedMasjidFeedEvents = useMemo(
+    () => feedUpcomingEvents.filter((e) => followedMasjidSet.has(normalizeText(e.source).toLowerCase())).slice(0, 8),
+    [feedUpcomingEvents, followedMasjidSet]
+  );
+  const followedScholarFeedEvents = useMemo(() => {
+    const slugify = (value: string) =>
+      normalizeText(value)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    return feedUpcomingEvents
+      .filter((e) => {
+        const speakerSlug = slugify(effectiveEventSpeakerName(e));
+        return !!speakerSlug && followedScholarSlugSet.has(speakerSlug);
+      })
+      .slice(0, 8);
+  }, [feedUpcomingEvents, followedScholarSlugSet]);
+  const interestFeedEvents = useMemo(() => {
+    const terms = feedTopicFilter ? [feedTopicFilter] : normalizedInterestTerms;
+    if (!terms.length) return [] as EventItem[];
+    return feedRankedEvents
+      .map((x) => x.event)
+      .filter((e) => {
+        const blob = `${e.title || ""} ${e.description || ""} ${e.category || ""} ${(e.topics || []).join(" ")}`.toLowerCase();
+        return terms.some((term) => blob.includes(term));
+      })
+      .slice(0, 8);
+  }, [feedRankedEvents, normalizedInterestTerms, feedTopicFilter]);
+  const savedAndRsvpFeedEvents = useMemo(() => {
+    const dedup = new Set<string>();
+    const merged: EventItem[] = [];
+    const pushUnique = (event: EventItem) => {
+      const key = eventStorageKey(event);
+      if (!key || dedup.has(key)) return;
+      dedup.add(key);
+      merged.push(event);
+    };
+    for (const e of savedEvents) {
+      pushUnique(e);
+    }
+    for (const e of feedUpcomingEvents) {
+      const rsvp = rsvpStatuses[eventStorageKey(e)];
+      if (rsvp === "going" || rsvp === "interested") pushUnique(e);
+    }
+    return merged
+      .sort((a, b) =>
+        Number((a.date || "") >= today && !isEventPastNow(a)) !== Number((b.date || "") >= today && !isEventPastNow(b))
+          ? Number((b.date || "") >= today && !isEventPastNow(b)) - Number((a.date || "") >= today && !isEventPastNow(a))
+          : `${a.date || "9999-12-31"} ${a.start_time || "99:99"}`.localeCompare(
+              `${b.date || "9999-12-31"} ${b.start_time || "99:99"}`
+            )
+      )
+      .slice(0, 14);
+  }, [savedEvents, feedUpcomingEvents, rsvpStatuses, today]);
+
+  // Full, uncapped version used by the dedicated "Saved" tab inside Your
+  // Feed. Keeps saved ♥ items and RSVP'd events in one merged list, split
+  // later into "Upcoming" and "Past" by the renderer.
+  const feedSavedTabEvents = useMemo(() => {
+    const dedup = new Set<string>();
+    const merged: EventItem[] = [];
+    const pushUnique = (event: EventItem) => {
+      const key = eventStorageKey(event);
+      if (!key || dedup.has(key)) return;
+      dedup.add(key);
+      merged.push(event);
+    };
+    for (const e of savedEvents) pushUnique(e);
+    for (const e of feedUpcomingEvents) {
+      const rsvp = rsvpStatuses[eventStorageKey(e)];
+      if (rsvp === "going" || rsvp === "interested") pushUnique(e);
+    }
+    return merged.sort((a, b) =>
+      `${a.date || "9999-12-31"} ${a.start_time || "99:99"}`.localeCompare(
+        `${b.date || "9999-12-31"} ${b.start_time || "99:99"}`
+      )
+    );
+  }, [savedEvents, feedUpcomingEvents, rsvpStatuses]);
+
+  const feedFollowedMasjidSummaries = useMemo(
+    () =>
+      followedMasjids
+        .map((raw) => {
+          const source = normalizeText(raw);
+          if (!source) return null;
+          const lc = source.toLowerCase();
+          const upcoming = feedUpcomingEvents
+            .filter((e) => normalizeText(e.source).toLowerCase() === lc)
+            .sort((a, b) =>
+              `${a.date || ""} ${a.start_time || "99:99"}`.localeCompare(
+                `${b.date || ""} ${b.start_time || "99:99"}`
+              )
+            );
+          return {
+            source,
+            upcomingCount: upcoming.length,
+            nextEvent: upcoming[0],
+            amenitiesRec: masjidAmenities[lc],
+          };
+        })
+        .filter((row): row is NonNullable<typeof row> => row != null),
+    [followedMasjids, feedUpcomingEvents, masjidAmenities]
+  );
+
+  const feedUnfollowedMasjidBuckets = useMemo(() => {
+    const byMasjid = new Map<string, { source: string; count: number; nextDate?: string; distance?: number }>();
+    for (const e of feedUpcomingEvents) {
+      const src = normalizeText(e.source);
+      if (!src || followedMasjidSet.has(src.toLowerCase())) continue;
+      const cur = byMasjid.get(src) || { source: src, count: 0, distance: typeof e.distance_miles === "number" ? e.distance_miles : undefined };
+      cur.count += 1;
+      if (!cur.nextDate || (e.date || "") < cur.nextDate) cur.nextDate = e.date;
+      if (cur.distance == null && typeof e.distance_miles === "number") cur.distance = e.distance_miles;
+      byMasjid.set(src, cur);
+    }
+    return [...byMasjid.values()]
+      .sort((a, b) => {
+        if (a.distance != null && b.distance != null && a.distance !== b.distance) return a.distance - b.distance;
+        return b.count - a.count;
+      })
+      .slice(0, 10);
+  }, [feedUpcomingEvents, followedMasjidSet]);
+
+  const feedSpeakerCards = useMemo(() => {
+    const slugify = (value: string) =>
+      normalizeText(value)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    const bySlug = new Map<string, Speaker>();
+    for (const sp of speakers) {
+      const slug = slugify(sp.slug || sp.name);
+      if (!slug) continue;
+      bySlug.set(slug, { ...sp, slug });
+    }
+    for (const e of feedUpcomingEvents) {
+      const name = finalizeScholarCandidate(cleanSpeakerName(effectiveEventSpeakerName(e)));
+      if (!name) continue;
+      const slug = slugify(name);
+      if (!slug) continue;
+      const existing = bySlug.get(slug) || {
+        slug,
+        name,
+        total_events: 0,
+        upcoming_events: 0,
+        sources: [],
+      };
+      existing.upcoming_events = Math.max(existing.upcoming_events || 0, 0) + 1;
+      existing.total_events = Math.max(existing.total_events || 0, 0) + 1;
+      const src = normalizeText(e.source);
+      if (src && !existing.sources.includes(src)) existing.sources.push(src);
+      if (!existing.next_date || (e.date || "") < (existing.next_date || "9999-12-31")) {
+        existing.next_date = e.date || null;
+        existing.next_title = e.title;
+      }
+      if (!existing.name || existing.name.length < name.length) existing.name = name;
+      bySlug.set(slug, existing);
+    }
+    return [...bySlug.values()]
+      .filter((sp) => (sp.upcoming_events || 0) > 0 || followedScholarSlugSet.has(sp.slug))
+      .sort(
+        (a, b) =>
+          Number(followedScholarSlugSet.has(b.slug)) - Number(followedScholarSlugSet.has(a.slug)) ||
+          (b.upcoming_events || 0) - (a.upcoming_events || 0) ||
+          cleanSpeakerName(a.name).localeCompare(cleanSpeakerName(b.name))
+      )
+      .slice(0, 14);
+  }, [speakers, feedUpcomingEvents, followedScholarSlugSet]);
+
+  const feedSetupMasjidOptions = useMemo(() => {
+    const combined = [...feedFollowedMasjidSummaries.map((x) => x.source), ...feedUnfollowedMasjidBuckets.map((x) => x.source)];
+    return Array.from(new Set(combined)).slice(0, 24);
+  }, [feedFollowedMasjidSummaries, feedUnfollowedMasjidBuckets]);
+
+  const feedSetupSpeakerOptions = useMemo(
+    () => feedSpeakerCards.map((s) => ({ slug: s.slug, name: cleanSpeakerName(s.name), upcoming: s.upcoming_events || 0 })).slice(0, 20),
+    [feedSpeakerCards]
+  );
+
+  const feedSetupTopicOptions = useMemo(() => {
+    const fromInterests = personalization.interests.map((x) => normalizeText(x).toLowerCase()).filter(Boolean);
+    const merged = Array.from(new Set([...feedTopicOptions, ...fromInterests]));
+    return merged.length ? merged : ["halaqas", "classes", "community", "family", "youth"];
+  }, [feedTopicOptions, personalization.interests]);
+
+  const openFeedSetupWizard = useCallback(() => {
+    setFeedSetupMasjids(followedMasjids);
+    setFeedSetupScholars(followedScholars);
+    setFeedSetupTopics(personalization.interests.map((x) => normalizeText(x).toLowerCase()).filter(Boolean));
+    setFeedSetupStep(0);
+    setFeedSetupApplying(false);
+    // Open the wizard inline on the Your Feed tab (not a modal). If the
+    // user is elsewhere in the app, jump them to the Your Feed tab so the
+    // wizard actually shows.
+    setFeedEditMode(true);
+    setFeedSetupOpen(false);
+    setTab("feed");
+  }, [followedMasjids, followedScholars, personalization.interests]);
+
+  // Wipes the "feed setup done" flag so the mandatory inline wizard prompts
+  // the user again the next time they open the Your Feed tab. Also clears
+  // wizard selections so they start from a blank slate rather than their
+  // previously-followed list. Called from Settings → Content.
+  const resetFeedSetup = useCallback(() => {
+    Alert.alert(
+      "Reset Your Feed setup?",
+      "We'll ask you again which masjids, speakers, and topics you want — just like the first time. Your saved events and followed masjids stay.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Reset",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await SecureStore.deleteItemAsync(FEED_SETUP_DONE_KEY);
+            } catch {
+              // non-fatal
+            }
+            setFeedSetupDone(false);
+            setFeedEditMode(false);
+            setFeedSetupOpen(false);
+            setFeedSetupApplying(false);
+            setFeedSetupStep(0);
+            setFeedSetupMasjids([]);
+            setFeedSetupScholars([]);
+            setFeedSetupTopics([]);
+            hapticTap("selection");
+            setTab("feed");
+          },
+        },
+      ]
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!feedSetupHydratedRef.current) return;
+    if (entryScreen !== "app") return;
+    if (tab !== "feed") return;
+    if (feedSetupDone || feedSetupApplying) return;
+    // Prime selections for the inline wizard on the Your Feed screen.
+    // We no longer pop a modal — the wizard takes over the tab body itself
+    // and the user must answer to proceed.
+    setFeedSetupMasjids((prev) => (prev.length ? prev : followedMasjids));
+    setFeedSetupScholars((prev) => (prev.length ? prev : followedScholars));
+    setFeedSetupTopics((prev) =>
+      prev.length
+        ? prev
+        : personalization.interests.map((x) => normalizeText(x).toLowerCase()).filter(Boolean)
+    );
+  }, [
+    tab,
+    entryScreen,
+    feedSetupDone,
+    feedSetupApplying,
+    followedMasjids,
+    followedScholars,
+    personalization.interests,
+  ]);
+
+  const applyFeedSetupWizard = useCallback(async () => {
+    if (feedSetupApplying) return;
+    setFeedSetupApplying(true);
+    setFeedBuildPhase("building");
+    setFeedSetupStep(3);
+    const BUILD_SCREEN_MS = 3000;
+    feedBuildProgress.setValue(0);
+    Animated.sequence([
+      Animated.timing(feedBuildProgress, { toValue: 0.42, duration: 900, easing: Easing.out(Easing.cubic), useNativeDriver: false }),
+      Animated.timing(feedBuildProgress, { toValue: 0.78, duration: 1100, easing: Easing.inOut(Easing.quad), useNativeDriver: false }),
+      Animated.timing(feedBuildProgress, { toValue: 0.98, duration: 1000, easing: Easing.out(Easing.quad), useNativeDriver: false }),
+    ]).start();
+    // Sways the hammer-cat GIF around its existing motion so the card
+    // feels alive even if a frame ever drops.
+    feedBuildHammerTilt.setValue(0);
+    const tiltLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(feedBuildHammerTilt, { toValue: 1, duration: 420, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+        Animated.timing(feedBuildHammerTilt, { toValue: -1, duration: 420, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+      ])
+    );
+    tiltLoop.start();
+    const nextMasjids = Array.from(new Set(feedSetupMasjids.map((x) => normalizeText(x)).filter(Boolean)));
+    const nextScholars = Array.from(new Set(feedSetupScholars.map((x) => String(x)).filter(Boolean)));
+    const nextTopics = Array.from(new Set(feedSetupTopics.map((x) => normalizeText(x).toLowerCase()).filter(Boolean))).slice(0, 8);
+    const minBuildHold = new Promise<void>((resolve) => setTimeout(resolve, BUILD_SCREEN_MS));
+    try {
+      setFollowedMasjids(nextMasjids);
+      setFollowedScholars(nextScholars);
+      setPersonalization((prev) => ({ ...prev, interests: nextTopics }));
+      setFeedTopicFilter(nextTopics[0] || null);
+      await Promise.all([
+        SecureStore.setItemAsync(FOLLOWED_MASJIDS_KEY, JSON.stringify(nextMasjids)),
+        SecureStore.setItemAsync(FOLLOWED_SCHOLARS_KEY, JSON.stringify(nextScholars)),
+        SecureStore.setItemAsync(PERSONALIZATION_KEY, JSON.stringify({
+          ...personalization,
+          interests: nextTopics,
+        })),
+        SecureStore.setItemAsync(FEED_SETUP_DONE_KEY, "1"),
+        minBuildHold,
+      ]);
+      try {
+        if (currentUser) {
+          await apiJson("/api/profile", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              favorite_sources: nextMasjids,
+              audience_filter: profileDraft.audience_filter || "all",
+              radius: profileDraft.radius || 35,
+              onboarding_done: profileDraft.onboarding_done,
+              notifications: profileDraft.notifications || {
+                new_event_followed: true,
+                tonight_after_maghrib: true,
+                rsvp_reminders: true,
+              },
+            }),
+          });
+        }
+      } catch {
+        // non-fatal sync failure
+      }
+      tiltLoop.stop();
+      Animated.timing(feedBuildProgress, { toValue: 1, duration: 280, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
+      setFeedBuildPhase("success");
+      feedBuildSuccessScale.setValue(0.6);
+      Animated.spring(feedBuildSuccessScale, { toValue: 1, friction: 6, tension: 110, useNativeDriver: true }).start();
+      hapticTap("success");
+      await new Promise<void>((resolve) => setTimeout(resolve, 1000));
+      setFeedSetupDone(true);
+      setFeedSetupOpen(false);
+      setFeedEditMode(false);
+    } catch {
+      Alert.alert("Couldn't save feed setup", "Try again in a moment.");
+    } finally {
+      tiltLoop.stop();
+      setFeedBuildPhase(null);
+      setFeedSetupApplying(false);
+      setFeedSetupStep(0);
+    }
+  }, [
+    feedSetupApplying,
+    feedSetupMasjids,
+    feedSetupScholars,
+    feedSetupTopics,
+    personalization,
+    currentUser,
+    profileDraft.audience_filter,
+    profileDraft.radius,
+    profileDraft.onboarding_done,
+    profileDraft.notifications,
+  ]);
+
+  /** All upcoming visible events (same filters as Explore), for Calendar month grid + export list. */
   const calendarScheduleEvents = useMemo(() => {
     return orderedVisibleEvents
       .filter((e) => normalizeText(e.date) && (e.date || "") >= today && !isEventPastNow(e))
@@ -3534,7 +4607,7 @@ function AppInner() {
       id: string;
       title: string;
       sub: string;
-      emoji: string;
+      mi: MiName;
       color: string;
       match: (e: EventItem) => boolean;
     };
@@ -3545,7 +4618,7 @@ function AppInner() {
         id: "quran-tafsir",
         title: "Qur'an & Tafsir",
         sub: "Understand the Book of Allah, verse by verse.",
-        emoji: "۞",
+        mi: "auto_awesome",
         color: "#2e7d5f",
         match: (e) => /\b(tafsir|tafseer|qur'?an|quran|tajweed|ayah|surah|qira'?ah|recitation)\b/.test(textOf(e)),
       },
@@ -3553,7 +4626,7 @@ function AppInner() {
         id: "seerah",
         title: "Seerah & Sunnah",
         sub: "Walk through the life of the Prophet ﷺ.",
-        emoji: "✶",
+        mi: "star_fill1",
         color: "#8b5a2b",
         match: (e) => /\b(seerah|sirah|prophet'?s life|madinah era|makkah era|meccan era|madani era|sunnah|hadith|prophet muhammad|companions|sahaba)\b/.test(textOf(e)),
       },
@@ -3561,7 +4634,7 @@ function AppInner() {
         id: "fiqh-aqeedah",
         title: "Fiqh & Aqeedah",
         sub: "Foundations of belief and daily rulings.",
-        emoji: "◈",
+        mi: "verified_user",
         color: "#3a4faa",
         match: (e) => /\b(fiqh|aqeedah|aqidah|usul|pillars|tawheed|tawhid|creed|halal|haram|rulings|jurisprudence|hanafi|shafi|maliki|hanbali)\b/.test(textOf(e)),
       },
@@ -3569,7 +4642,7 @@ function AppInner() {
         id: "tazkiyah",
         title: "Tazkiyah of the Heart",
         sub: "Spiritual growth, dua, and self-purification.",
-        emoji: "♡",
+        mi: "favorite",
         color: "#a24e9a",
         match: (e) => /\b(tazkiyah|tazkiya|purification|sufi|tasawwuf|spirituality|dhikr|zikr|dua|heart|ihsan|reliance|tawakkul|patience|sabr)\b/.test(textOf(e)),
       },
@@ -3577,7 +4650,7 @@ function AppInner() {
         id: "family-youth",
         title: "Family, Youth & Parenting",
         sub: "Raising a household on the prophetic path.",
-        emoji: "❋",
+        mi: "groups",
         color: "#c15a1d",
         match: (e) => /\b(family|marriage|parenting|youth|teen|kids?|children|students?|couples|mother|father|parents?)\b/.test(textOf(e)),
       },
@@ -3585,7 +4658,7 @@ function AppInner() {
         id: "contemporary",
         title: "Contemporary Issues",
         sub: "Islam in today's world — mental health, media, identity.",
-        emoji: "◐",
+        mi: "lightbulb",
         color: "#3f6c8c",
         match: (e) => /\b(mental health|anxiety|depression|therapy|identity|media|technology|social media|dawah|community|racism|justice|palestine|ummah|politics|finance|islamic finance|riba)\b/.test(textOf(e)),
       },
@@ -3599,7 +4672,7 @@ function AppInner() {
         id: "sisters-track",
         title: "Sisters' learning track",
         sub: "Halaqahs, tafsir & circles specifically for sisters.",
-        emoji: "✾",
+        mi: "school",
         color: "#a24e9a",
         match: (e) => inferAudience(e) === "sisters",
       });
@@ -3608,7 +4681,7 @@ function AppInner() {
         id: "brothers-track",
         title: "Brothers' learning track",
         sub: "Halaqahs, classes & circles specifically for brothers.",
-        emoji: "✦",
+        mi: "school",
         color: "#2e5caa",
         match: (e) => inferAudience(e) === "brothers",
       });
@@ -3665,7 +4738,7 @@ function AppInner() {
           id: topic.id,
           title: topic.title,
           sub: topic.sub,
-          emoji: topic.emoji,
+          mi: topic.mi,
           color: topic.color,
           events: picked,
         };
@@ -3678,19 +4751,10 @@ function AppInner() {
   }, [orderedVisibleEvents, today, personalization.preferredAudience]);
 
   const futureVisibleCount = useMemo(() => {
-    return visibleEvents.filter((e) => (e.date || "") >= today && !isEventPastNow(e)).length;
-  }, [visibleEvents, today]);
-  const featuredEvent = useMemo(() => {
-    if (!upcoming.length) return null;
-    const brothersUpcoming = upcoming.filter((e) => inferAudience(e) === "brothers");
-    const pool = brothersUpcoming.length ? brothersUpcoming : upcoming;
-    const strong = upcoming.find((e) => {
-      const p = pickPoster(e.image_urls);
-      return !!p && !isWeakPosterUrl(p) && ((e.description || "").length > 40 || (e.raw_text || "").length > 80);
-    });
-    if (strong && pool.includes(strong)) return strong;
-    return pool.find((e) => pickPoster(e.image_urls) && !isWeakPosterUrl(pickPoster(e.image_urls))) || pool.find((e) => pickPoster(e.image_urls)) || pool[0];
-  }, [upcoming]);
+    // Home headline count should include Jumu'ah totals even though Jumu'ah
+    // cards are intentionally hidden from Home/Explore/Discover feeds.
+    return events.filter((e) => !isProgramNotEvent(e) && (e.date || "") >= today && !isEventPastNow(e)).length;
+  }, [events, today]);
 
   const calendarModalEvents = useMemo(
     () => orderedVisibleEvents.filter((e) => normalizeText(e.date) === normalizeText(selectedCalendarModalDate)),
@@ -3789,29 +4853,14 @@ function AppInner() {
   // device either way — this keeps the raffle-entry flow working even if
   // the backend is offline.
   const commitReferralCode = async (rawInput: string): Promise<string> => {
-    const cleaned = (rawInput || "")
-      .toString()
-      .trim()
-      .toUpperCase()
-      .replace(/\s+/g, "")
-      .replace(/^MASJIDLY[-\s]*/i, "")
-      .replace(/^INVITE[-\s]*/i, "");
-    if (!cleaned) {
+    if (!(rawInput || "").toString().trim()) {
       setReferralSaveError("Enter a code first.");
       setReferralSavingState("error");
       return "";
     }
-    // Accept the standard "M-XXXXXX" form we generate, plus a couple of
-    // friendly variants people might share by mouth ("M XXXXXX",
-    // "MXXXXXX", just "XXXXXX").
-    const normalized = (() => {
-      if (/^M-[A-Z0-9]{3,8}$/.test(cleaned)) return cleaned;
-      if (/^M[A-Z0-9]{3,8}$/.test(cleaned)) return `M-${cleaned.slice(1)}`;
-      if (/^[A-Z0-9]{3,8}$/.test(cleaned)) return `M-${cleaned}`;
-      return "";
-    })();
+    const normalized = normalizeMasjidlyShareCode(rawInput);
     if (!normalized) {
-      setReferralSaveError("That doesn't look like a Masjidly code. It should look like M-AB12C.");
+      setReferralSaveError("That doesn't look like a Masjid.ly code. It should look like M-AB12C.");
       setReferralSavingState("error");
       return "";
     }
@@ -3847,49 +4896,62 @@ function AppInner() {
     return normalized;
   };
 
-  const toggleFollowScholar = async (slug: string) => {
+  const toggleFollowScholar = (slug: string) => {
     if (!slug) return;
     const willFollow = !followedScholars.includes(slug);
     const next = willFollow ? [...followedScholars, slug] : followedScholars.filter((s) => s !== slug);
     setFollowedScholars(next);
-    hapticTap(willFollow ? "success" : "selection");
-    try {
-      await SecureStore.setItemAsync(FOLLOWED_SCHOLARS_KEY, JSON.stringify(next));
-    } catch {
-      /* non-blocking scholar-follow cache write */
-    }
+    queueMicrotask(() => hapticTap(willFollow ? "success" : "selection"));
+    InteractionManager.runAfterInteractions(() => {
+      void (async () => {
+        try {
+          await SecureStore.setItemAsync(FOLLOWED_SCHOLARS_KEY, JSON.stringify(next));
+        } catch {
+          /* non-blocking scholar-follow cache write */
+        }
+      })();
+    });
   };
 
-  const toggleFollowMasjid = async (source: string) => {
+  const toggleFollowMasjid = (source: string) => {
     const src = normalizeText(source);
     if (!src) return;
     const willFollow = !followedMasjids.includes(src);
     const next = willFollow ? [...followedMasjids, src] : followedMasjids.filter((s) => s !== src);
     setFollowedMasjids(next);
-    hapticTap(willFollow ? "success" : "selection");
-    try {
-      await SecureStore.setItemAsync(FOLLOWED_MASJIDS_KEY, JSON.stringify(next));
-    } catch {
-      // non-blocking follow cache write
-    }
-    if (currentUser) {
-      try {
-        await apiJson("/api/profile", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...profileDraft,
-            onboarding_done: profileDraft.onboarding_done,
-            radius: Number(radius || profileDraft.radius || 35),
-            favorite_sources: next,
-            audience_filter: audienceFilter,
-            expo_push_token: pushToken,
-          }),
-        });
-      } catch {
-        // local follow can continue even if profile sync fails
-      }
-    }
+    queueMicrotask(() => hapticTap(willFollow ? "success" : "selection"));
+    const user = currentUser;
+    const draft = profileDraft;
+    const rad = radius;
+    const aud = audienceFilter;
+    const token = pushToken;
+    InteractionManager.runAfterInteractions(() => {
+      void (async () => {
+        try {
+          await SecureStore.setItemAsync(FOLLOWED_MASJIDS_KEY, JSON.stringify(next));
+        } catch {
+          // non-blocking follow cache write
+        }
+        if (user) {
+          try {
+            await apiJson("/api/profile", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                ...draft,
+                onboarding_done: draft.onboarding_done,
+                radius: Number(rad || draft.radius || 35),
+                favorite_sources: next,
+                audience_filter: aud,
+                expo_push_token: token,
+              }),
+            });
+          } catch {
+            // local follow can continue even if profile sync fails
+          }
+        }
+      })();
+    });
   };
 
   const setRsvpStatus = async (e: EventItem, status: RsvpStatus) => {
@@ -3951,7 +5013,7 @@ function AppInner() {
     const when = `${formatHumanDate(e.date)} · ${eventTime(e)}`;
     const masjid = formatSourceLabel(e.source);
     const link = e.deep_link?.web || `https://masjidly.app/event/${e.event_uid || ""}`;
-    const poster = pickPoster(e.image_urls || []);
+    const poster = eventPosterUrl(e);
     const speakerLine = normalizeText(e.speaker || "") ? `Speaker: ${e.speaker}\n` : "";
     const body = [
       `Assalamu alaikum! Thinking of you for this:`,
@@ -3962,7 +5024,7 @@ function AppInner() {
       `Save your seat: ${link}`,
       poster ? `(poster: ${poster})` : "",
       ``,
-      `— via Masjidly`,
+      `— via Masjid.ly`,
     ]
       .filter(Boolean)
       .join("\n");
@@ -4032,6 +5094,68 @@ function AppInner() {
       setSpeakers(d.speakers || []);
     } catch {
       // ignore
+    }
+  }, []);
+
+  // #17 YouTube archive per speaker. Mark the slot as loading immediately
+  // so the detail view can show a spinner; the backend call itself caches
+  // for 72 hours so rapid re-opens don't hammer the network.
+  const loadSpeakerVideos = useCallback(async (slug: string) => {
+    if (!slug) return;
+    setSpeakerVideos((prev) => {
+      if (prev[slug]?.videos?.length && !prev[slug].loading) return prev;
+      return { ...prev, [slug]: { videos: prev[slug]?.videos || [], loading: true } };
+    });
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/speakers/${encodeURIComponent(slug)}/videos`);
+      if (!res.ok) {
+        setSpeakerVideos((prev) => ({
+          ...prev,
+          [slug]: { videos: prev[slug]?.videos || [], loading: false, status: "error" },
+        }));
+        return;
+      }
+      const d = await res.json();
+      setSpeakerVideos((prev) => ({
+        ...prev,
+        [slug]: {
+          videos: Array.isArray(d.videos) ? d.videos : [],
+          loading: false,
+          status: d.status || "ok",
+        },
+      }));
+    } catch {
+      setSpeakerVideos((prev) => ({
+        ...prev,
+        [slug]: { videos: prev[slug]?.videos || [], loading: false, status: "offline" },
+      }));
+    }
+  }, []);
+
+  // #22 Masjid amenities — one bulk fetch at startup so every profile
+  // modal can render instantly. Re-runs when the backend data version
+  // changes (same `data_version` hook as the events cache).
+  const loadMasjidAmenities = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/masjids/amenities`);
+      if (!res.ok) return;
+      const d = await res.json();
+      const map = d?.masjids || {};
+      const normalized: Record<string, MasjidAmenities> = {};
+      Object.keys(map).forEach((k) => {
+        const row = map[k] || {};
+        normalized[k.toLowerCase()] = {
+          amenities: row.amenities || {},
+          description: row.description || "",
+          website: row.website || "",
+          phone: row.phone || "",
+          email: row.email || "",
+          updated_at: row.updated_at || "",
+        };
+      });
+      setMasjidAmenities(normalized);
+    } catch {
+      // ignore — amenities are additive; missing = nothing to show.
     }
   }, []);
 
@@ -4132,7 +5256,14 @@ function AppInner() {
   useEffect(() => {
     loadEventSeries();
     loadSpeakers();
-  }, [loadEventSeries, loadSpeakers]);
+    loadMasjidAmenities();
+  }, [loadEventSeries, loadSpeakers, loadMasjidAmenities]);
+
+  useEffect(() => {
+    if (selectedSpeaker) {
+      loadSpeakerVideos(selectedSpeaker);
+    }
+  }, [selectedSpeaker, loadSpeakerVideos]);
 
   useEffect(() => {
     loadPassport();
@@ -4167,7 +5298,7 @@ function AppInner() {
       const start = `${dateIso}T${startHm}00`;
       const end = `${dateIso}T${effectiveEnd}00`;
       const location = `${formatSourceLabel(e.source)}`;
-      const details = `${e.description || ""}${e.source_url ? `\n\nMore: ${e.source_url}` : ""}\n\nAdded via Masjidly`;
+      const details = `${e.description || ""}${e.source_url ? `\n\nMore: ${e.source_url}` : ""}\n\nAdded via Masjid.ly`;
       const url =
         `https://www.google.com/calendar/render?action=TEMPLATE` +
         `&text=${encodeURIComponent(e.title || "Event")}` +
@@ -4316,17 +5447,30 @@ function AppInner() {
   };
 
   const tutorialSteps = [
-    "Use Home to see a quick summary and a featured event.",
+    "Use Home for upcoming events and live-now programs.",
     "Tap Explore to filter by date, masjid, audience, and search text.",
+    "Use Discover for scholars, collections, and quick paths into the events you care about.",
     "Tap any event poster/card to open full details and full flyer.",
-    "Use Quick Picks for Brothers, Sisters, or Family events.",
   ];
 
   const goToWelcomeSlide = (nextSlide: number) => {
     const clamped = Math.max(0, Math.min(2, nextSlide));
+    const pagerWidth = Math.max(screenWidth, 1);
     setWelcomeSlideIndex(clamped);
-    welcomeSlidesRef.current?.scrollTo({ x: clamped * screenWidth, y: 0, animated: true });
+    const x = clamped * pagerWidth;
+    const scroller = welcomeSlidesRef.current;
+    if (!scroller) return;
+    requestAnimationFrame(() => {
+      scroller.scrollTo({ x, y: 0, animated: true });
+    });
   };
+  const advanceWelcomeToSetup = useCallback(() => {
+    const now = Date.now();
+    if (now - welcomeContinueTapTsRef.current < 300) return;
+    welcomeContinueTapTsRef.current = now;
+    hapticTap("selection");
+    goToWelcomeSlide(2);
+  }, [goToWelcomeSlide]);
 
   // Our companion character — a single, smiling, standing Muslim man in a
   // white thobe and kufi. Rendered at whatever `width` the call site needs;
@@ -4349,8 +5493,17 @@ function AppInner() {
 
   const renderWelcomeScreen = () => {
     const pagerWidth = Math.max(screenWidth, 1);
+    const setupInterests = setupInterestsDraft ?? personalization.interests;
+    // Keep the onboarding card centered on taller phones (matching other
+    // welcome cards), but stay top-aligned on short screens so every field
+    // remains reachable without clipping.
+    const centerSetupCard = windowHeight >= 760;
     const welcomeLogoSize = Math.min(380, Math.round(Math.max(200, pagerWidth - 32)));
     const welcomeLogoMarginBottom = -Math.round(welcomeLogoSize * 0.21);
+    const handleSetupScroll = (event: any) => {
+      const y = event?.nativeEvent?.contentOffset?.y ?? 0;
+      welcomeSetupScrollYRef.current = y;
+    };
     const cardFlipRotate = (index: number) =>
       welcomeScrollX.interpolate({
         inputRange: [(index - 1) * pagerWidth, index * pagerWidth, (index + 1) * pagerWidth],
@@ -4416,7 +5569,7 @@ function AppInner() {
             }}
           >
             <View style={[styles.welcomeSlide, { width: pagerWidth }]}>
-              <Pressable onPress={() => goToWelcomeSlide(1)} style={styles.welcomeSlideTapZone}>
+              <Pressable unstable_pressDelay={0} onPress={() => goToWelcomeSlide(1)} style={styles.welcomeSlideTapZone}>
         <Animated.View
           style={[
             styles.welcomeHeroCard,
@@ -4493,18 +5646,6 @@ function AppInner() {
                       },
                     ]}
                   />
-                  <Animated.View
-                    style={[
-                      styles.welcomeChatToast,
-                      isDarkTheme && styles.welcomeChatToastDark,
-                      {
-                        opacity: welcomeToastOpacity,
-                        transform: [{ translateY: welcomeToastTranslateY }],
-                      },
-                    ]}
-                  >
-                    <Text style={[styles.welcomeChatToastText, isDarkTheme && styles.welcomeChatToastTextDark]}>{welcomeTypedText}</Text>
-                  </Animated.View>
                   <View
                     style={[
                       styles.welcomeLogoWrap,
@@ -4519,9 +5660,30 @@ function AppInner() {
             Discover upcoming programs, classes, and community nights from nearby masjids in one place.
           </Text>
           <View style={styles.heroTrustRow}>
-            <Text style={[styles.heroTrustPill, isMinera && styles.heroTrustPillMinera, isEmerald && styles.heroTrustPillEmerald, isNeo && styles.heroTrustPillNeo]}>Trusted local sources</Text>
-            <Text style={[styles.heroTrustPill, isMinera && styles.heroTrustPillMinera, isEmerald && styles.heroTrustPillEmerald, isNeo && styles.heroTrustPillNeo]}>Fast discovery</Text>
-                    <Text style={[styles.heroTrustPill, isMinera && styles.heroTrustPillMinera, isEmerald && styles.heroTrustPillEmerald, isNeo && styles.heroTrustPillNeo]}>5+ masjids</Text>
+            <Text
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.8}
+              style={[styles.heroTrustPill, isMinera && styles.heroTrustPillMinera, isEmerald && styles.heroTrustPillEmerald, isNeo && styles.heroTrustPillNeo]}
+            >
+              14+ NJ masjids
+            </Text>
+            <Text
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.8}
+              style={[styles.heroTrustPill, isMinera && styles.heroTrustPillMinera, isEmerald && styles.heroTrustPillEmerald, isNeo && styles.heroTrustPillNeo]}
+            >
+              Trusted sources
+            </Text>
+            <Text
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.8}
+              style={[styles.heroTrustPill, isMinera && styles.heroTrustPillMinera, isEmerald && styles.heroTrustPillEmerald, isNeo && styles.heroTrustPillNeo]}
+            >
+              Fast discovery
+            </Text>
         </View>
                   <Text style={[styles.welcomeSwipeHint, isDarkTheme && styles.welcomeSwipeHintDark]}>Tap anywhere to continue, or swipe left.</Text>
         </Animated.View>
@@ -4530,7 +5692,7 @@ function AppInner() {
             </View>
 
             <View style={[styles.welcomeSlide, { width: pagerWidth }]}>
-              <View
+              <Animated.View
                 style={[
                   styles.welcomeHeroCard,
                   isMinera && styles.welcomeHeroCardMinera,
@@ -4541,6 +5703,15 @@ function AppInner() {
                   isInferno && styles.welcomeHeroCardInferno,
                   styles.welcomeInfoCard,
                   styles.welcomeSlideCard,
+                  {
+                    opacity: cardFlipOpacity(1),
+                    transform: [
+                      { perspective: 1100 },
+                      { translateX: cardFlipTranslateX(1) },
+                      { rotateY: cardFlipRotate(1) },
+                      { scale: cardFlipScale(1) },
+                    ],
+                  },
                 ]}
               >
                 <Animated.View
@@ -4609,6 +5780,9 @@ function AppInner() {
 
                 <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
             <Pressable
+              unstable_pressDelay={0}
+              hitSlop={10}
+              pressRetentionOffset={18}
               style={[
                 styles.welcomePrimaryBtn,
                       styles.welcomePrimaryBtnOnHero,
@@ -4620,12 +5794,16 @@ function AppInner() {
                       styles.welcomePrimaryBtnInsideCard,
               ]}
               onPressIn={() =>
-                Animated.spring(buttonScale, {
-                  toValue: 0.97,
-                  friction: 6,
-                  tension: 120,
-                  useNativeDriver: true,
-                }).start()
+                {
+                  Animated.spring(buttonScale, {
+                    toValue: 0.97,
+                    friction: 6,
+                    tension: 120,
+                    useNativeDriver: true,
+                  }).start();
+                  // Fire on press-in so tiny finger movement doesn't cancel.
+                  advanceWelcomeToSetup();
+                }
               }
               onPressOut={() =>
                 Animated.spring(buttonScale, {
@@ -4635,7 +5813,7 @@ function AppInner() {
                   useNativeDriver: true,
                 }).start()
               }
-                    onPress={() => goToWelcomeSlide(2)}
+                    onPress={advanceWelcomeToSetup}
             >
               <Text
                 style={[
@@ -4654,7 +5832,7 @@ function AppInner() {
                 <Text style={[styles.welcomeCardHint, styles.welcomeCardHintOnHero, isNeo && styles.welcomeCardHintNeo, isEmerald && styles.welcomeCardHintEmerald]}>
                   Swipe to continue.
                 </Text>
-              </View>
+              </Animated.View>
             </View>
 
             <View
@@ -4677,15 +5855,25 @@ function AppInner() {
                 keyboardVerticalOffset={0}
               >
               <ScrollView
+                ref={welcomeSetupScrollRef}
                 style={styles.welcomeSetupScroll}
                 contentContainerStyle={[
                   styles.welcomeSetupScrollContent,
-                  { paddingTop: 12, paddingBottom: Math.max(insets.bottom, 24) + 60 },
+                  {
+                    justifyContent: centerSetupCard ? "center" : "flex-start",
+                    // When centered, keep top/bottom inset symmetric so the
+                    // card doesn't look like it's floating too high.
+                    paddingTop: centerSetupCard ? 8 : 12,
+                    paddingBottom: centerSetupCard ? 8 : Math.max(insets.bottom, 24) + 24,
+                  },
                 ]}
-                keyboardShouldPersistTaps="handled"
-                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="always"
+                showsVerticalScrollIndicator
                 nestedScrollEnabled
                 directionalLockEnabled
+                {...IOS_SCROLL_INSTANT_TOUCH}
+                onScroll={handleSetupScroll}
+                scrollEventThrottle={16}
               >
               <Animated.View
                 style={[
@@ -4713,6 +5901,7 @@ function AppInner() {
                 ]}
               >
                 <Animated.View
+                  pointerEvents="none"
                   style={[
                     styles.heroGlowOne,
                     styles.captureGlowOne,
@@ -4741,6 +5930,7 @@ function AppInner() {
                   ]}
                 />
                 <Animated.View
+                  pointerEvents="none"
                   style={[
                     styles.heroGlowTwo,
                     styles.captureGlowTwo,
@@ -4768,224 +5958,391 @@ function AppInner() {
                     },
                   ]}
                 />
-                <Text style={[styles.captureTitle, isNeo && styles.welcomeInfoTitleNeo, isEmerald && styles.welcomeInfoTitleEmerald]}>Tell us about yourself</Text>
-                <Text style={[styles.captureSub, isNeo && styles.welcomeInfoSubNeo, isEmerald && styles.welcomeInfoSubEmerald]}>
-                  This isn't a dating app — we just want to personalize your experience.
-                  Nothing's sold to anyone; one brother can't afford that kind of lawsuit anyway.
+                <Text style={[styles.captureTitle, styles.captureTitleCentered, isNeo && styles.welcomeInfoTitleNeo, isEmerald && styles.welcomeInfoTitleEmerald]}>
+                  {setupSubStep === 0
+                    ? "Tell us about yourself"
+                    : setupSubStep === 1
+                      ? "Your preferences"
+                      : setupSubStep === 2
+                        ? "Privacy & permissions"
+                        : "You're all set"}
+                </Text>
+                <Text style={[styles.captureSub, styles.captureSubCentered, isNeo && styles.welcomeInfoSubNeo, isEmerald && styles.welcomeInfoSubEmerald]}>
+                  {setupSubStep === 0
+                    ? "This isn't a dating app — we just want to personalize your experience. Nothing's sold to anyone; I (the person who made this app) can't afford a lawsuit anyway."
+                    : setupSubStep === 1
+                      ? "Help us personalize your feed. Friend code is optional — you get entered in our monthly merch raffle if you have one."
+                      : setupSubStep === 2
+                        ? "Quick read + one tap to agree. You can review it anytime from Settings."
+                        : "A quick review before we take you into the app."}
                 </Text>
 
-                <View style={styles.captureFieldGroup}>
-                  <Text style={[styles.captureLabel, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>Name</Text>
-                  <TextInput
-                    style={[styles.captureInput, isNeo && styles.captureInputNeo, isEmerald && styles.captureInputEmerald]}
-                    value={personalization.name}
-                    onChangeText={(value) => setPersonalization((prev) => ({ ...prev, name: value }))}
-                    placeholder="Your name"
-                    placeholderTextColor={isNeo ? "#6b6b6b" : isEmerald ? "#4f7a5d" : "#ffdfc9"}
-                  />
-                </View>
+                <Animated.View
+                  style={{
+                    opacity: setupStepAnim,
+                    transform: [
+                      {
+                        translateX: setupStepAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [setupStepDirRef.current * STEP_TRANSITION_PX, 0],
+                        }),
+                      },
+                    ],
+                  }}
+                >
+                {/* Step 0: Name, How heard, Email + opt-in (email last). */}
+                {setupSubStep === 0 ? (
+                  <>
+                    <View style={styles.captureFieldGroup}>
+                      <Text style={[styles.captureLabel, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>Name</Text>
+                      <TextInput
+                        style={[styles.captureInput, isNeo && styles.captureInputNeo, isEmerald && styles.captureInputEmerald]}
+                        value={personalization.name}
+                        onChangeText={(value) => setPersonalization((prev) => ({ ...prev, name: value }))}
+                        placeholder="Your name"
+                        placeholderTextColor={isNeo ? "#6b6b6b" : isEmerald ? "#4f7a5d" : "#ffdfc9"}
+                      />
+                    </View>
 
-                <View style={styles.captureFieldGroup}>
-                  <Text style={[styles.captureLabel, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>How did you hear about the app?</Text>
-                  <TextInput
-                    style={[styles.captureInput, isNeo && styles.captureInputNeo, isEmerald && styles.captureInputEmerald]}
-                    value={personalization.heardFrom}
-                    onChangeText={(value) => setPersonalization((prev) => ({ ...prev, heardFrom: value }))}
-                    placeholder="Friends, masjid, social media, Shaheer..."
-                    placeholderTextColor={isNeo ? "#6b6b6b" : isEmerald ? "#4f7a5d" : "#ffdfc9"}
-                  />
-                </View>
+                    <View style={styles.captureFieldGroup}>
+                      <Text style={[styles.captureLabel, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>How did you hear about the app?</Text>
+                      <TextInput
+                        style={[styles.captureInput, isNeo && styles.captureInputNeo, isEmerald && styles.captureInputEmerald]}
+                        value={personalization.heardFrom}
+                        onChangeText={(value) => setPersonalization((prev) => ({ ...prev, heardFrom: value }))}
+                        placeholder="Friends, masjid, social media, Shaheer..."
+                        placeholderTextColor={isNeo ? "#6b6b6b" : isEmerald ? "#4f7a5d" : "#ffdfc9"}
+                      />
+                    </View>
 
-                {/* Email + explicit opt-in. Email is optional; the opt-in
-                    toggle is only honored if an email is present. The
-                    copy is deliberately soft-consent ("we won't spam")
-                    and sets expectations on what we'd actually send. */}
-                <View style={styles.captureFieldGroup}>
-                  <Text style={[styles.captureLabel, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>
-                    Email (optional)
-                  </Text>
-                  <TextInput
-                    style={[styles.captureInput, isNeo && styles.captureInputNeo, isEmerald && styles.captureInputEmerald]}
-                    value={personalization.email}
-                    onChangeText={(value) => setPersonalization((prev) => ({ ...prev, email: value }))}
-                    placeholder="you@example.com"
-                    placeholderTextColor={isNeo ? "#6b6b6b" : isEmerald ? "#4f7a5d" : "#ffdfc9"}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    keyboardType="email-address"
-                    textContentType="emailAddress"
-                  />
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.captureEmailOptInRow,
-                      personalization.emailOptIn && styles.captureEmailOptInRowActive,
-                      pressed && styles.captureChoicePillPressed,
-                    ]}
-                    onPress={() => {
-                      hapticTap("selection");
-                      if (!personalization.email?.trim() && !personalization.emailOptIn) {
-                        setOnboardingError("Add your email first, then opt in.");
-                        return;
-                      }
-                      setPersonalization((prev) => ({ ...prev, emailOptIn: !prev.emailOptIn }));
-                    }}
-                  >
-                    <View
-                      style={[
-                        styles.captureEmailOptInBox,
-                        personalization.emailOptIn && styles.captureEmailOptInBoxActive,
-                      ]}
-                    >
-                      {personalization.emailOptIn ? (
-                        <Text style={styles.captureEmailOptInCheck}>✓</Text>
+                    {/* Email + explicit opt-in, positioned last in this step
+                        so the user sees name/source first and only lands on
+                        the email field at the bottom of the screen. */}
+                    <View style={styles.captureFieldGroup}>
+                      <Text style={[styles.captureLabel, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>
+                        Email (optional)
+                      </Text>
+                      <TextInput
+                        style={[styles.captureInput, isNeo && styles.captureInputNeo, isEmerald && styles.captureInputEmerald]}
+                        value={personalization.email}
+                        onChangeText={(value) => setPersonalization((prev) => ({ ...prev, email: value }))}
+                        placeholder="you@example.com"
+                        placeholderTextColor={isNeo ? "#6b6b6b" : isEmerald ? "#4f7a5d" : "#ffdfc9"}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        keyboardType="email-address"
+                        textContentType="emailAddress"
+                      />
+                      <Pressable {...PRESSABLE_INSTANT}
+                        style={({ pressed }) => [
+                          styles.captureEmailOptInRow,
+                          personalization.emailOptIn && styles.captureEmailOptInRowActive,
+                          pressed && styles.captureChoicePillPressed,
+                        ]}
+                        onPress={() => {
+                          hapticTap("selection");
+                          if (!personalization.email?.trim() && !personalization.emailOptIn) {
+                            setOnboardingError("Add your email first, then opt in.");
+                            return;
+                          }
+                          setPersonalization((prev) => ({ ...prev, emailOptIn: !prev.emailOptIn }));
+                        }}
+                      >
+                        <View
+                          style={[
+                            styles.captureEmailOptInBox,
+                            personalization.emailOptIn && styles.captureEmailOptInBoxActive,
+                          ]}
+                        >
+                          {personalization.emailOptIn ? (
+                            <Text style={styles.captureEmailOptInCheck}>✓</Text>
+                          ) : null}
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.captureEmailOptInLabel, isNeo && { color: "#1b1b1b" }, isEmerald && { color: "#1f3d29" }]}>
+                            Email me Masjid.ly updates
+                          </Text>
+                          <Text style={[styles.captureEmailOptInSub, isNeo && { color: "#4c4c4c" }, isEmerald && { color: "#3b6349" }]}>
+                            Big announcements, merch raffle winners, new features.
+                            No spam — max ~1 email/month. You can opt out any time.
+                          </Text>
+                        </View>
+                      </Pressable>
+                    </View>
+                  </>
+                ) : null}
+
+                {/* Step 1: Gender, What events, Friend code. */}
+                {setupSubStep === 1 ? (
+                  <>
+                    <View style={styles.captureFieldGroup}>
+                      <Text style={[styles.captureLabel, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>Gender (is not a political question)</Text>
+                      <View style={styles.captureChoiceRow}>
+                        {[
+                          ["brother", "Brother"],
+                          ["sister", "Sister"],
+                          ["prefer_not_to_say", "Prefer not to say"],
+                        ].map(([id, label]) => {
+                          const active = personalization.gender === id;
+                          return (
+                            <Pressable {...PRESSABLE_INSTANT}
+                              key={`gender-welcome-${id}`}
+                              unstable_pressDelay={0}
+                              onPress={() => {
+                                hapticTap("selection");
+                                setPersonalization((prev) => ({ ...prev, gender: id as PersonalizationPrefs["gender"] }));
+                              }}
+                              style={({ pressed }) => [
+                                styles.captureChoicePill,
+                                styles.captureChoicePillOnWelcome,
+                                isNeo && styles.captureChoicePillNeo,
+                                isEmerald && styles.captureChoicePillEmerald,
+                                active && styles.captureChoicePillActive,
+                                active && styles.captureChoicePillActiveOnWelcome,
+                                pressed && styles.captureChoicePillPressed,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.captureChoiceText,
+                                  styles.captureChoiceTextOnWelcome,
+                                  isNeo && styles.captureChoiceTextNeo,
+                                  isEmerald && styles.captureChoiceTextEmerald,
+                                  active && styles.captureChoiceTextActive,
+                                  active && styles.captureChoiceTextActiveOnWelcome,
+                                ]}
+                              >
+                                {label}
+                              </Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    </View>
+
+                    <View style={styles.captureFieldGroup}>
+                      <Text style={[styles.captureLabel, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>
+                        What events do you want to see?
+                      </Text>
+                      <View style={styles.captureChoiceRow}>
+                        {["Halaqas", "Classes", "Youth", "Family", "Community"].map((interest) => {
+                          const active = setupInterests.includes(interest);
+                          return (
+                            <Pressable {...PRESSABLE_INSTANT}
+                              key={`interest-welcome-${interest}`}
+                              unstable_pressDelay={0}
+                              onPress={() => {
+                                hapticTap("selection");
+                                toggleInterest(interest);
+                              }}
+                              style={({ pressed }) => [
+                                styles.captureChoicePill,
+                                styles.captureChoicePillOnWelcome,
+                                isNeo && styles.captureChoicePillNeo,
+                                isEmerald && styles.captureChoicePillEmerald,
+                                active && styles.captureChoicePillActive,
+                                active && styles.captureChoicePillActiveOnWelcome,
+                                pressed && styles.captureChoicePillPressed,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.captureChoiceText,
+                                  styles.captureChoiceTextOnWelcome,
+                                  isNeo && styles.captureChoiceTextNeo,
+                                  isEmerald && styles.captureChoiceTextEmerald,
+                                  active && styles.captureChoiceTextActive,
+                                  active && styles.captureChoiceTextActiveOnWelcome,
+                                ]}
+                              >
+                                {interest}
+                              </Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    </View>
+
+                    {/* Referral / share code — optional, entered on its own
+                        step so the raffle nudge has room to breathe. */}
+                    <View style={styles.captureFieldGroup}>
+                      <Text style={[styles.captureLabel, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>
+                        Got a friend's share code? (optional)
+                      </Text>
+                      <TextInput
+                        style={[styles.captureInput, isNeo && styles.captureInputNeo, isEmerald && styles.captureInputEmerald]}
+                        value={referralInput}
+                        onChangeText={(value) => {
+                          setReferralInput(value.toUpperCase());
+                          if (referralSavingState !== "idle") setReferralSavingState("idle");
+                          if (referralSaveError) setReferralSaveError("");
+                        }}
+                        autoCapitalize="characters"
+                        autoCorrect={false}
+                        placeholder="M-AB12C"
+                        placeholderTextColor={isNeo ? "#6b6b6b" : isEmerald ? "#4f7a5d" : "#ffdfc9"}
+                      />
+                      <Text style={[styles.captureHelper, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>
+                        When friends sign up with your code, you're both entered
+                        in our monthly Masjid.ly merch raffle. You'll get your own
+                        code in Settings → Share Masjid.ly after setup.
+                      </Text>
+                      {referralSaveError ? (
+                        <Text style={styles.captureErrorText}>{referralSaveError}</Text>
                       ) : null}
                     </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.captureEmailOptInLabel, isNeo && { color: "#1b1b1b" }, isEmerald && { color: "#1f3d29" }]}>
-                        Email me Masjidly updates
+                  </>
+                ) : null}
+
+                {/* Step 2: Privacy consent. */}
+                {setupSubStep === 2 ? renderPrivacyPolicyConsent({ welcomeHero: true }) : null}
+
+                {/* Step 3: Final review / confirm. */}
+                {setupSubStep === 3 ? (
+                  <View style={styles.captureReviewCard}>
+                    <Text style={[styles.captureReviewRow, isNeo && { color: "#1b1b1b" }, isEmerald && { color: "#1f3d29" }]}>
+                      <Text style={styles.captureReviewKey}>Name: </Text>
+                      <Text>{normalizeText(personalization.name) || "—"}</Text>
+                    </Text>
+                    <Text style={[styles.captureReviewRow, isNeo && { color: "#1b1b1b" }, isEmerald && { color: "#1f3d29" }]}>
+                      <Text style={styles.captureReviewKey}>Heard about us: </Text>
+                      <Text>{normalizeText(personalization.heardFrom) || "—"}</Text>
+                    </Text>
+                    <Text style={[styles.captureReviewRow, isNeo && { color: "#1b1b1b" }, isEmerald && { color: "#1f3d29" }]}>
+                      <Text style={styles.captureReviewKey}>Email: </Text>
+                      <Text>
+                        {(personalization.email || "").trim() || "not provided"}
+                        {personalization.email && personalization.emailOptIn ? " · updates on" : ""}
                       </Text>
-                      <Text style={[styles.captureEmailOptInSub, isNeo && { color: "#4c4c4c" }, isEmerald && { color: "#3b6349" }]}>
-                        Big announcements, merch raffle winners, new features.
-                        No spam — max ~1 email/month. You can opt out any time.
+                    </Text>
+                    <Text style={[styles.captureReviewRow, isNeo && { color: "#1b1b1b" }, isEmerald && { color: "#1f3d29" }]}>
+                      <Text style={styles.captureReviewKey}>Gender: </Text>
+                      <Text>
+                        {personalization.gender === "brother"
+                          ? "Brother"
+                          : personalization.gender === "sister"
+                            ? "Sister"
+                            : personalization.gender === "prefer_not_to_say"
+                              ? "Prefer not to say"
+                              : "—"}
                       </Text>
-                    </View>
-                  </Pressable>
-                </View>
-
-                <View style={styles.captureFieldGroup}>
-                  <Text style={[styles.captureLabel, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>Gender</Text>
-                  <View style={styles.captureChoiceRow}>
-                    {[
-                      ["brother", "Brother"],
-                      ["sister", "Sister"],
-                      ["prefer_not_to_say", "Prefer not to say"],
-                    ].map(([id, label]) => {
-                      const active = personalization.gender === id;
-                      return (
-                        <Pressable
-                          key={`gender-welcome-${id}`}
-                          onPress={() => {
-                            hapticTap("selection");
-                            setPersonalization((prev) => ({ ...prev, gender: id as PersonalizationPrefs["gender"] }));
-                          }}
-                          style={({ pressed }) => [
-                            styles.captureChoicePill,
-                          styles.captureChoicePillOnWelcome,
-                            isNeo && styles.captureChoicePillNeo,
-                            isEmerald && styles.captureChoicePillEmerald,
-                            active && styles.captureChoicePillActive,
-                          active && styles.captureChoicePillActiveOnWelcome,
-                            pressed && styles.captureChoicePillPressed,
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.captureChoiceText,
-                            styles.captureChoiceTextOnWelcome,
-                              isNeo && styles.captureChoiceTextNeo,
-                              isEmerald && styles.captureChoiceTextEmerald,
-                              active && styles.captureChoiceTextActive,
-                            active && styles.captureChoiceTextActiveOnWelcome,
-                            ]}
-                          >
-                            {label}
-                          </Text>
-                        </Pressable>
-                      );
-                    })}
+                    </Text>
+                    <Text style={[styles.captureReviewRow, isNeo && { color: "#1b1b1b" }, isEmerald && { color: "#1f3d29" }]}>
+                      <Text style={styles.captureReviewKey}>Interests: </Text>
+                      <Text>
+                        {setupInterests.length
+                          ? setupInterests.join(", ")
+                          : "none yet (add them later)"}
+                      </Text>
+                    </Text>
+                    {(referralInput || "").trim() ? (
+                      <Text style={[styles.captureReviewRow, isNeo && { color: "#1b1b1b" }, isEmerald && { color: "#1f3d29" }]}>
+                        <Text style={styles.captureReviewKey}>Friend code: </Text>
+                        <Text>{referralInput.trim()}</Text>
+                      </Text>
+                    ) : null}
+                    <Text style={[styles.captureReviewRow, isNeo && { color: "#1b1b1b" }, isEmerald && { color: "#1f3d29" }]}>
+                      <Text style={styles.captureReviewKey}>Privacy Policy: </Text>
+                      <Text>
+                        {personalization.privacy_policy_accepted_version === PRIVACY_POLICY_VERSION
+                          ? "Accepted"
+                          : "Not yet accepted (go back one step)"}
+                      </Text>
+                    </Text>
                   </View>
-                </View>
-
-                <View style={styles.captureFieldGroup}>
-                  <Text style={[styles.captureLabel, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>
-                    What events do you want to see?
-                  </Text>
-                  <View style={styles.captureChoiceRow}>
-                    {["Halaqas", "Classes", "Youth", "Family", "Community"].map((interest) => {
-                      const active = personalization.interests.includes(interest);
-                      return (
-                        <Pressable
-                          key={`interest-welcome-${interest}`}
-                          onPress={() => {
-                            hapticTap("selection");
-                            toggleInterest(interest);
-                          }}
-                          style={({ pressed }) => [
-                            styles.captureChoicePill,
-                            styles.captureChoicePillOnWelcome,
-                            isNeo && styles.captureChoicePillNeo,
-                            isEmerald && styles.captureChoicePillEmerald,
-                            active && styles.captureChoicePillActive,
-                            active && styles.captureChoicePillActiveOnWelcome,
-                            pressed && styles.captureChoicePillPressed,
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.captureChoiceText,
-                              styles.captureChoiceTextOnWelcome,
-                              isNeo && styles.captureChoiceTextNeo,
-                              isEmerald && styles.captureChoiceTextEmerald,
-                              active && styles.captureChoiceTextActive,
-                              active && styles.captureChoiceTextActiveOnWelcome,
-                            ]}
-                          >
-                            {interest}
-                          </Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                </View>
-
-                {/* Referral / share code — optional but mentioned early
-                    so the raffle incentive is visible during setup. */}
-                <View style={styles.captureFieldGroup}>
-                  <Text style={[styles.captureLabel, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>
-                    Got a friend's share code? (optional)
-                  </Text>
-                  <TextInput
-                    style={[styles.captureInput, isNeo && styles.captureInputNeo, isEmerald && styles.captureInputEmerald]}
-                    value={referralInput}
-                    onChangeText={(value) => {
-                      setReferralInput(value.toUpperCase());
-                      if (referralSavingState !== "idle") setReferralSavingState("idle");
-                      if (referralSaveError) setReferralSaveError("");
-                    }}
-                    autoCapitalize="characters"
-                    autoCorrect={false}
-                    placeholder="M-AB12C"
-                    placeholderTextColor={isNeo ? "#6b6b6b" : isEmerald ? "#4f7a5d" : "#ffdfc9"}
-                  />
-                  <Text style={[styles.captureHelper, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>
-                    When friends sign up with your code, you're both entered
-                    in our monthly Masjidly merch raffle. You'll get your own
-                    code in Settings → Share Masjidly after setup.
-                  </Text>
-                  {referralSaveError ? (
-                    <Text style={styles.captureErrorText}>{referralSaveError}</Text>
-                  ) : null}
-                </View>
+                ) : null}
+                </Animated.View>
 
                 {onboardingError ? <Text style={styles.captureErrorText}>{onboardingError}</Text> : null}
 
-                <Pressable
-                  style={[
-                    styles.welcomePrimaryBtn,
-                    styles.welcomePrimaryBtnOnHero,
-                  styles.welcomePrimaryBtnWhite,
-                    isEmerald && styles.welcomePrimaryBtnEmerald,
-                    isMidnight && styles.welcomePrimaryBtnMidnight,
-                    isNeo && styles.welcomePrimaryBtnNeo,
-                    isVitaria && styles.welcomePrimaryBtnVitaria,
-                    isInferno && styles.welcomePrimaryBtnInferno,
-                  ]}
-                  onPress={saveOnboarding}
-                >
-                <Text style={[styles.welcomePrimaryBtnText, styles.welcomePrimaryBtnTextMinera, styles.welcomePrimaryBtnTextWhite, isEmerald && styles.welcomePrimaryBtnTextEmerald, isNeo && styles.welcomePrimaryBtnTextNeo, isInferno && styles.welcomePrimaryBtnTextInferno]}>
-                    Finish Setup
-                  </Text>
-                </Pressable>
+                <View style={styles.setupSubStepBtnRow}>
+                  {setupSubStep > 0 ? (
+                    <Pressable
+                      unstable_pressDelay={0}
+                      style={[
+                        styles.welcomePrimaryBtn,
+                        styles.welcomePrimaryBtnOnHero,
+                        styles.setupSubStepBackBtn,
+                      ]}
+                      onPress={() => {
+                        hapticTap("selection");
+                        setOnboardingError("");
+                        setupStepDirRef.current = -1;
+                        setSetupSubStep((s) => (Math.max(0, s - 1) as 0 | 1 | 2 | 3));
+                      }}
+                    >
+                      <Text style={[styles.welcomePrimaryBtnText, styles.setupSubStepBackBtnText]}>Back</Text>
+                    </Pressable>
+                  ) : null}
+                  <Pressable
+                    unstable_pressDelay={0}
+                    disabled={onboardingSaving}
+                    style={[
+                      styles.welcomePrimaryBtn,
+                      styles.welcomePrimaryBtnOnHero,
+                      styles.welcomePrimaryBtnWhite,
+                      styles.setupSubStepNextBtn,
+                      isEmerald && styles.welcomePrimaryBtnEmerald,
+                      isMidnight && styles.welcomePrimaryBtnMidnight,
+                      isNeo && styles.welcomePrimaryBtnNeo,
+                      isVitaria && styles.welcomePrimaryBtnVitaria,
+                      isInferno && styles.welcomePrimaryBtnInferno,
+                      onboardingSaving && { opacity: 0.6 },
+                    ]}
+                    onPress={() => {
+                      if (onboardingSaving) return;
+                      setOnboardingError("");
+                      // Per-step gating so users can't skip past required
+                      // fields. Validation mirrors saveOnboarding() but
+                      // only for what this step covers.
+                      if (setupSubStep === 0) {
+                        if (!normalizeText(personalization.name)) {
+                          setOnboardingError("Please enter your name.");
+                          return;
+                        }
+                        if (!normalizeText(personalization.heardFrom)) {
+                          setOnboardingError("Please share how you heard about Masjid.ly.");
+                          return;
+                        }
+                        const cleanedEmail = (personalization.email || "").trim();
+                        if (cleanedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanedEmail)) {
+                          setOnboardingError("That email doesn't look right. Double-check or leave it blank.");
+                          return;
+                        }
+                        hapticTap("selection");
+                        setupStepDirRef.current = 1;
+                        setSetupSubStep(1);
+                        return;
+                      }
+                      if (setupSubStep === 1) {
+                        if (!personalization.gender) {
+                          setOnboardingError("Please pick a gender option (or Prefer not to say).");
+                          return;
+                        }
+                        hapticTap("selection");
+                        setupStepDirRef.current = 1;
+                        setSetupSubStep(2);
+                        return;
+                      }
+                      if (setupSubStep === 2) {
+                        if (personalization.privacy_policy_accepted_version !== PRIVACY_POLICY_VERSION) {
+                          setOnboardingError("Please read and agree to the Privacy Policy to continue.");
+                          return;
+                        }
+                        hapticTap("selection");
+                        setupStepDirRef.current = 1;
+                        setSetupSubStep(3);
+                        return;
+                      }
+                      // Step 3: finish for real.
+                      void saveOnboarding();
+                    }}
+                  >
+                    <Text style={[styles.welcomePrimaryBtnText, styles.welcomePrimaryBtnTextMinera, styles.welcomePrimaryBtnTextWhite, isEmerald && styles.welcomePrimaryBtnTextEmerald, isNeo && styles.welcomePrimaryBtnTextNeo, isInferno && styles.welcomePrimaryBtnTextInferno]}>
+                      {setupSubStep === 3 ? "Finish Setup" : "Next"}
+                    </Text>
+                  </Pressable>
+                </View>
               </Animated.View>
               </ScrollView>
               </KeyboardAvoidingView>
@@ -4993,10 +6350,30 @@ function AppInner() {
           </Animated.ScrollView>
 
           <View style={styles.welcomePagerDots}>
-            {[0, 1, 2].map((dot) => (
-              <View key={`welcome-dot-${dot}`} style={[styles.welcomePagerDot, welcomeSlideIndex === dot && styles.welcomePagerDotActive]} />
-            ))}
+            {welcomeSlideIndex === 2
+              ? [0, 1, 2, 3].map((dot) => (
+                  <View
+                    key={`setup-dot-${dot}`}
+                    style={[styles.welcomePagerDot, setupSubStep === dot && styles.welcomePagerDotActive]}
+                  />
+                ))
+              : [0, 1, 2].map((dot) => (
+                  <View
+                    key={`welcome-dot-${dot}`}
+                    style={[styles.welcomePagerDot, welcomeSlideIndex === dot && styles.welcomePagerDotActive]}
+                  />
+                ))}
           </View>
+          {onboardingSaving ? (
+            <View style={styles.loadingMasjidlyOverlay}>
+              <View style={[styles.loadingMasjidlyCard, isDarkTheme && styles.loadingMasjidlyCardDark]}>
+                <ActivityIndicator size="large" color={isDarkTheme ? "#8aa7ff" : "#ff7a3c"} />
+                <Text style={[styles.loadingMasjidlyTitle, isDarkTheme && styles.loadingMasjidlyTitleDark]}>
+                  Loading Masjidly...
+                </Text>
+              </View>
+            </View>
+          ) : null}
         </View>
       </SafeAreaView>
     );
@@ -5004,7 +6381,11 @@ function AppInner() {
 
   const renderProfileCaptureScreen = () => (
     <SafeAreaView style={[styles.welcomeContainer, isMidnight && styles.containerMidnight, isNeo && styles.containerNeo, isVitaria && styles.containerVitaria, isInferno && styles.containerInferno, isEmerald && styles.containerEmerald]}>
-      <ScrollView contentContainerStyle={[styles.welcomeBody, styles.captureBody, isMidnight && styles.scrollBodyMidnight, isNeo && styles.scrollBodyNeo, isVitaria && styles.scrollBodyVitaria, isInferno && styles.scrollBodyInferno, isEmerald && styles.scrollBodyEmerald]}>
+      <ScrollView
+        contentContainerStyle={[styles.welcomeBody, styles.captureBody, isMidnight && styles.scrollBodyMidnight, isNeo && styles.scrollBodyNeo, isVitaria && styles.scrollBodyVitaria, isInferno && styles.scrollBodyInferno, isEmerald && styles.scrollBodyEmerald]}
+        keyboardShouldPersistTaps="always"
+        {...IOS_SCROLL_INSTANT_TOUCH}
+      >
         <Animated.View
           style={[
             styles.welcomeHeroCard,
@@ -5019,6 +6400,7 @@ function AppInner() {
           ]}
         >
           <Animated.View
+            pointerEvents="none"
             style={[
               styles.heroGlowOne,
               styles.captureGlowOne,
@@ -5047,6 +6429,7 @@ function AppInner() {
             ]}
           />
           <Animated.View
+            pointerEvents="none"
             style={[
               styles.heroGlowTwo,
               styles.captureGlowTwo,
@@ -5074,7 +6457,7 @@ function AppInner() {
               },
             ]}
           />
-          <Pressable
+          <Pressable {...PRESSABLE_INSTANT}
             onPress={() => {
               setPendingWelcomeSlide(1);
               setEntryScreen("welcome");
@@ -5086,9 +6469,8 @@ function AppInner() {
           <Text style={[styles.captureTitle, isNeo && styles.welcomeInfoTitleNeo, isEmerald && styles.welcomeInfoTitleEmerald]}>Tell us about you</Text>
           <Text style={[styles.captureSub, isNeo && styles.welcomeInfoSubNeo, isEmerald && styles.welcomeInfoSubEmerald]}>
             This isn't a dating app — we just want to personalize your experience.
-            Nothing's sold to anyone; one brother can't afford that kind of lawsuit anyway.
+            Nothing's sold to anyone; I (the person who made this app) can't afford a lawsuit anyway.
           </Text>
-
           <View style={styles.captureFieldGroup}>
             <Text style={[styles.captureLabel, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>Name</Text>
             <TextInput
@@ -5112,7 +6494,7 @@ function AppInner() {
           </View>
 
           <View style={styles.captureFieldGroup}>
-            <Text style={[styles.captureLabel, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>Gender</Text>
+            <Text style={[styles.captureLabel, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>Gender (is not a political question)</Text>
             <View style={styles.captureChoiceRow}>
               {[
                 ["brother", "Brother"],
@@ -5121,7 +6503,7 @@ function AppInner() {
               ].map(([id, label]) => {
                 const active = personalization.gender === id;
                 return (
-                  <Pressable
+                  <Pressable {...PRESSABLE_INSTANT}
                     key={`gender-${id}`}
                     onPress={() => setPersonalization((prev) => ({ ...prev, gender: id as PersonalizationPrefs["gender"] }))}
                     style={[
@@ -5147,9 +6529,11 @@ function AppInner() {
             </View>
           </View>
 
+          {renderPrivacyPolicyConsent({ welcomeHero: true })}
+
           {onboardingError ? <Text style={styles.captureErrorText}>{onboardingError}</Text> : null}
 
-          <Pressable
+          <Pressable {...PRESSABLE_INSTANT}
             style={[
               styles.welcomePrimaryBtn,
               styles.welcomePrimaryBtnOnHero,
@@ -5244,37 +6628,40 @@ function AppInner() {
             },
           ]}
         >
-          <Animated.Image
-            source={WELCOME_LOGO}
-            style={[
-              styles.launchLogo,
-              {
-                transform: [
-                  {
-                    scale: launchPulse.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [1, 1.03],
-                    }),
-                  },
-                  {
-                    translateY: launchPulse.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [0, -5],
-                    }),
-                  },
-                ],
-              },
-            ]}
-            resizeMode="contain"
-          />
-          <Text style={[styles.launchTitle, isNeo && styles.launchTitleNeo, isEmerald && styles.launchTitleEmerald, isMidnight && styles.launchTitleDark]}>
-            {justCompletedOnboardingRef.current ? "Welcome to Masjidly!" : "Welcome to Masjidly"}
-          </Text>
-          <Text style={[styles.launchSub, isNeo && styles.launchSubNeo, isEmerald && styles.launchSubEmerald, isMidnight && styles.launchSubDark]}>
-            {justCompletedOnboardingRef.current
-              ? "Your home for local masjid life — let's go."
-              : "Preparing your home feed..."}
-          </Text>
+          <View style={styles.launchTopCluster}>
+            <Text style={[styles.launchKicker, isNeo && styles.launchKickerNeo, isEmerald && styles.launchKickerEmerald, isMidnight && styles.launchKickerDark]}>
+              YOU'RE ALL SET
+            </Text>
+            <Text style={[styles.launchTitle, isNeo && styles.launchTitleNeo, isEmerald && styles.launchTitleEmerald, isMidnight && styles.launchTitleDark, isVitaria && styles.launchTitleVitaria]}>
+              Welcome to Masjid.ly
+            </Text>
+            <Text style={[styles.launchLead, isNeo && styles.launchSubNeo, isEmerald && styles.launchSubEmerald, isMidnight && styles.launchSubDark, isVitaria && styles.launchSubVitaria]}>
+              Find local masjid events quickly, with clean filters and smart discovery.
+            </Text>
+          </View>
+          <View style={[styles.launchFeatureStack, isMidnight && styles.launchFeatureStackDark, isNeo && styles.launchFeatureStackNeo, isEmerald && styles.launchFeatureStackEmerald, isVitaria && styles.launchFeatureStackVitaria]}>
+            {[
+              "Follow masjids and scholars you trust",
+              "Get personalized picks without missing anything",
+              "Save events and RSVP in one place",
+            ].map((line) => (
+              <View key={`launch-feature-${line}`} style={styles.launchFeatureRow}>
+                <View style={[styles.launchFeatureDot, isMidnight && styles.launchFeatureDotDark, isNeo && styles.launchFeatureDotNeo, isEmerald && styles.launchFeatureDotEmerald]} />
+                <Text style={[styles.launchFeatureText, isMidnight && styles.launchFeatureTextDark, isNeo && styles.launchFeatureTextNeo, isEmerald && styles.launchFeatureTextEmerald, isVitaria && styles.launchFeatureTextVitaria]}>
+                  {line}
+                </Text>
+              </View>
+            ))}
+          </View>
+          <View style={[styles.launchBottomNote, isMidnight && styles.launchBottomNoteDark, isNeo && styles.launchBottomNoteNeo, isEmerald && styles.launchBottomNoteEmerald]}>
+            <Text style={[styles.launchSub, isNeo && styles.launchSubNeo, isEmerald && styles.launchSubEmerald, isMidnight && styles.launchSubDark]}>
+              {justCompletedOnboardingRef.current
+                ? loading && events.length === 0
+                  ? "Loading your feed…"
+                  : "Your home for local masjid life — let's go."
+                : "Preparing your home feed..."}
+            </Text>
+          </View>
         </Animated.View>
         <Animated.Text
           style={[
@@ -5291,6 +6678,27 @@ function AppInner() {
             ? `As-salāmu ʿalaykum${personalization.name ? `, ${personalization.name}` : ""}`
             : `Welcome back, ${personalization.name || "Friend"}`}
         </Animated.Text>
+        {justCompletedOnboardingRef.current ? (
+          <Animated.View
+            style={[
+              styles.launchCatCard,
+              {
+                opacity: launchMessageOpacity,
+                transform: [
+                  { translateY: launchMessageTranslateY },
+                  {
+                    translateY: bubbleDrift.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0, -4],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            <Image source={CAT_READING} style={styles.launchCatImage} resizeMode="cover" />
+          </Animated.View>
+        ) : null}
         <Animated.View
           style={[
             styles.launchDotsRow,
@@ -5338,7 +6746,7 @@ function AppInner() {
       <ScrollView contentContainerStyle={[styles.welcomeBody, isMidnight && styles.scrollBodyMidnight, isNeo && styles.scrollBodyNeo, isVitaria && styles.scrollBodyVitaria, isInferno && styles.scrollBodyInferno, isEmerald && styles.scrollBodyEmerald]}>
         <View style={[styles.tutorialCard, isMidnight && styles.controlsCardMidnight, isNeo && styles.controlsCardNeo, isVitaria && styles.controlsCardVitaria, isInferno && styles.controlsCardInferno, isEmerald && styles.controlsCardEmerald]}>
           <Text style={[styles.tutorialTitle, isMidnight && styles.sectionTitleMidnight, isNeo && styles.sectionTitleNeo, isVitaria && styles.sectionTitleVitaria, isInferno && styles.sectionTitleInferno, isEmerald && styles.sectionTitleEmerald]}>
-            Personalize Masjidly
+            Personalize Masjid.ly
           </Text>
           <Text style={[styles.metaInfoLine, isMidnight && styles.metaInfoLineMidnight, isNeo && styles.metaInfoLineNeo, isVitaria && styles.metaInfoLineVitaria, isInferno && styles.metaInfoLineInferno, isEmerald && styles.metaInfoLineEmerald]}>
             Tell us a bit about you so we can push the most relevant events higher while still showing all events.
@@ -5361,7 +6769,7 @@ function AppInner() {
             ].map(([id, label]) => {
               const active = personalization.preferredAudience === id;
               return (
-                <Pressable
+                <Pressable {...PRESSABLE_INSTANT}
                   key={`pref-${id}`}
                   onPress={() =>
                     setPersonalization((prev) => ({
@@ -5381,7 +6789,7 @@ function AppInner() {
             {["Halaqas", "Classes", "Youth", "Family", "Community"].map((interest) => {
               const active = personalization.interests.includes(interest);
               return (
-          <Pressable
+          <Pressable {...PRESSABLE_INSTANT}
                   key={`interest-${interest}`}
                   onPress={() => toggleInterest(interest)}
                   style={[styles.sourceChip, active && styles.sourceChipActive]}
@@ -5409,7 +6817,7 @@ function AppInner() {
             {(meta?.sources || []).map((src) => {
               const active = selectedSources.has(src);
             return (
-              <Pressable
+              <Pressable {...PRESSABLE_INSTANT}
                   key={src}
                   onPress={() => toggleSource(src)}
                 style={[styles.sourceChip, active && styles.sourceChipActive]}
@@ -5419,7 +6827,8 @@ function AppInner() {
             );
           })}
         </ScrollView>
-          <Pressable style={styles.primaryBtn} onPress={saveOnboarding}>
+          {renderPrivacyPolicyConsent({})}
+          <Pressable {...PRESSABLE_INSTANT} style={styles.primaryBtn} onPress={saveOnboarding}>
             <Text style={styles.primaryBtnText}>Save Onboarding</Text>
           </Pressable>
       </View>
@@ -5431,15 +6840,25 @@ function AppInner() {
     const welcomeName = normalizeText(
       personalization.name || (currentUser?.email || "friend").split("@")[0] || "friend"
     );
-    const todayEvents = orderedVisibleEvents.filter(
+    const homeFeedEvents = orderedVisibleEvents.filter((e) => !isJumuahEvent(e));
+    const todayEvents = homeFeedEvents.filter(
       (e) => (e.date || "") === today && !isEventPastNow(e),
     );
-    const liveNowEvents = orderedVisibleEvents.filter((e) => isEventLiveNow(e)).slice(0, 5);
-    const thisWeekEvents = orderedVisibleEvents
+    // Home should read like a timeline: same filters as Explore, but always
+    // chronological. The global `sortMode` (relevant/nearest) would otherwise
+    // surface a few "top" picks and silently skip everything in between.
+    const todayEventsChrono = [...todayEvents].sort((a, b) =>
+      (a.start_time || "99:99").localeCompare(b.start_time || "99:99"),
+    );
+    const liveNowEvents = homeFeedEvents.filter((e) => isEventLiveNow(e)).slice(0, 5);
+    const thisWeekEvents = homeFeedEvents
       .filter((e) => (e.date || "") > today && (e.date || "") <= plusDaysIso(7))
-      .slice(0, 5);
+      .sort((a, b) =>
+        `${a.date || ""} ${a.start_time || "99:99"}`.localeCompare(`${b.date || ""} ${b.start_time || "99:99"}`),
+      )
+      .slice(0, 40);
     const nearYouEvents = reference
-      ? [...orderedVisibleEvents]
+      ? [...homeFeedEvents]
           .filter((e) => typeof e.distance_miles === "number" && e.date >= today)
           .sort((a, b) => Number(a.distance_miles ?? 9999) - Number(b.distance_miles ?? 9999))
           .slice(0, 3)
@@ -5465,7 +6884,7 @@ function AppInner() {
       if (Number.isFinite(bestMi)) nearestMasjidMiles = bestMi;
     }
     const nearestMasjidEvents = nearestMasjidKey
-      ? orderedVisibleEvents
+      ? homeFeedEvents
           .filter(
             (e) =>
               normalizeText(e.source).toLowerCase() === nearestMasjidKey.toLowerCase() &&
@@ -5477,12 +6896,12 @@ function AppInner() {
     const followedWithNext: Array<{ source: string; next: EventItem | null }> = followedMasjids.map((src) => ({
       source: src,
       next:
-        orderedVisibleEvents.find((e) => normalizeText(e.source).toLowerCase() === src.toLowerCase() && (e.date || "") >= today) || null,
+        homeFeedEvents.find((e) => normalizeText(e.source).toLowerCase() === src.toLowerCase() && (e.date || "") >= today) || null,
     }));
     // "First upcoming" must be min(date >= today), NOT orderedVisibleEvents[0]
     // (which is sorted by the user's chosen sortMode, so it can lead with a
     // relevance-boosted event that isn't actually the soonest).
-    const soonestUpcoming = orderedVisibleEvents
+    const soonestUpcoming = homeFeedEvents
       .filter((e) => (e.date || "") >= today && !isEventPastNow(e))
       .reduce<EventItem | null>((acc, cur) => {
         const candidate = `${cur.date || ""} ${cur.start_time || "99:99"}`;
@@ -5502,30 +6921,32 @@ function AppInner() {
           : daysUntil === 1
             ? "First event tomorrow"
             : `First event in ${daysUntil} days`;
-    const quickActions = [
-      { label: "Browse", emoji: "◉", action: () => switchTab("explore") },
-      { label: "Calendar", emoji: "◷", action: () => switchTab("calendar") },
-      { label: "Saved", emoji: "♡", action: () => switchTab("saved") },
-      { label: "Refresh", emoji: "↻", action: () => loadEvents({ force: true }) },
+    const quickActions: Array<{ label: string; mi: MiName; action: () => void }> = [
+      { label: "Browse", mi: "explore", action: () => switchTab("explore") },
+      { label: "Calendar", mi: "calendar_today", action: () => switchTab("calendar") },
+      { label: "Your Feed", mi: "auto_awesome", action: () => switchTab("feed") },
+      { label: "Refresh", mi: "refresh", action: () => loadEvents({ force: true }) },
     ];
 
     const renderMiniEventRow = (e: EventItem, keyHint: string) => {
       const key = eventStorageKey(e);
       const rsvpState = rsvpStatuses[key];
       const saved = isSavedEvent(e);
-      const poster = pickPoster(e.image_urls);
+      const poster = eventPosterUrl(e);
       const liveNow = isEventLiveNow(e);
+      const displayTitle = eventDisplayTitle(e);
     return (
         <Pressable
+          {...PRESSABLE_INSTANT}
           key={`home-row-${keyHint}`}
           style={[styles.homeEventRow, isDarkTheme && styles.homeEventRowDark]}
           onPress={() => setSelectedEvent(e)}
         >
           {poster ? (
-            <Image source={{ uri: poster }} style={styles.homeEventRowPoster} />
+            <Image source={{ uri: poster }} style={styles.homeEventRowPoster} resizeMode="cover" />
           ) : (
             <View style={[styles.homeEventRowPoster, { alignItems: "center", justifyContent: "center" }]}>
-              <Text style={[{ fontSize: 22, color: "#a3b0c8" }, emojiFontStyle]}>🕌</Text>
+              <Mi name="mosque" size={26} color="#a3b0c8" />
             </View>
           )}
           <View style={{ flex: 1 }}>
@@ -5541,7 +6962,7 @@ function AppInner() {
               </Text>
             </View>
             <Text style={[styles.homeEventRowTitle, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={2}>
-              {e.title}
+              {displayTitle}
             </Text>
             <Text style={[styles.homeEventRowMeta, isDarkTheme && { color: "#a6b4d4" }]} numberOfLines={1}>
               {formatSourceLabel(e.source)}
@@ -5549,6 +6970,7 @@ function AppInner() {
             </Text>
             <View style={styles.cardActionRow}>
               <Pressable
+                {...PRESSABLE_INSTANT}
                 hitSlop={6}
                 style={[styles.cardActionChip, rsvpState === "going" && styles.cardActionChipActive]}
                 onPress={(ev) => { ev.stopPropagation?.(); toggleRsvp(e, "going"); }}
@@ -5558,6 +6980,7 @@ function AppInner() {
                 </Text>
               </Pressable>
               <Pressable
+                {...PRESSABLE_INSTANT}
                 hitSlop={6}
                 style={[styles.cardActionChip, rsvpState === "interested" && styles.cardActionChipActive]}
                 onPress={(ev) => { ev.stopPropagation?.(); toggleRsvp(e, "interested"); }}
@@ -5567,6 +6990,7 @@ function AppInner() {
                 </Text>
               </Pressable>
               <Pressable
+                {...PRESSABLE_INSTANT}
                 hitSlop={6}
                 style={({ pressed }) => [
                   styles.cardActionChip,
@@ -5575,11 +6999,14 @@ function AppInner() {
                 ]}
                 onPress={(ev) => { ev.stopPropagation?.(); toggleSavedEvent(e); }}
               >
-                <Text style={[styles.cardActionChipText, saved && styles.cardActionChipTextActive, emojiFontStyle]}>
-                  {saved ? "♥" : "♡"}
-                </Text>
+                <Mi
+                  name={saved ? "favorite_fill1" : "favorite"}
+                  size={14}
+                  color={saved ? "#fff" : "#2e4f82"}
+                />
               </Pressable>
               <Pressable
+                {...PRESSABLE_INSTANT}
                 hitSlop={6}
                 style={({ pressed }) => [
                   styles.cardActionChip,
@@ -5587,7 +7014,7 @@ function AppInner() {
                 ]}
                 onPress={(ev) => { ev.stopPropagation?.(); shareEvent(e); }}
               >
-                <Text style={[styles.cardActionChipText, emojiFontStyle]}>↗</Text>
+                <Mi name="open_in_new" size={14} color="#2e4f82" />
               </Pressable>
             </View>
           </View>
@@ -5607,6 +7034,7 @@ function AppInner() {
           isEmerald && styles.scrollBodyEmerald,
         ]}
         showsVerticalScrollIndicator={false}
+        {...IOS_SCROLL_INSTANT_TOUCH}
       >
         <LinearGradient
           colors={
@@ -5664,30 +7092,14 @@ function AppInner() {
               },
             ]}
           />
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              styles.homeHeroShimmer,
-              {
-                opacity: homeHeroGlowDrift.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, 0.22, 0] }),
-                transform: [
-                  {
-                    translateX: homeHeroGlowDrift.interpolate({ inputRange: [0, 1], outputRange: [-160, 340] }),
-                  },
-                  { rotate: "18deg" },
-                ],
-              },
-            ]}
-          />
-
           <Text style={[styles.homeHeroHi, isNeo && { color: "#2e2e2e" }]}>Assalamu alaikum, {welcomeName}</Text>
           <Text style={[styles.homeHeroCount, isNeo && { color: "#151515" }]}>
             {futureVisibleCount} upcoming events
             </Text>
           <Text style={[styles.homeHeroSub, isNeo && { color: "#3f3f3f" }]}>
-            {nextEventText} · {new Set(events.map((e) => e.source)).size} masjids
+            {nextEventText} · {new Set(homeFeedEvents.map((e) => e.source)).size} masjids
           </Text>
-          <Pressable style={styles.homeHeroCta} onPress={() => switchTab("explore")}>
+          <Pressable {...PRESSABLE_INSTANT} style={styles.homeHeroCta} onPress={() => switchTab("explore")}>
             <Text style={styles.homeHeroCtaText}>Plan your week  →</Text>
             </Pressable>
         </LinearGradient>
@@ -5698,6 +7110,7 @@ function AppInner() {
             const emojiSpin = refreshSpin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
             return (
               <Pressable
+                {...PRESSABLE_INSTANT}
                 key={`qa-${a.label}`}
                 style={({ pressed }) => [
                   styles.homeQuickBtn,
@@ -5710,18 +7123,11 @@ function AppInner() {
                 }}
               >
                 {isRefreshAction ? (
-                  <Animated.Text
-                    style={[
-                      styles.homeQuickEmoji,
-                      emojiFontStyle,
-                      isDarkTheme && { color: "#f4f7ff" },
-                      { transform: [{ rotate: emojiSpin }] },
-                    ]}
-                  >
-                    {a.emoji}
-                  </Animated.Text>
+                  <Animated.View style={{ transform: [{ rotate: emojiSpin }] }}>
+                    <Mi name={a.mi} size={22} color={isDarkTheme ? "#f4f7ff" : "#273143"} />
+                  </Animated.View>
                 ) : (
-                  <Text style={[styles.homeQuickEmoji, emojiFontStyle, isDarkTheme && { color: "#f4f7ff" }]}>{a.emoji}</Text>
+                  <Mi name={a.mi} size={22} color={isDarkTheme ? "#f4f7ff" : "#273143"} />
                 )}
                 <Text style={[styles.homeQuickLabel, isDarkTheme && { color: "#f4f7ff" }]}>{a.label}</Text>
               </Pressable>
@@ -5759,13 +7165,13 @@ function AppInner() {
                   {todayEvents.length}
           </Text>
               ) : null}
-              <Pressable onPress={() => switchTab("explore")} hitSlop={8}>
+              <Pressable {...PRESSABLE_INSTANT} onPress={() => switchTab("explore")} hitSlop={8}>
                 <Text style={[styles.homeSectionSeeAll, isDarkTheme && { color: "#9db0db" }]}>See all →</Text>
               </Pressable>
                 </View>
             </View>
           {todayEvents.length ? (
-            todayEvents.slice(0, 4).map((e, idx) => renderMiniEventRow(e, `today-${idx}`))
+            todayEventsChrono.slice(0, 20).map((e, idx) => renderMiniEventRow(e, `today-${idx}`))
           ) : (
             <View style={[styles.homeEmpty, isDarkTheme && styles.homeEmptyDark]}>
               <Text style={[styles.homeEmptyText, isDarkTheme && { color: "#c4cee8" }]}>
@@ -5779,7 +7185,7 @@ function AppInner() {
           <View style={styles.homeSection}>
             <View style={styles.homeSectionHeader}>
               <Text style={[styles.homeSectionTitle, isDarkTheme && { color: "#f4f7ff" }]}>This week</Text>
-              <Pressable onPress={() => switchTab("explore")} hitSlop={8}>
+              <Pressable {...PRESSABLE_INSTANT} onPress={() => switchTab("explore")} hitSlop={8}>
                 <Text style={[styles.homeSectionSeeAll, isDarkTheme && { color: "#9db0db" }]}>See all</Text>
           </Pressable>
         </View>
@@ -5793,16 +7199,18 @@ function AppInner() {
               <Text style={[styles.homeSectionTitle, isDarkTheme && { color: "#f4f7ff" }]}>
                 Your closest masjid
               </Text>
-              <Pressable onPress={() => switchTab("explore")} hitSlop={6}>
+              <Pressable {...PRESSABLE_INSTANT} onPress={() => switchTab("explore")} hitSlop={6}>
                 <Text style={[styles.homeSectionCount, { color: "#ff7d50" }]}>See on map →</Text>
               </Pressable>
             </View>
             <Pressable
+              {...PRESSABLE_INSTANT}
               style={[styles.nearestMasjidCard, isDarkTheme && styles.nearestMasjidCardDark]}
               onPress={() => setSelectedMasjidProfile(nearestMasjidKey)}
             >
               <View style={styles.nearestMasjidRow}>
-                <Text style={[styles.nearestMasjidPin, emojiFontStyle]}>📍</Text>
+                <Mi name="location_on" size={22} color={isDarkTheme ? "#ff9977" : "#ff7d50"} />
+
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.nearestMasjidName, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={1}>
                     {formatSourceLabel(nearestMasjidKey)}
@@ -5840,7 +7248,7 @@ function AppInner() {
             </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingVertical: 4 }}>
               {followedWithNext.map(({ source, next }) => (
-            <Pressable
+            <Pressable {...PRESSABLE_INSTANT}
                   key={`follow-${source}`}
                   style={[styles.homeFollowChip, isDarkTheme && styles.homeFollowChipDark]}
                   onPress={() => setSelectedMasjidProfile(source)}
@@ -5849,7 +7257,7 @@ function AppInner() {
                     {formatSourceLabel(source)}
                   </Text>
                   <Text style={[styles.homeFollowNext, isDarkTheme && { color: "#c4cee8" }]} numberOfLines={1}>
-                    {next ? `${formatHumanDate(next.date)} · ${next.title}` : "No upcoming events"}
+                    {next ? `${formatHumanDate(next.date)} · ${eventDisplayTitle(next)}` : "No upcoming events"}
                 </Text>
             </Pressable>
               ))}
@@ -5857,15 +7265,15 @@ function AppInner() {
       </View>
         ) : null}
 
-        <Pressable
+        <Pressable {...PRESSABLE_INSTANT}
           style={[styles.homeBrowseAllBtn, isDarkTheme && styles.homeBrowseAllBtnDark]}
           onPress={() => switchTab("explore")}
         >
           <Text style={[styles.homeBrowseAllTitle, isDarkTheme && { color: "#f4f7ff" }]}>
-            Browse all {orderedVisibleEvents.length} upcoming event{orderedVisibleEvents.length === 1 ? "" : "s"}
+            Browse all {homeFeedEvents.length} upcoming event{homeFeedEvents.length === 1 ? "" : "s"}
           </Text>
           <Text style={[styles.homeBrowseAllSub, isDarkTheme && { color: "#c4cee8" }]}>
-            Home shows today + this week. Explore has the full list on a map & feed.
+            Home lists today and the next 7 days in time order (up to 20 today / 40 this week). Explore has the full map & filters.
           </Text>
         </Pressable>
     </ScrollView>
@@ -5887,19 +7295,28 @@ function AppInner() {
     });
     const flagged = e.correction?.flagged;
     const verified = e.correction?.verified;
+    const listPosterUri = eventPosterUrl(e);
+    const displayTitle = eventDisplayTitle(e);
     return (
       <Pressable
+        {...PRESSABLE_INSTANT}
         key={`event-card-${keyHint || key}`}
         style={styles.hospitalListCard}
         onPress={() => setSelectedEvent(e)}
       >
-        {pickPoster(e.image_urls) ? (
-          <Image source={{ uri: pickPoster(e.image_urls) }} style={styles.hospitalListPoster} />
+        {listPosterUri ? (
+          <Image source={{ uri: listPosterUri }} style={styles.hospitalListPoster} resizeMode="cover" />
         ) : (
           <View style={styles.hospitalListPoster} />
         )}
         <View style={{ flex: 1 }}>
           <View style={styles.eventBadgeRow}>
+            {isEventLiveNow(e) ? (
+              <View style={styles.liveNowBadge}>
+                <View style={styles.liveNowDot} />
+                <Text style={styles.liveNowText}>LIVE NOW</Text>
+              </View>
+            ) : null}
             <View style={[styles.freshnessPill, { backgroundColor: freshPalette.bg }]}>
               <View style={[styles.freshnessDot, { backgroundColor: freshPalette.dot }]} />
               <Text style={[styles.freshnessPillText, { color: freshPalette.text }]} numberOfLines={1}>
@@ -5907,13 +7324,15 @@ function AppInner() {
               </Text>
             </View>
             {verified ? (
-              <View style={[styles.freshnessPill, { backgroundColor: "rgba(48,168,96,0.14)" }]}>
-                <Text style={[styles.freshnessPillText, { color: "#1f7a42" }]}>✓ Verified</Text>
+              <View style={[styles.freshnessPill, { backgroundColor: "rgba(48,168,96,0.14)", flexDirection: "row", alignItems: "center", gap: 4 }]}>
+                <Mi name="check" size={12} color="#1f7a42" />
+                <Text style={[styles.freshnessPillText, { color: "#1f7a42" }]}>Verified</Text>
               </View>
             ) : null}
             {flagged ? (
-              <View style={[styles.freshnessPill, { backgroundColor: "rgba(214,99,46,0.16)" }]}>
-                <Text style={[styles.freshnessPillText, { color: "#9a4311" }]}>⚠ Flagged</Text>
+              <View style={[styles.freshnessPill, { backgroundColor: "rgba(214,99,46,0.16)", flexDirection: "row", alignItems: "center", gap: 4 }]}>
+                <Mi name="warning" size={12} color="#9a4311" />
+                <Text style={[styles.freshnessPillText, { color: "#9a4311" }]}>Flagged</Text>
               </View>
             ) : null}
             {scoreChip ? (
@@ -5928,7 +7347,7 @@ function AppInner() {
             {formatHumanDate(e.date)} · {eventTime(e)}
               </Text>
           <Text style={[styles.hospitalListTitle, isDarkTheme && styles.hospitalListTitleDark, isNeo && styles.hospitalListTitleNeo]} numberOfLines={2}>
-            {e.title}
+            {displayTitle}
           </Text>
           {topic ? (
             <Text
@@ -5964,6 +7383,7 @@ function AppInner() {
           ) : null}
           <View style={styles.cardActionRow}>
             <Pressable
+              {...PRESSABLE_INSTANT}
               hitSlop={6}
               style={({ pressed }) => [
                 styles.cardActionChip,
@@ -5980,6 +7400,7 @@ function AppInner() {
               </Text>
                 </Pressable>
             <Pressable
+              {...PRESSABLE_INSTANT}
               hitSlop={6}
               style={({ pressed }) => [
                 styles.cardActionChip,
@@ -5996,6 +7417,7 @@ function AppInner() {
               </Text>
                 </Pressable>
             <Pressable
+              {...PRESSABLE_INSTANT}
               hitSlop={6}
               style={({ pressed }) => [
                 styles.cardActionChip,
@@ -6007,11 +7429,14 @@ function AppInner() {
                 toggleSavedEvent(e);
               }}
             >
-              <Text style={[styles.cardActionChipText, saved && styles.cardActionChipTextActive, emojiFontStyle]}>
-                {saved ? "♥" : "♡"}
-              </Text>
+              <Mi
+                name={saved ? "favorite_fill1" : "favorite"}
+                size={14}
+                color={saved ? "#fff" : "#2e4f82"}
+              />
             </Pressable>
             <Pressable
+              {...PRESSABLE_INSTANT}
               hitSlop={6}
               style={({ pressed }) => [
                 styles.cardActionChip,
@@ -6022,7 +7447,7 @@ function AppInner() {
                 shareEvent(e);
               }}
             >
-              <Text style={[styles.cardActionChipText, emojiFontStyle]}>↗</Text>
+              <Mi name="open_in_new" size={14} color="#2e4f82" />
                 </Pressable>
               </View>
             </View>
@@ -6160,14 +7585,14 @@ function AppInner() {
           {masjidPinsForExplore.reduce((s, p) => s + p.count, 0)} events across {masjidPinsForExplore.filter((p) => p.count > 0).length} masjids
         </Text>
         </View>
-      <Pressable
+      <Pressable {...PRESSABLE_INSTANT}
         accessibilityRole="button"
         accessibilityLabel="Recenter map on my location"
         onPress={recenterMapOnMe}
         style={styles.mapRecenterBtn}
         hitSlop={10}
       >
-        <Text style={[styles.mapRecenterEmoji, emojiFontStyle]}>📍</Text>
+        <Mi name="location_on" size={22} color="#273143" />
       </Pressable>
     </View>
     );
@@ -6191,14 +7616,14 @@ function AppInner() {
             </Text>
           </View>
           <View style={styles.locPromptBtnRow}>
-            <Pressable
+            <Pressable {...PRESSABLE_INSTANT}
               style={styles.locPromptSecondaryBtn}
               onPress={() => setLocationBannerDismissed(true)}
               disabled={locationRequesting}
             >
               <Text style={styles.locPromptSecondaryBtnText}>Not now</Text>
             </Pressable>
-            <Pressable
+            <Pressable {...PRESSABLE_INSTANT}
               style={styles.locPromptPrimaryBtn}
               onPress={requestLocationAndSave}
               disabled={locationRequesting}
@@ -6212,7 +7637,12 @@ function AppInner() {
       ) : null}
 
       <View style={[styles.exploreFilterBar, isDarkTheme && styles.exploreFilterBarDark, isNeo && styles.exploreFilterBarNeo]}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.exploreAudienceStrip}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.exploreAudienceStrip}
+          {...IOS_SCROLL_INSTANT_TOUCH}
+        >
           {[
             ["all", "All"],
             ["brothers", "Brothers"],
@@ -6222,6 +7652,7 @@ function AppInner() {
             const active = audienceFilter === id;
             return (
               <Pressable
+                {...PRESSABLE_INSTANT}
                 key={`explore-aud-${id}`}
                 onPress={() => setAudienceFilter(id as typeof audienceFilter)}
                 style={audienceChipStyle(id, active)}
@@ -6231,6 +7662,7 @@ function AppInner() {
             );
           })}
           <Pressable
+            {...PRESSABLE_INSTANT}
             key="explore-more-filters"
             onPress={() => setShowExploreFilters(true)}
             style={[styles.exploreMoreChip, isDarkTheme && styles.exploreMoreChipDark]}
@@ -6245,8 +7677,10 @@ function AppInner() {
         horizontal
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={{ paddingHorizontal: 12, gap: 8, paddingVertical: 8 }}
+        {...IOS_SCROLL_INSTANT_TOUCH}
       >
         <Pressable
+          {...PRESSABLE_INSTANT}
           key="topic-all"
           onPress={() => {
             setHalaqaFilter(null);
@@ -6275,6 +7709,7 @@ function AppInner() {
         </Pressable>
         {availableTopicChips.map((t) => (
           <Pressable
+            {...PRESSABLE_INSTANT}
             key={`topic-${t}`}
             onPress={() => setHalaqaFilter((prev) => (prev === t ? null : t))}
             style={[
@@ -6297,9 +7732,11 @@ function AppInner() {
             horizontal
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={{ gap: 10, paddingVertical: 6 }}
+            {...IOS_SCROLL_INSTANT_TOUCH}
           >
             {eventSeries.slice(0, 12).map((s) => (
               <Pressable
+                {...PRESSABLE_INSTANT}
                 key={`series-${s.series_id}`}
                 style={styles.seriesCard}
                 onPress={() => {
@@ -6307,7 +7744,7 @@ function AppInner() {
                 }}
               >
                 {s.image_url ? (
-                  <Image source={{ uri: s.image_url }} style={styles.seriesPoster} />
+                  <Image source={{ uri: s.image_url }} style={styles.seriesPoster} resizeMode="cover" />
                 ) : (
                   <View style={[styles.seriesPoster, { backgroundColor: masjidBrandColor(s.source), alignItems: "center", justifyContent: "center" }]}>
                     <Text style={{ color: "#fff", fontWeight: "800" }}>{masjidInitials(s.source)}</Text>
@@ -6331,7 +7768,7 @@ function AppInner() {
         <Text style={[styles.exploreEmptySub, isDarkTheme && { color: "#c4cee8" }]}>
           Reset the filters and we'll show you every halaqah, talk, and class within reach.
         </Text>
-        <Pressable
+        <Pressable {...PRESSABLE_INSTANT}
           onPress={() => {
             setQuery("");
             setReference("");
@@ -6350,7 +7787,7 @@ function AppInner() {
     );
 
     const footerNode = hasMore ? (
-      <Pressable
+      <Pressable {...PRESSABLE_INSTANT}
         onPress={() => setExploreSectionLimit((n) => n + EXPLORE_SECTIONS_BATCH)}
         style={styles.exploreLoadMoreBtn}
       >
@@ -6376,6 +7813,7 @@ function AppInner() {
           isEmerald && styles.scrollBodyEmerald,
         ]}
         showsVerticalScrollIndicator={false}
+        {...IOS_SCROLL_INSTANT_TOUCH}
         sections={visibleSections}
         keyExtractor={(item, index) => `${eventStorageKey(item)}-${index}`}
         renderItem={({ item, index, section }) =>
@@ -6468,7 +7906,11 @@ function AppInner() {
     };
 
     return (
-    <ScrollView ref={calendarScrollRef} contentContainerStyle={[styles.scrollBody, isMidnight && styles.scrollBodyMidnight, isNeo && styles.scrollBodyNeo, isVitaria && styles.scrollBodyVitaria, isInferno && styles.scrollBodyInferno, isEmerald && styles.scrollBodyEmerald]}>
+    <ScrollView
+      ref={calendarScrollRef}
+      contentContainerStyle={[styles.scrollBody, isMidnight && styles.scrollBodyMidnight, isNeo && styles.scrollBodyNeo, isVitaria && styles.scrollBodyVitaria, isInferno && styles.scrollBodyInferno, isEmerald && styles.scrollBodyEmerald]}
+      {...IOS_SCROLL_INSTANT_TOUCH}
+    >
       <LinearGradient
         colors={isMidnight ? ["#0c0f19", "#151b2a"] : isNeo ? ["#d8d8d8", "#d2d2d2"] : isVitaria ? ["#8f7680", "#b3949d"] : isInferno ? ["#070607", "#1b0901"] : isEmerald ? ["#b8e5c9", "#8fd5ad"] : ["#f0f2f7", "#e8ebf3"]}
         start={{ x: 0, y: 0 }}
@@ -6482,13 +7924,22 @@ function AppInner() {
       </LinearGradient>
 
         <View style={[styles.calendarViewSwitch, isDarkTheme && styles.calendarViewSwitchDark]}>
-          <Pressable style={[styles.calendarViewChip, calendarView === "month" && styles.calendarViewChipActive]} onPress={() => setCalendarView("month")}>
+          <Pressable
+            {...PRESSABLE_INSTANT}
+            style={[styles.calendarViewChip, calendarView === "month" && styles.calendarViewChipActive]}
+            onPress={() => setCalendarView("month")}
+          >
             <Text style={[styles.calendarViewChipText, calendarView === "month" && styles.calendarViewChipTextActive]}>Month</Text>
           </Pressable>
-          <Pressable style={[styles.calendarViewChip, calendarView === "list" && styles.calendarViewChipActive]} onPress={() => setCalendarView("list")}>
+          <Pressable
+            {...PRESSABLE_INSTANT}
+            style={[styles.calendarViewChip, calendarView === "list" && styles.calendarViewChipActive]}
+            onPress={() => setCalendarView("list")}
+          >
             <Text style={[styles.calendarViewChipText, calendarView === "list" && styles.calendarViewChipTextActive]}>Export list</Text>
           </Pressable>
           <Pressable
+            {...PRESSABLE_INSTANT}
             style={[styles.calendarViewChip, calendarMyPlan && styles.calendarViewChipActive]}
             onPress={() => setCalendarMyPlan((prev) => !prev)}
           >
@@ -6525,6 +7976,7 @@ function AppInner() {
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={{ paddingVertical: 4, paddingRight: 4, gap: 12 }}
+              {...IOS_SCROLL_INSTANT_TOUCH}
             >
               {knowledgePlans.map((plan) => {
                 const firstDate = plan.events[0]?.date || "";
@@ -6536,6 +7988,7 @@ function AppInner() {
                   : "Upcoming";
                 return (
                   <Pressable
+                    {...PRESSABLE_INSTANT}
                     key={`plan-${plan.id}`}
                     onPress={() => setKnowledgePlanPreview(plan)}
                     style={({ pressed }) => [
@@ -6545,7 +7998,7 @@ function AppInner() {
                     ]}
                   >
                     <View style={styles.knowledgePlanGlyphRow}>
-                      <Text style={styles.knowledgePlanGlyph}>{plan.emoji}</Text>
+                      <Mi name={plan.mi} size={24} color="#ffffff" />
                       <View style={styles.knowledgePlanChipCount}>
                         <Text style={styles.knowledgePlanChipCountText}>
                           {plan.events.length} stops
@@ -6574,16 +8027,16 @@ function AppInner() {
         {calendarView === "month" ? (
           <>
             <View style={[styles.calendarMonthBar, isDarkTheme && styles.calendarMonthBarDark]}>
-              <Pressable onPress={() => shiftMonth(-1)} hitSlop={12} style={styles.calendarMonthArrowBtn}>
+              <Pressable {...PRESSABLE_INSTANT} onPress={() => shiftMonth(-1)} hitSlop={12} style={styles.calendarMonthArrowBtn}>
                 <Text style={styles.calendarMonthArrow}>‹</Text>
               </Pressable>
-              <Pressable onPress={goToToday} style={{ flex: 1, alignItems: "center" }}>
+              <Pressable {...PRESSABLE_INSTANT} onPress={goToToday} style={{ flex: 1, alignItems: "center" }}>
                 <Text style={[styles.calendarMonthLabel, isDarkTheme && { color: "#f4f7ff" }]}>{monthLabel}</Text>
                 <Text style={[styles.calendarMonthLabelSub, isDarkTheme && { color: "#8793ab" }]}>
                   Tap to jump to today
                 </Text>
               </Pressable>
-              <Pressable onPress={() => shiftMonth(1)} hitSlop={12} style={styles.calendarMonthArrowBtn}>
+              <Pressable {...PRESSABLE_INSTANT} onPress={() => shiftMonth(1)} hitSlop={12} style={styles.calendarMonthArrowBtn}>
                 <Text style={styles.calendarMonthArrow}>›</Text>
               </Pressable>
             </View>
@@ -6605,6 +8058,7 @@ function AppInner() {
                   const isToday = cell.iso === today;
                   return (
                     <Pressable
+                      {...PRESSABLE_INSTANT}
                       key={`day-${cell.iso}`}
                       onPress={() => {
                         setSelectedCalendarDate(cell.iso || "");
@@ -6680,17 +8134,17 @@ function AppInner() {
               ) : (
                 <View style={{ gap: 10, marginTop: 8 }}>
                   {activeDateEvents.map((e, idx) => {
-                    const poster = pickPoster(e.image_urls);
+                    const poster = eventPosterUrl(e);
                     const rsvpState = rsvpStatuses[eventStorageKey(e)];
                     const saved = isSavedEvent(e);
                     return (
-                      <Pressable
+                      <Pressable {...PRESSABLE_INSTANT}
                         key={`cal-agenda-${eventStorageKey(e)}-${idx}`}
                         style={[styles.calendarAgendaRow, isDarkTheme && styles.calendarAgendaRowDark]}
                         onPress={() => setSelectedEvent(e)}
                       >
                         {poster ? (
-                          <Image source={{ uri: poster }} style={styles.calendarAgendaPoster} />
+                          <Image source={{ uri: poster }} style={styles.calendarAgendaPoster} resizeMode="cover" />
                         ) : (
                           <View style={[styles.calendarAgendaPoster, { alignItems: "center", justifyContent: "center", backgroundColor: masjidBrandColor(e.source) }]}>
                             <Text style={{ color: "#fff", fontWeight: "900", fontSize: 16 }}>{masjidInitials(e.source)}</Text>
@@ -6704,7 +8158,7 @@ function AppInner() {
                             {e.title}
                           </Text>
                           <View style={styles.cardActionRow}>
-                            <Pressable
+                            <Pressable {...PRESSABLE_INSTANT}
                               hitSlop={6}
                               style={({ pressed }) => [
                                 styles.cardActionChip,
@@ -6720,7 +8174,7 @@ function AppInner() {
                                 {rsvpState === "going" ? "Going ✓" : "Going"}
                               </Text>
                             </Pressable>
-                            <Pressable
+                            <Pressable {...PRESSABLE_INSTANT}
                               hitSlop={6}
                               style={({ pressed }) => [
                                 styles.cardActionChip,
@@ -6732,12 +8186,14 @@ function AppInner() {
                                 toggleSavedEvent(e);
                               }}
                             >
-                              <Text style={[styles.cardActionChipText, saved && styles.cardActionChipTextActive, emojiFontStyle]}>
-                                {saved ? "♥" : "♡"}
-                              </Text>
+                              <Mi
+                                name={saved ? "favorite_fill1" : "favorite"}
+                                size={14}
+                                color={saved ? "#fff" : "#2e4f82"}
+                              />
                             </Pressable>
                             {e.event_uid ? (
-                              <Pressable
+                              <Pressable {...PRESSABLE_INSTANT}
                                 hitSlop={6}
                                 style={({ pressed }) => [
                                   styles.cardActionChip,
@@ -6748,7 +8204,7 @@ function AppInner() {
                                   openCalendarExportPicker(e);
                                 }}
                               >
-                                <Text style={[styles.cardActionChipText, emojiFontStyle]}>📅</Text>
+                                <Mi name="calendar_today" size={14} color="#2e4f82" />
                               </Pressable>
                             ) : null}
                           </View>
@@ -6775,10 +8231,12 @@ function AppInner() {
           <Text style={[styles.emptyText, isDarkTheme && styles.emptyTextDark, isNeo && styles.emptyTextNeo]}>No upcoming events available for export yet.</Text>
         </View>
       ) : null}
-      {calendarScheduleEvents.map((e, idx) => (
+      {calendarScheduleEvents.map((e, idx) => {
+        const calPoster = eventPosterUrl(e);
+        return (
         <View key={`cal-${e.event_uid || e.title}-${idx}`} style={styles.hospitalListCard}>
-          {pickPoster(e.image_urls) ? (
-            <Image source={{ uri: pickPoster(e.image_urls) }} style={styles.hospitalListPoster} />
+          {calPoster ? (
+            <Image source={{ uri: calPoster }} style={styles.hospitalListPoster} resizeMode="cover" />
           ) : (
             <View style={styles.hospitalListPoster} />
           )}
@@ -6790,78 +8248,1080 @@ function AppInner() {
             </Text>
             <View style={styles.calendarActionRow}>
               {e.event_uid ? (
-                      <Pressable style={styles.darkPillBtn} onPress={() => openCalendarExportPicker(e)}>
+                      <Pressable {...PRESSABLE_INSTANT} style={styles.darkPillBtn} onPress={() => openCalendarExportPicker(e)}>
                         <Text style={styles.darkPillBtnText}>Export Calendar</Text>
                 </Pressable>
               ) : null}
               {e.source_url ? (
-                <Pressable style={styles.roundGhostBtn} onPress={() => Linking.openURL(e.source_url)}>
-                  <Text style={styles.roundGhostText}>↗</Text>
+                <Pressable {...PRESSABLE_INSTANT} style={styles.roundGhostBtn} onPress={() => Linking.openURL(e.source_url)}>
+                  <Mi name="open_in_new" size={16} color="#273143" />
                 </Pressable>
               ) : null}
+            </View>
+          </View>
         </View>
-      </View>
-        </View>
-      ))}
+        );
+      })}
           </>
         )}
     </ScrollView>
   );
   };
 
-  const renderSaved = () => {
-    const savedHeader = (
-      <LinearGradient
-        colors={isMidnight ? ["#0c0f19", "#151b2a"] : isNeo ? ["#d8d8d8", "#d2d2d2"] : isVitaria ? ["#8f7680", "#b3949d"] : isInferno ? ["#070607", "#1b0901"] : isEmerald ? ["#b8e5c9", "#8fd5ad"] : ["#f0f2f7", "#e8ebf3"]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.premiumSectionHeader}
-      >
-        <Text style={[styles.premiumSectionTitle, isDarkTheme && styles.premiumSectionTitleDark, isNeo && styles.premiumSectionTitleNeo]}>Saved Events</Text>
-        <Text style={[styles.premiumSectionSub, isDarkTheme && styles.premiumSectionSubDark, isNeo && styles.premiumSectionSubNeo]}>
-          Your shortlist, waiting. Tap a poster to set a reminder or bring a friend.
-        </Text>
-      </LinearGradient>
-    );
-    const emptyNode = (
-      <View style={styles.emptyCard}>
-        <Text style={[styles.emptyText, isDarkTheme && styles.emptyTextDark, isNeo && styles.emptyTextNeo]}>Your shortlist is empty for now. Tap the heart on any event and it'll wait for you here.</Text>
+  const renderFeed = () => {
+    const feedSection = (
+      title: string,
+      subtitle: string,
+      eventsForSection: EventItem[],
+      keyPrefix: string,
+      emptyText: string
+    ) => (
+      <View style={styles.discoverSection}>
+        <Text style={[styles.discoverSectionTitle, isDarkTheme && { color: "#f4f7ff" }]}>{title}</Text>
+        <Text style={[styles.discoverSectionSub, isDarkTheme && { color: "#9db0db" }]}>{subtitle}</Text>
+        {eventsForSection.length ? (
+          eventsForSection.map((event, idx) => (
+            <View key={`${keyPrefix}-${eventStorageKey(event)}-${idx}`}>{renderEventListCard(event, `${keyPrefix}-${idx}`)}</View>
+          ))
+        ) : (
+          <View style={styles.emptyCard}>
+            <Text style={[styles.emptyText, isDarkTheme && styles.emptyTextDark, isNeo && styles.emptyTextNeo]}>{emptyText}</Text>
+          </View>
+        )}
       </View>
     );
+
+    // First-time setup: a forced, full-screen inline wizard that replaces the
+    // feed body. The user cannot dismiss or skip — they must pick masjids,
+    // then speakers, then class topics, then watch a short "Building your
+    // feed…" moment before the real feed appears. They can re-edit later
+    // from Settings → Content → Your Feed setup.
+    if (!feedSetupDone || feedEditMode || (feedSetupApplying && !feedSetupOpen)) {
+      const step = feedSetupStep;
+      const isBuilding = feedSetupApplying;
+      const isReEditing = feedSetupDone && feedEditMode;
+      const canAdvance =
+        step === 0
+          ? feedSetupMasjids.length > 0
+          : step === 1
+            ? feedSetupScholars.length > 0
+            : step === 2
+              ? feedSetupTopics.length > 0
+              : false;
+      const stepTitle =
+        step === 0
+          ? "Which masjids do you want to see?"
+          : step === 1
+            ? "Which speakers do you want in your feed?"
+            : "What type of classes do you want?";
+      const stepSub =
+        step === 0
+          ? "Pick at least one masjid. You can change this anytime in Settings."
+          : step === 1
+            ? "Choose speakers you'd like to hear from. Change anytime in Settings."
+            : "Pick the topics you care about — halaqas, tafsir, youth, and more.";
+      const stepCount = 3;
+      return (
+        <View
+          style={[
+            styles.scrollBody,
+            isMidnight && styles.scrollBodyMidnight,
+            isNeo && styles.scrollBodyNeo,
+            isVitaria && styles.scrollBodyVitaria,
+            isInferno && styles.scrollBodyInferno,
+            isEmerald && styles.scrollBodyEmerald,
+            { flex: 1 },
+          ]}
+        >
+          <View
+            style={[
+              styles.feedWizardTopBar,
+              isDarkTheme && styles.feedWizardTopBarDark,
+              isNeo && styles.feedWizardTopBarNeo,
+              isEmerald && styles.feedWizardTopBarEmerald,
+              isInferno && styles.feedWizardTopBarInferno,
+              isVitaria && styles.feedWizardTopBarVitaria,
+            ]}
+          >
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text
+                style={[
+                  styles.feedWizardTopTitle,
+                  isDarkTheme && styles.feedWizardTopTitleDark,
+                  isNeo && styles.feedWizardTopTitleNeo,
+                  isEmerald && styles.feedWizardTopTitleEmerald,
+                  isInferno && styles.feedWizardTopTitleInferno,
+                  isVitaria && styles.feedWizardTopTitleVitaria,
+                ]}
+              >
+                {isReEditing ? "Edit feed" : "Set up your feed"}
+              </Text>
+              <Text
+                style={[
+                  styles.feedWizardTopSub,
+                  isDarkTheme && styles.feedWizardTopSubDark,
+                  isNeo && styles.feedWizardTopSubNeo,
+                  isEmerald && styles.feedWizardTopSubEmerald,
+                  isInferno && styles.feedWizardTopSubInferno,
+                  isVitaria && styles.feedWizardTopSubVitaria,
+                ]}
+                numberOfLines={2}
+              >
+                {isReEditing
+                  ? "Masjids, speakers & topics · saves when you tap Build my feed."
+                  : "Three steps: masjids, speakers, topics."}
+              </Text>
+            </View>
+            {isReEditing ? (
+              <Pressable
+                {...PRESSABLE_INSTANT}
+                hitSlop={10}
+                onPress={() => {
+                  setFeedEditMode(false);
+                  setFeedSetupStep(0);
+                }}
+              >
+                <Text style={[styles.feedWizardCancelLink, isDarkTheme && styles.feedWizardCancelLinkDark]}>Cancel</Text>
+              </Pressable>
+            ) : null}
+          </View>
+
+          {isBuilding ? (
+            <View style={[styles.feedBuildWrap, isDarkTheme && styles.feedBuildWrapDark]}>
+              {feedBuildPhase === "success" ? (
+                <Animated.View
+                  style={[
+                    styles.feedBuildSuccessCard,
+                    isDarkTheme && styles.feedBuildSuccessCardDark,
+                    { transform: [{ scale: feedBuildSuccessScale }] },
+                  ]}
+                >
+                  <View style={styles.feedBuildSuccessBadge}>
+                    <Mi name="check" size={48} color="#ffffff" />
+                  </View>
+                  <Text style={[styles.feedBuildTitle, isDarkTheme && styles.feedBuildTitleDark]}>
+                    Your feed is ready
+                  </Text>
+                  <Text style={[styles.feedBuildSub, isDarkTheme && styles.feedBuildSubDark]}>
+                    {feedSetupMasjids.length} masjid{feedSetupMasjids.length === 1 ? "" : "s"} ·{" "}
+                    {feedSetupScholars.length} speaker{feedSetupScholars.length === 1 ? "" : "s"} ·{" "}
+                    {feedSetupTopics.length} topic{feedSetupTopics.length === 1 ? "" : "s"}
+                  </Text>
+                </Animated.View>
+              ) : (
+                <View style={[styles.feedBuildCard, isDarkTheme && styles.feedBuildCardDark]}>
+                  <Animated.View
+                    style={[
+                      styles.feedBuildGifWrap,
+                      {
+                        transform: [
+                          {
+                            rotate: feedBuildHammerTilt.interpolate({
+                              inputRange: [-1, 0, 1],
+                              outputRange: ["-2.5deg", "0deg", "2.5deg"],
+                            }),
+                          },
+                        ],
+                      },
+                    ]}
+                  >
+                    <Image source={FEED_BUILDING_CAT} style={styles.feedBuildGif} resizeMode="cover" />
+                  </Animated.View>
+                  <Text style={[styles.feedBuildTitle, isDarkTheme && styles.feedBuildTitleDark]}>
+                    Building your feed
+                  </Text>
+                  <Text style={[styles.feedBuildSub, isDarkTheme && styles.feedBuildSubDark]}>
+                    Our hard workers are working.
+                  </Text>
+                  <View style={[styles.feedBuildBarTrack, isDarkTheme && styles.feedBuildBarTrackDark]}>
+                    <Animated.View
+                      style={[
+                        styles.feedBuildBarFill,
+                        {
+                          width: feedBuildProgress.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: ["0%", "100%"],
+                          }),
+                        },
+                      ]}
+                    />
+                  </View>
+                  <Text style={[styles.feedBuildPercent, isDarkTheme && styles.feedBuildPercentDark]}>
+                    Saving masjids, speakers &amp; topics…
+                  </Text>
+                </View>
+              )}
+            </View>
+          ) : (
+            <>
+              <ScrollView
+                style={{ flex: 1 }}
+                contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 6, paddingBottom: 20, gap: 8 }}
+                showsVerticalScrollIndicator
+                keyboardShouldPersistTaps="handled"
+                nestedScrollEnabled
+                {...IOS_SCROLL_INSTANT_TOUCH}
+              >
+                <Animated.View
+                  style={{
+                    opacity: feedStepAnim,
+                    transform: [
+                      {
+                        translateX: feedStepAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [feedStepDirRef.current * STEP_TRANSITION_PX, 0],
+                        }),
+                      },
+                    ],
+                    gap: 8,
+                  }}
+                >
+                  <View style={[styles.feedSetupHeader, { borderBottomWidth: 0, paddingHorizontal: 0, paddingTop: 4, paddingBottom: 6 }]}>
+                    <Text style={[styles.feedSetupStepPill, isDarkTheme && styles.feedSetupStepPillDark]}>
+                      Step {step + 1} of {stepCount}
+                    </Text>
+                    <Text style={[styles.feedSetupTitle, isDarkTheme && styles.feedSetupTitleDark]}>{stepTitle}</Text>
+                    <Text style={[styles.feedSetupSub, isDarkTheme && styles.feedSetupSubDark]}>{stepSub}</Text>
+                  </View>
+                  {!isReEditing ? (
+                    <Text
+                      style={[
+                        styles.feedWizardExplainerCompact,
+                        isDarkTheme && styles.feedWizardExplainerCompactDark,
+                        isNeo && styles.feedWizardExplainerCompactNeo,
+                        isEmerald && styles.feedWizardExplainerCompactEmerald,
+                      ]}
+                    >
+                      Your feed ranks upcoming events from masjids and speakers you follow, topics you pick, plus your saves and RSVPs.
+                    </Text>
+                  ) : null}
+
+                {step === 0
+                  ? feedSetupMasjidOptions.map((source) => {
+                      const active = feedSetupMasjids.includes(source);
+                      const upcomingCount = feedUpcomingEvents.filter(
+                        (e) => normalizeText(e.source).toLowerCase() === source.toLowerCase()
+                      ).length;
+                      return (
+                        <Pressable
+                          {...PRESSABLE_INSTANT}
+                          key={`feed-wizard-m-${source}`}
+                          hitSlop={6}
+                          style={({ pressed }) => [
+                            styles.feedSetupChoiceRow,
+                            isDarkTheme && styles.feedSetupChoiceRowDark,
+                            active && styles.feedSetupChoiceRowActive,
+                            pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+                          ]}
+                          onPress={() => {
+                            hapticTap("selection");
+                            setFeedSetupMasjids((prev) =>
+                              prev.includes(source) ? prev.filter((x) => x !== source) : [...prev, source]
+                            );
+                          }}
+                        >
+                          {renderMasjidLogo(source, 38, {
+                            style: styles.feedSetupMasjidLogo,
+                            textStyle: styles.discoverMasjidAvatarText,
+                          })}
+                          <View style={{ flex: 1 }}>
+                            <Text
+                              style={[styles.feedSetupChoiceTitle, isDarkTheme && styles.feedSetupChoiceTitleDark]}
+                              numberOfLines={1}
+                            >
+                              {formatSourceLabel(source)}
+                            </Text>
+                            <Text
+                              style={[styles.feedSetupChoiceMeta, isDarkTheme && styles.feedSetupChoiceMetaDark]}
+                              numberOfLines={1}
+                            >
+                              {upcomingCount} upcoming event{upcomingCount === 1 ? "" : "s"}
+                            </Text>
+                          </View>
+                          <Text
+                            style={[
+                              styles.feedSetupChoiceState,
+                              active && styles.feedSetupChoiceStateActive,
+                            ]}
+                          >
+                            {active ? "✓" : "+"}
+                          </Text>
+                        </Pressable>
+                      );
+                    })
+                  : null}
+
+                {step === 1
+                  ? feedSetupSpeakerOptions.map((sp) => {
+                      const active = feedSetupScholars.includes(sp.slug);
+                      return (
+                        <Pressable
+                          {...PRESSABLE_INSTANT}
+                          key={`feed-wizard-sp-${sp.slug}`}
+                          hitSlop={6}
+                          style={({ pressed }) => [
+                            styles.feedSetupChoiceRow,
+                            isDarkTheme && styles.feedSetupChoiceRowDark,
+                            active && styles.feedSetupChoiceRowActive,
+                            pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+                          ]}
+                          onPress={() => {
+                            hapticTap("selection");
+                            setFeedSetupScholars((prev) =>
+                              prev.includes(sp.slug) ? prev.filter((x) => x !== sp.slug) : [...prev, sp.slug]
+                            );
+                          }}
+                        >
+                          <View style={styles.feedSetupSpeakerAvatar}>
+                            <Text style={styles.feedSetupSpeakerAvatarText}>
+                              {sp.name
+                                .split(" ")
+                                .map((p) => p[0])
+                                .filter(Boolean)
+                                .slice(0, 2)
+                                .join("")
+                                .toUpperCase()}
+                            </Text>
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text
+                              style={[styles.feedSetupChoiceTitle, isDarkTheme && styles.feedSetupChoiceTitleDark]}
+                              numberOfLines={1}
+                            >
+                              {sp.name}
+                            </Text>
+                            <Text
+                              style={[styles.feedSetupChoiceMeta, isDarkTheme && styles.feedSetupChoiceMetaDark]}
+                              numberOfLines={1}
+                            >
+                              {sp.upcoming} upcoming talk{sp.upcoming === 1 ? "" : "s"}
+                            </Text>
+                          </View>
+                          <Text
+                            style={[
+                              styles.feedSetupChoiceState,
+                              active && styles.feedSetupChoiceStateActive,
+                            ]}
+                          >
+                            {active ? "✓" : "+"}
+                          </Text>
+                        </Pressable>
+                      );
+                    })
+                  : null}
+
+                {step === 2 ? (
+                  <View style={styles.feedSetupTopicWrap}>
+                    {feedSetupTopicOptions.map((topic) => {
+                      const active = feedSetupTopics.includes(topic);
+                      return (
+                        <Pressable
+                          {...PRESSABLE_INSTANT}
+                          key={`feed-wizard-topic-${topic}`}
+                          hitSlop={6}
+                          style={({ pressed }) => [
+                            styles.feedTopicChip,
+                            active && styles.feedTopicChipActive,
+                            pressed && { opacity: 0.85, transform: [{ scale: 0.96 }] },
+                          ]}
+                          onPress={() => {
+                            hapticTap("selection");
+                            setFeedSetupTopics((prev) =>
+                              prev.includes(topic) ? prev.filter((x) => x !== topic) : [...prev, topic]
+                            );
+                          }}
+                        >
+                          <Text
+                            style={[
+                              styles.feedTopicChipText,
+                              active && styles.feedTopicChipTextActive,
+                            ]}
+                          >
+                            {topic}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                ) : null}
+                </Animated.View>
+              </ScrollView>
+
+              <View style={[styles.feedSetupFooter, { paddingHorizontal: 14, paddingBottom: Math.max(insets.bottom, 12) }]}>
+                <Pressable
+                  {...PRESSABLE_INSTANT}
+                  hitSlop={8}
+                  style={({ pressed }) => [
+                    styles.feedSetupBackBtn,
+                    step === 0 && { opacity: 0.5 },
+                    pressed && step !== 0 && { opacity: 0.7, transform: [{ scale: 0.97 }] },
+                  ]}
+                  disabled={step === 0}
+                  onPress={() => {
+                    hapticTap("selection");
+                    feedStepDirRef.current = -1;
+                    setFeedSetupStep((s) => (s > 0 ? ((s - 1) as 0 | 1 | 2 | 3) : s));
+                  }}
+                >
+                  <Text style={styles.feedSetupBackText}>Back</Text>
+                </Pressable>
+                <Pressable
+                  {...PRESSABLE_INSTANT}
+                  hitSlop={8}
+                  style={({ pressed }) => [
+                    styles.feedSetupNextBtn,
+                    !canAdvance && { opacity: 0.5 },
+                    pressed && canAdvance && { opacity: 0.88, transform: [{ scale: 0.97 }] },
+                  ]}
+                  disabled={!canAdvance}
+                  onPress={() => {
+                    hapticTap(step < 2 ? "selection" : "success");
+                    if (step < 2) {
+                      feedStepDirRef.current = 1;
+                      setFeedSetupStep((s) => ((s + 1) as 0 | 1 | 2 | 3));
+                    } else {
+                      void applyFeedSetupWizard();
+                    }
+                  }}
+                >
+                  <Text style={styles.feedSetupNextText}>
+                    {step === 2
+                      ? "Build my feed"
+                      : `Next${
+                          step === 0 && feedSetupMasjids.length
+                            ? ` (${feedSetupMasjids.length})`
+                            : step === 1 && feedSetupScholars.length
+                              ? ` (${feedSetupScholars.length})`
+                              : ""
+                        }`}
+                  </Text>
+                </Pressable>
+              </View>
+            </>
+          )}
+        </View>
+      );
+    }
+
     return (
-      <FlatList
-        ref={savedScrollRef}
-        data={savedEvents}
-        keyExtractor={(item, index) => `saved-${eventStorageKey(item)}-${index}`}
-        renderItem={({ item, index }) => renderEventListCard(item, `saved-${index}`)}
-        ListHeaderComponent={savedHeader}
-        ListEmptyComponent={emptyNode}
-        contentContainerStyle={[styles.scrollBody, isMidnight && styles.scrollBodyMidnight, isNeo && styles.scrollBodyNeo, isVitaria && styles.scrollBodyVitaria, isInferno && styles.scrollBodyInferno, isEmerald && styles.scrollBodyEmerald]}
-        initialNumToRender={8}
-        maxToRenderPerBatch={8}
-        windowSize={7}
-        removeClippedSubviews
+      <ScrollView
+        ref={feedScrollRef}
+        style={[styles.scrollBody, isMidnight && styles.scrollBodyMidnight, isNeo && styles.scrollBodyNeo, isVitaria && styles.scrollBodyVitaria, isInferno && styles.scrollBodyInferno, isEmerald && styles.scrollBodyEmerald]}
+        contentContainerStyle={{ paddingBottom: 120, gap: 8 }}
         showsVerticalScrollIndicator={false}
-      />
+        {...IOS_SCROLL_INSTANT_TOUCH}
+      >
+        <LinearGradient
+          colors={isMidnight ? ["#0c0f19", "#151b2a"] : isNeo ? ["#d8d8d8", "#d2d2d2"] : isVitaria ? ["#8f7680", "#b3949d"] : isInferno ? ["#070607", "#1b0901"] : isEmerald ? ["#b8e5c9", "#8fd5ad"] : ["#f0f2f7", "#e8ebf3"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.premiumSectionHeader}
+        >
+          <View style={{ flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={[styles.premiumSectionTitle, isDarkTheme && styles.premiumSectionTitleDark, isNeo && styles.premiumSectionTitleNeo]}>Your Feed</Text>
+              <Text style={[styles.premiumSectionSub, isDarkTheme && styles.premiumSectionSubDark, isNeo && styles.premiumSectionSubNeo]}>
+                {feedView === "saved"
+                  ? `${feedSavedTabEvents.length} saved & RSVP'd event${feedSavedTabEvents.length === 1 ? "" : "s"}.`
+                  : "Personalized from your follows, interests, saves, and RSVPs."}
+              </Text>
+            </View>
+            <Pressable
+              {...PRESSABLE_INSTANT}
+              onPress={() => openFeedSetupWizard()}
+              style={[
+                styles.feedHeaderEditBtn,
+                isDarkTheme && styles.feedHeaderEditBtnDark,
+                isNeo && styles.feedHeaderEditBtnNeo,
+                isEmerald && styles.feedHeaderEditBtnEmerald,
+                isInferno && styles.feedHeaderEditBtnInferno,
+                isVitaria && styles.feedHeaderEditBtnVitaria,
+              ]}
+              hitSlop={6}
+            >
+              <Text
+                style={[
+                  styles.feedHeaderEditBtnText,
+                  isDarkTheme && styles.feedHeaderEditBtnTextDark,
+                  isNeo && styles.feedHeaderEditBtnTextNeo,
+                  isEmerald && styles.feedHeaderEditBtnTextEmerald,
+                  isInferno && styles.feedHeaderEditBtnTextInferno,
+                  isVitaria && styles.feedHeaderEditBtnTextVitaria,
+                ]}
+              >
+                Edit
+              </Text>
+            </Pressable>
+          </View>
+        </LinearGradient>
+
+        {/* Top-level view switch: All personalized sections vs dedicated Saved list. */}
+        <View style={[styles.feedViewSwitch, isDarkTheme && styles.feedViewSwitchDark]}>
+          <Pressable
+            {...PRESSABLE_INSTANT}
+            onPress={() => setFeedView("all")}
+            style={[
+              styles.feedViewSwitchBtn,
+              feedView === "all" && styles.feedViewSwitchBtnActive,
+              { flexDirection: "row", alignItems: "center", gap: 6 },
+            ]}
+          >
+            <Mi
+              name="auto_awesome"
+              size={14}
+              color={
+                feedView === "all"
+                  ? "#fff"
+                  : isDarkTheme
+                  ? "#e8ecf4"
+                  : "#273143"
+              }
+            />
+            <Text
+              style={[
+                styles.feedViewSwitchText,
+                isDarkTheme && styles.feedViewSwitchTextDark,
+                feedView === "all" && styles.feedViewSwitchTextActive,
+              ]}
+              numberOfLines={1}
+            >
+              Your Feed
+            </Text>
+          </Pressable>
+          <Pressable
+            {...PRESSABLE_INSTANT}
+            onPress={() => setFeedView("saved")}
+            style={[
+              styles.feedViewSwitchBtn,
+              feedView === "saved" && styles.feedViewSwitchBtnActive,
+              { flexDirection: "row", alignItems: "center", gap: 6 },
+            ]}
+          >
+            <Mi
+              name={feedView === "saved" ? "favorite_fill1" : "favorite"}
+              size={14}
+              color={
+                feedView === "saved"
+                  ? "#fff"
+                  : isDarkTheme
+                  ? "#e8ecf4"
+                  : "#273143"
+              }
+            />
+            <Text
+              style={[
+                styles.feedViewSwitchText,
+                isDarkTheme && styles.feedViewSwitchTextDark,
+                feedView === "saved" && styles.feedViewSwitchTextActive,
+              ]}
+              numberOfLines={1}
+            >
+              Saved{savedEvents.length ? ` (${savedEvents.length})` : ""}
+            </Text>
+          </Pressable>
+        </View>
+
+        {feedView === "saved" ? (() => {
+          const upcomingSaved = feedSavedTabEvents.filter(
+            (e) => (e.date || "") >= today && !isEventPastNow(e)
+          );
+          const pastSaved = feedSavedTabEvents.filter(
+            (e) => !((e.date || "") >= today && !isEventPastNow(e))
+          );
+          if (feedSavedTabEvents.length === 0) {
+            return (
+              <View style={[styles.discoverSection, { paddingTop: 4 }]}>
+                <View style={[styles.feedSavedEmptyCard, isDarkTheme && styles.feedSavedEmptyCardDark]}>
+                  <Text style={[styles.feedSavedEmptyTitle, isDarkTheme && { color: "#f4f7ff" }]}>
+                    Nothing saved yet
+                  </Text>
+                  <Text style={[styles.feedSavedEmptySub, isDarkTheme && { color: "#aebcdc" }]}>
+                    Tap the heart on any event to save it, or RSVP going/interested
+                    — everything will collect here for easy access.
+                  </Text>
+                  <Pressable
+                    {...PRESSABLE_INSTANT}
+                    onPress={() => setFeedView("all")}
+                    style={styles.feedSavedEmptyBtn}
+                  >
+                    <Text style={styles.feedSavedEmptyBtnText}>Browse Your Feed</Text>
+                  </Pressable>
+                </View>
+              </View>
+            );
+          }
+          return (
+            <View style={styles.discoverSection}>
+              {upcomingSaved.length ? (
+                <>
+                  <Text style={[styles.discoverSectionTitle, isDarkTheme && { color: "#f4f7ff" }]}>
+                    Upcoming · {upcomingSaved.length}
+                  </Text>
+                  <Text style={[styles.discoverSectionSub, isDarkTheme && { color: "#9db0db" }]}>
+                    Events you saved or RSVP'd to that haven't happened yet.
+                  </Text>
+                  {upcomingSaved.map((event, idx) => (
+                    <View key={`feed-saved-up-${eventStorageKey(event)}-${idx}`}>
+                      {renderEventListCard(event, `feed-saved-up-${idx}`)}
+                    </View>
+                  ))}
+                </>
+              ) : null}
+              {pastSaved.length ? (
+                <>
+                  <Text
+                    style={[
+                      styles.discoverSectionTitle,
+                      isDarkTheme && { color: "#f4f7ff" },
+                      { marginTop: upcomingSaved.length ? 18 : 0 },
+                    ]}
+                  >
+                    Past · {pastSaved.length}
+                  </Text>
+                  <Text style={[styles.discoverSectionSub, isDarkTheme && { color: "#9db0db" }]}>
+                    Previously saved events, kept here for reference.
+                  </Text>
+                  {pastSaved.map((event, idx) => (
+                    <View key={`feed-saved-past-${eventStorageKey(event)}-${idx}`}>
+                      {renderEventListCard(event, `feed-saved-past-${idx}`)}
+                    </View>
+                  ))}
+                </>
+              ) : null}
+            </View>
+          );
+        })() : null}
+
+        {feedView === "all" ? (
+        <>
+        <View style={styles.discoverSection}>
+          {feedTopicOptions.length ? (
+            <View style={styles.feedTopicRow}>
+              <Pressable
+                {...PRESSABLE_INSTANT}
+                style={[
+                  styles.feedTopicChip,
+                  isDarkTheme && styles.feedTopicChipDark,
+                  isNeo && styles.feedTopicChipNeo,
+                  isEmerald && styles.feedTopicChipEmerald,
+                  !feedTopicFilter && styles.feedTopicChipActive,
+                  isDarkTheme && !feedTopicFilter && styles.feedTopicChipActiveDark,
+                ]}
+                onPress={() => setFeedTopicFilter(null)}
+              >
+                <Text
+                  style={[
+                    styles.feedTopicChipText,
+                    isDarkTheme && styles.feedTopicChipTextDark,
+                    isNeo && styles.feedTopicChipTextNeo,
+                    isEmerald && styles.feedTopicChipTextEmerald,
+                    !feedTopicFilter && styles.feedTopicChipTextActive,
+                    isDarkTheme && !feedTopicFilter && styles.feedTopicChipTextActiveDark,
+                  ]}
+                >
+                  All topics
+                </Text>
+              </Pressable>
+              {feedTopicOptions.map((topic, idx) => {
+                const active = feedTopicFilter === topic;
+                return (
+                  <Pressable
+                    {...PRESSABLE_INSTANT}
+                    key={`feed-topic-${topic}-${idx}`}
+                    style={[
+                      styles.feedTopicChip,
+                      isDarkTheme && styles.feedTopicChipDark,
+                      isNeo && styles.feedTopicChipNeo,
+                      isEmerald && styles.feedTopicChipEmerald,
+                      active && styles.feedTopicChipActive,
+                      isDarkTheme && active && styles.feedTopicChipActiveDark,
+                    ]}
+                    onPress={() => setFeedTopicFilter((prev) => (prev === topic ? null : topic))}
+                  >
+                    <Text
+                      style={[
+                        styles.feedTopicChipText,
+                        isDarkTheme && styles.feedTopicChipTextDark,
+                        isNeo && styles.feedTopicChipTextNeo,
+                        isEmerald && styles.feedTopicChipTextEmerald,
+                        active && styles.feedTopicChipTextActive,
+                        isDarkTheme && active && styles.feedTopicChipTextActiveDark,
+                      ]}
+                    >
+                      {topic}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          ) : null}
+        </View>
+        {false ? (
+          <View style={styles.discoverSection}>
+            <View style={styles.feedBuilderCard}>
+            <Text style={[styles.discoverSectionTitle, isDarkTheme && { color: "#f4f7ff" }]}>Build Your Feed</Text>
+            <Text style={[styles.discoverSectionSub, isDarkTheme && { color: "#9db0db" }]}>
+              Choose masjids, speakers, and topics first. Then your feed below is fully personalized.
+            </Text>
+
+            <Text style={[styles.feedBuilderStepLabel, isDarkTheme && styles.feedBuilderStepLabelDark]}>
+              1) Which masjids do you want to see?
+            </Text>
+            {feedFollowedMasjidSummaries.length > 0 ? (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={{ flexGrow: 0 }}
+                contentContainerStyle={{ gap: 12, paddingVertical: 4, paddingRight: 8 }}
+                {...IOS_SCROLL_INSTANT_TOUCH}
+              >
+                {feedFollowedMasjidSummaries.map((row) => {
+                  const chips = discoverAmenityChips(row.amenitiesRec?.amenities, 3);
+                  const next = row.nextEvent;
+                  return (
+                    <Pressable {...PRESSABLE_INSTANT}
+                      key={`feed-fol-m-${row.source}`}
+                      style={[styles.discoverFollowedMasjidCard, isDarkTheme && styles.discoverFollowedMasjidCardDark]}
+                      onPress={() => setSelectedMasjidSheet(row.source)}
+                    >
+                      <View style={styles.discoverFollowedMasjidCardTop}>
+                        {renderMasjidLogo(row.source, 40, {
+                          style: styles.discoverFollowedMasjidLogo,
+                          textStyle: styles.discoverMasjidAvatarText,
+                        })}
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={[styles.discoverFollowedMasjidTitle, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={2}>
+                            {formatSourceLabel(row.source)}
+                          </Text>
+                          <Text style={[styles.discoverFollowedMasjidMeta, isDarkTheme && { color: "#9db0db" }]} numberOfLines={2}>
+                            {row.upcomingCount} upcoming
+                            {next?.date ? ` · next ${formatHumanDate(next.date)}` : ""}
+                          </Text>
+                        </View>
+                      </View>
+                      {chips.length > 0 ? (
+                        <View style={styles.discoverFollowedMasjidChips}>
+                          {chips.map((c) => (
+                            <View key={`${row.source}-feed-chip-${c}`} style={[styles.discoverAmenityChip, isDarkTheme && styles.discoverAmenityChipDark]}>
+                              <Text style={[styles.discoverAmenityChipText, isDarkTheme && { color: "#c4cee8" }]}>{c}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      ) : null}
+                      <Pressable {...PRESSABLE_INSTANT}
+                        hitSlop={8}
+                        onPress={(ev) => {
+                          (ev as unknown as { stopPropagation?: () => void })?.stopPropagation?.();
+                          toggleFollowMasjid(row.source);
+                        }}
+                        style={[styles.discoverFollowBtn, styles.feedInlineFollowBtn, styles.discoverFollowBtnActive]}
+                      >
+                        <Text style={[styles.discoverFollowText, styles.discoverFollowTextActive]}>✓ Following</Text>
+                      </Pressable>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            ) : null}
+
+            {feedUnfollowedMasjidBuckets.map((m) => (
+              <Pressable {...PRESSABLE_INSTANT}
+                key={`feed-masjid-${m.source}`}
+                style={[styles.discoverMasjidRow, isDarkTheme && styles.discoverMasjidRowDark]}
+                onPress={() => setSelectedMasjidSheet(m.source)}
+              >
+                {renderMasjidLogo(m.source, 44, { style: styles.discoverMasjidAvatar, textStyle: styles.discoverMasjidAvatarText })}
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.discoverMasjidTitle, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={1}>
+                    {formatSourceLabel(m.source)}
+                  </Text>
+                  <Text style={[styles.discoverMasjidSub, isDarkTheme && { color: "#9db0db" }]} numberOfLines={1}>
+                    {m.count} upcoming{m.distance != null ? ` · ${m.distance.toFixed(1)} mi` : ""}
+                    {m.nextDate ? ` · next ${formatHumanDate(m.nextDate)}` : ""}
+                  </Text>
+                </View>
+                <Pressable {...PRESSABLE_INSTANT}
+                  hitSlop={10}
+                  onPress={(ev) => {
+                    (ev as unknown as { stopPropagation?: () => void })?.stopPropagation?.();
+                    toggleFollowMasjid(m.source);
+                  }}
+                  onStartShouldSetResponder={() => true}
+                  onResponderTerminationRequest={() => false}
+                  style={[
+                    styles.discoverFollowBtn,
+                    followedMasjids.includes(m.source) && styles.discoverFollowBtnActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.discoverFollowText,
+                      followedMasjids.includes(m.source) && styles.discoverFollowTextActive,
+                    ]}
+                  >
+                    {followedMasjids.includes(m.source) ? "✓ Following" : "+ Follow"}
+                  </Text>
+                </Pressable>
+              </Pressable>
+            ))}
+
+            <Text style={[styles.feedBuilderStepLabel, isDarkTheme && styles.feedBuilderStepLabelDark, { marginTop: 12 }]}>
+              2) Which speakers do you want?
+            </Text>
+            <FlatList
+              data={feedSpeakerCards}
+              keyExtractor={(s) => `feed-scholar-${s.slug}`}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={{ height: 326, flexGrow: 0 }}
+              contentContainerStyle={{ paddingHorizontal: 2, paddingVertical: 4, gap: 12 }}
+              initialNumToRender={4}
+              maxToRenderPerBatch={4}
+              windowSize={5}
+              nestedScrollEnabled
+              removeClippedSubviews={false}
+              renderItem={({ item: sp }) => {
+                const following = followedScholarSlugSet.has(sp.slug);
+                const nextDate = sp.next_date || null;
+                return (
+                  <Pressable
+                    {...PRESSABLE_INSTANT}
+                    style={[styles.discoverScholarCard, isDarkTheme && styles.discoverScholarCardDark]}
+                    onPress={() => {
+                      setSelectedSpeaker(sp.slug);
+                      setScholarScreenOpen(true);
+                    }}
+                  >
+                    <View style={styles.discoverScholarAvatarWrap}>
+                      {sp.image_url ? (
+                        <Image source={{ uri: sp.image_url }} style={styles.discoverScholarAvatar} resizeMode="cover" />
+                      ) : (
+                        <View style={[styles.discoverScholarAvatar, { backgroundColor: "#ffe3d1", alignItems: "center", justifyContent: "center" }]}>
+                          <Text style={{ color: "#9b4a1b", fontWeight: "900", fontSize: 20 }}>
+                            {cleanSpeakerName(sp.name).split(" ").map((p) => p[0]).filter(Boolean).slice(0, 2).join("").toUpperCase()}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                    <Text style={[styles.discoverScholarName, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={2}>{cleanSpeakerName(sp.name)}</Text>
+                    <Text style={[styles.discoverScholarSub, isDarkTheme && { color: "#9db0db" }]} numberOfLines={1}>
+                      {sp.upcoming_events || 0} upcoming talk{(sp.upcoming_events || 0) === 1 ? "" : "s"}
+                    </Text>
+                    {nextDate ? (
+                      <Text style={[styles.discoverScholarNext, isDarkTheme && { color: "#c4cee8" }]} numberOfLines={1}>
+                        Next: {formatHumanDate(nextDate)}
+                      </Text>
+                    ) : null}
+                    <Pressable {...PRESSABLE_INSTANT}
+                      onPress={(ev) => {
+                        (ev as unknown as { stopPropagation?: () => void })?.stopPropagation?.();
+                        toggleFollowScholar(sp.slug);
+                      }}
+                      onStartShouldSetResponder={() => true}
+                      onResponderTerminationRequest={() => false}
+                      style={[styles.discoverFollowBtn, following && styles.discoverFollowBtnActive]}
+                    >
+                      <Text style={[styles.discoverFollowText, following && styles.discoverFollowTextActive]}>
+                        {following ? "✓ Following" : "+ Follow"}
+                      </Text>
+                    </Pressable>
+                  </Pressable>
+                );
+              }}
+            />
+
+            <Text style={[styles.feedBuilderStepLabel, isDarkTheme && styles.feedBuilderStepLabelDark, { marginTop: 10 }]}>
+              3) Which topics do you want?
+            </Text>
+            {feedTopicOptions.length ? (
+              <View style={styles.feedTopicRow}>
+                <Pressable {...PRESSABLE_INSTANT}
+                  style={[
+                    styles.feedTopicChip,
+                    isDarkTheme && styles.feedTopicChipDark,
+                    isNeo && styles.feedTopicChipNeo,
+                    isEmerald && styles.feedTopicChipEmerald,
+                    !feedTopicFilter && styles.feedTopicChipActive,
+                    isDarkTheme && !feedTopicFilter && styles.feedTopicChipActiveDark,
+                  ]}
+                  onPress={() => setFeedTopicFilter(null)}
+                >
+                  <Text
+                    style={[
+                      styles.feedTopicChipText,
+                      isDarkTheme && styles.feedTopicChipTextDark,
+                      isNeo && styles.feedTopicChipTextNeo,
+                      isEmerald && styles.feedTopicChipTextEmerald,
+                      !feedTopicFilter && styles.feedTopicChipTextActive,
+                      isDarkTheme && !feedTopicFilter && styles.feedTopicChipTextActiveDark,
+                    ]}
+                  >
+                    All topics
+                  </Text>
+                </Pressable>
+                {feedTopicOptions.map((topic, idx) => {
+                  const active = feedTopicFilter === topic;
+                  return (
+                    <Pressable {...PRESSABLE_INSTANT}
+                      key={`feed-topic-${topic}-${idx}`}
+                      style={[
+                        styles.feedTopicChip,
+                        isDarkTheme && styles.feedTopicChipDark,
+                        isNeo && styles.feedTopicChipNeo,
+                        isEmerald && styles.feedTopicChipEmerald,
+                        active && styles.feedTopicChipActive,
+                        isDarkTheme && active && styles.feedTopicChipActiveDark,
+                      ]}
+                      onPress={() => setFeedTopicFilter((prev) => (prev === topic ? null : topic))}
+                    >
+                      <Text
+                        style={[
+                          styles.feedTopicChipText,
+                          isDarkTheme && styles.feedTopicChipTextDark,
+                          isNeo && styles.feedTopicChipTextNeo,
+                          isEmerald && styles.feedTopicChipTextEmerald,
+                          active && styles.feedTopicChipTextActive,
+                          isDarkTheme && active && styles.feedTopicChipTextActiveDark,
+                        ]}
+                      >
+                        {topic}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : null}
+          </View>
+        </View>
+        ) : null}
+
+        {feedSection(
+          "From Masjids You Follow",
+          followedMasjids.length
+            ? `${followedMasjids.length} followed masjid${followedMasjids.length === 1 ? "" : "s"} powering this section.`
+            : "Follow masjids in Discover and they will show up here first.",
+          followedMasjidFeedEvents,
+          "feed-masjid",
+          "No upcoming events yet from your followed masjids."
+        )}
+
+        {feedSection(
+          "From Scholars You Follow",
+          followedScholars.length
+            ? "New and upcoming sessions from the speakers you care about."
+            : "Follow scholars in Discover to unlock this section.",
+          followedScholarFeedEvents,
+          "feed-scholars",
+          "No upcoming sessions found from followed scholars right now."
+        )}
+
+        {feedSection(
+          "For You Today",
+          "Top picks ranked by your follows, intent, and what is coming up next.",
+          forYouFeedEvents,
+          "feed-for-you",
+          "Follow a few masjids or scholars and your top picks will appear here."
+        )}
+
+        {feedSection(
+          "Because You're Interested In",
+          feedTopicFilter
+            ? `Showing results for “${feedTopicFilter}”.`
+            : "Events matched against your selected interests and topics.",
+          interestFeedEvents,
+          "feed-interest",
+          "Pick interests during setup (or in onboarding) to personalize this section."
+        )}
+
+        {feedSection(
+          "Saved & RSVP",
+          "Quick access to events you hearted or marked as going/interested.",
+          savedAndRsvpFeedEvents,
+          "feed-saved-rsvp",
+          "You have not saved or RSVP'd to anything yet. Tap heart or RSVP on any event."
+        )}
+        </>
+        ) : null}
+      </ScrollView>
     );
   };
 
   const renderDiscover = () => {
     // A curated front door: scholars first (the people), then collections
-    // (editorially-framed lists), then masjids the user hasn't followed yet.
+    // (editorially-framed lists), then masjids (followed + near you).
     // We intentionally do NOT show every event here — that's what Explore and
     // Calendar are for. Discover is about *who* and *what scenes* exist.
     const upcomingForSpeaker = (slug: string): EventItem[] => {
-      const target = (slug || "").toLowerCase();
+      const target = (slug || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
       if (!target) return [];
       return orderedVisibleEvents
-        .filter((e) => (e.speaker || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").includes(target))
+        .filter((e) => {
+          const line = effectiveEventSpeakerName(e).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+          return line && eventLineMatchesSpeakerSlug(line, target);
+        })
         .filter((e) => (e.date || "") >= today && !isEventPastNow(e))
         .slice(0, 3);
     };
-    const topSpeakers = [...speakers]
-      .filter((s) => (s.upcoming_events || 0) > 0)
-      .sort((a, b) => (b.upcoming_events || 0) - (a.upcoming_events || 0))
+
+    const deriveDiscoverSpeakersFromEvents = (): Speaker[] => {
+      const agg = new Map<string, Speaker>();
+      for (const ev of orderedVisibleEvents) {
+        const raw = effectiveEventSpeakerName(ev).trim();
+        if (!raw) continue;
+        const slug = raw.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+        if (!slug) continue;
+        const cur = agg.get(slug) || { slug, name: raw, total_events: 0, upcoming_events: 0, sources: [] as string[] };
+        cur.total_events += 1;
+        if ((ev.date || "") >= today && !isEventPastNow(ev)) cur.upcoming_events += 1;
+        const src = normalizeText(ev.source);
+        if (src && !cur.sources.includes(src)) cur.sources.push(src);
+        if (!cur.next_title || (ev.date || "") < (cur.next_date || "9999-12-31")) {
+          cur.next_title = ev.title;
+          cur.next_date = ev.date || null;
+        }
+        agg.set(slug, cur);
+      }
+      return [...agg.values()]
+        .filter((s) => s.upcoming_events > 0 || s.total_events > 0)
+        .sort((a, b) => (b.upcoming_events || 0) - (a.upcoming_events || 0));
+    };
+
+    const enrichSpeakerFromClientEvents = (s: Speaker): Speaker => {
+      const target = (s.slug || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      if (!target) return s;
+      let clientUp = 0;
+      let clientTotal = 0;
+      for (const e of orderedVisibleEvents) {
+        const line = effectiveEventSpeakerName(e).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+        if (!line || !eventLineMatchesSpeakerSlug(line, target)) continue;
+        clientTotal += 1;
+        if ((e.date || "") >= today && !isEventPastNow(e)) clientUp += 1;
+      }
+      return {
+        ...s,
+        upcoming_events: Math.max(s.upcoming_events || 0, clientUp),
+        total_events: Math.max(s.total_events || 0, clientTotal),
+      };
+    };
+
+    // Prefer /api/speakers, but always reconcile counts with the events the user
+    // actually has loaded (API cache / radius / timing can disagree). If the API
+    // list is empty, derive the rail from events so Discover matches "See all".
+    const baseDiscoverSpeakers: Speaker[] = speakers.length ? speakers : deriveDiscoverSpeakersFromEvents();
+    const mergedDiscoverSpeakers = baseDiscoverSpeakers.map(enrichSpeakerFromClientEvents);
+    const topSpeakers = [...mergedDiscoverSpeakers]
+      .map((s) => {
+        const name = finalizeScholarCandidate(cleanSpeakerName(s.name));
+        if (!name) return null;
+        return enrichDiscoverPosterFromEvents({ ...s, name }, orderedVisibleEvents);
+      })
+      .filter((s): s is Speaker => s != null)
+      .filter((s) => (s.upcoming_events || 0) > 0 || (s.total_events || 0) > 0)
+      .sort(
+        (a, b) =>
+          (b.upcoming_events || 0) - (a.upcoming_events || 0) ||
+          (b.total_events || 0) - (a.total_events || 0),
+      )
       .slice(0, 12);
 
     const todayIso = today;
@@ -6933,20 +9393,31 @@ function AppInner() {
 
     const followedSet = new Set(followedMasjids.map((s) => s.toLowerCase()));
 
-    // Upcoming events from the masjids the user actively follows — this
-    // is what "follow" should feel like: a dedicated strip of events
-    // from THEIR houses of worship. Up to ~8 events, sorted by date.
-    const followedMasjidEvents = followedSet.size
-      ? orderedVisibleEvents
-          .filter((e) => followedSet.has((normalizeText(e.source) || "").toLowerCase()))
-          .filter((e) => (e.date || "") >= todayIso && !isEventPastNow(e))
+    const followedMasjidSummaries = followedMasjids
+      .map((raw) => {
+        const source = normalizeText(raw);
+        if (!source) return null;
+        const lc = source.toLowerCase();
+        const upcoming = orderedVisibleEvents
+          .filter(
+            (e) =>
+              normalizeText(e.source).toLowerCase() === lc &&
+              (e.date || "") >= todayIso &&
+              !isEventPastNow(e),
+          )
           .sort((a, b) =>
             `${a.date || ""} ${a.start_time || "99:99"}`.localeCompare(
               `${b.date || ""} ${b.start_time || "99:99"}`,
             ),
-          )
-          .slice(0, 8)
-      : [];
+          );
+        return {
+          source,
+          upcomingCount: upcoming.length,
+          nextEvent: upcoming[0],
+          amenitiesRec: masjidAmenities[lc],
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => row != null);
 
     const unfollowedMasjidBuckets = (() => {
       const byMasjid = new Map<string, { source: string; count: number; nextDate?: string; distance?: number }>();
@@ -6969,7 +9440,10 @@ function AppInner() {
     })();
 
     return (
-      <ScrollView contentContainerStyle={[styles.scrollBody, isMidnight && styles.scrollBodyMidnight, isNeo && styles.scrollBodyNeo, isVitaria && styles.scrollBodyVitaria, isInferno && styles.scrollBodyInferno, isEmerald && styles.scrollBodyEmerald]}>
+      <ScrollView
+        contentContainerStyle={[styles.scrollBody, isMidnight && styles.scrollBodyMidnight, isNeo && styles.scrollBodyNeo, isVitaria && styles.scrollBodyVitaria, isInferno && styles.scrollBodyInferno, isEmerald && styles.scrollBodyEmerald]}
+        {...IOS_SCROLL_INSTANT_TOUCH}
+      >
         <LinearGradient
           colors={isMidnight ? ["#0c0f19", "#151b2a"] : isNeo ? ["#d8d8d8", "#d2d2d2"] : isVitaria ? ["#8f7680", "#b3949d"] : isInferno ? ["#070607", "#1b0901"] : isEmerald ? ["#b8e5c9", "#8fd5ad"] : ["#f0f2f7", "#e8ebf3"]}
           start={{ x: 0, y: 0 }}
@@ -6986,8 +9460,11 @@ function AppInner() {
           const weekEnd = plusDaysIso(7);
           const upcomingFollowed = followedScholars
             .flatMap((slug) => {
-              const target = slug.toLowerCase();
-              return orderedVisibleEvents.filter((e) => (e.speaker || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").includes(target));
+              const target = slug.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+              return orderedVisibleEvents.filter((e) => {
+                const line = effectiveEventSpeakerName(e).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+                return line && eventLineMatchesSpeakerSlug(line, target);
+              });
             })
             .filter((e) => (e.date || "") >= todayIso && (e.date || "") <= weekEnd)
             .slice(0, 6);
@@ -7002,6 +9479,7 @@ function AppInner() {
               </Text>
               {upcomingFollowed.slice(0, 3).map((e, i) => (
                 <Pressable
+                  {...PRESSABLE_INSTANT}
                   key={`followed-sp-${i}-${eventStorageKey(e)}`}
                   style={styles.discoverFollowedScholarsRow}
                   onPress={() => setSelectedEvent(e)}
@@ -7021,50 +9499,11 @@ function AppInner() {
           );
         })()}
 
-        {/* Events from masjids the user follows. This is the main
-            "why follow" payoff — a dedicated strip that surfaces what
-            YOUR masjids are running this week, so follows feel like
-            a signal Masjidly actually uses. */}
-        {followedMasjidEvents.length ? (
-          <View style={styles.discoverSection}>
-            <View style={styles.discoverSectionHeader}>
-              <Text style={[styles.discoverSectionTitle, isDarkTheme && { color: "#f4f7ff" }]}>Your masjids</Text>
-              <Pressable onPress={() => { hapticTap("selection"); switchTab("explore"); }} hitSlop={8}>
-                <Text style={[styles.discoverSeeAll, isDarkTheme && { color: "#9db0db" }]}>Open map →</Text>
-              </Pressable>
-            </View>
-            <Text style={[styles.discoverSectionSub, isDarkTheme && { color: "#9db0db" }]}>
-              Events from the {followedMasjids.length} masjid{followedMasjids.length === 1 ? "" : "s"} you follow.
-            </Text>
-            {followedMasjidEvents.slice(0, 5).map((e, idx) => {
-              const poster = pickPoster(e.image_urls);
-              return (
-                <Pressable
-                  key={`fm-${idx}-${eventStorageKey(e)}`}
-                  style={({ pressed }) => [styles.discoverFollowedScholarsRow, pressed && styles.cardActionChipPressed]}
-                  onPress={() => { hapticTap("selection"); setSelectedEvent(e); }}
-                >
-                  {poster ? (
-                    <Image source={{ uri: poster }} style={{ width: "100%", height: 120, borderRadius: 10, marginBottom: 8 }} />
-                  ) : null}
-                  <Text style={styles.discoverFollowedScholarsRowWhat} numberOfLines={2}>{e.title}</Text>
-                  <Text style={styles.discoverFollowedScholarsRowWho} numberOfLines={1}>
-                    {formatSourceLabel(e.source)}{e.speaker ? ` · ${e.speaker}` : ""}
-                  </Text>
-                  <Text style={styles.discoverFollowedScholarsRowWhen}>
-                    {formatHumanDate(e.date)} · {eventTime(e)}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        ) : null}
-
         {/* Scholars & Speakers rail */}
         <View style={styles.discoverSection}>
           <View style={styles.discoverSectionHeader}>
             <Text style={[styles.discoverSectionTitle, isDarkTheme && { color: "#f4f7ff" }]}>Scholars & speakers</Text>
-            <Pressable onPress={() => setScholarScreenOpen(true)} hitSlop={8}>
+            <Pressable {...PRESSABLE_INSTANT} onPress={() => setScholarScreenOpen(true)} hitSlop={8}>
               <Text style={[styles.discoverSeeAll, isDarkTheme && { color: "#9db0db" }]}>See all →</Text>
             </Pressable>
           </View>
@@ -7083,17 +9522,19 @@ function AppInner() {
               keyExtractor={(s) => `scholar-${s.slug}`}
               horizontal
               showsHorizontalScrollIndicator={false}
-              style={{ height: 304, flexGrow: 0 }}
+              style={{ height: 328, flexGrow: 0 }}
               contentContainerStyle={{ paddingHorizontal: 12, paddingVertical: 4, gap: 12 }}
               initialNumToRender={4}
               maxToRenderPerBatch={4}
               windowSize={5}
-              removeClippedSubviews
+              nestedScrollEnabled
+              removeClippedSubviews={false}
               renderItem={({ item: sp }) => {
                 const following = followedScholars.includes(sp.slug);
                 const next = upcomingForSpeaker(sp.slug)[0];
                 return (
                   <Pressable
+                    {...PRESSABLE_INSTANT}
                     style={[styles.discoverScholarCard, isDarkTheme && styles.discoverScholarCardDark]}
                     onPress={() => {
                       setSelectedSpeaker(sp.slug);
@@ -7102,7 +9543,7 @@ function AppInner() {
                   >
                     <View style={styles.discoverScholarAvatarWrap}>
                       {sp.image_url ? (
-                        <Image source={{ uri: sp.image_url }} style={styles.discoverScholarAvatar} />
+                        <Image source={{ uri: sp.image_url }} style={styles.discoverScholarAvatar} resizeMode="cover" />
                       ) : (
                         <View style={[styles.discoverScholarAvatar, { backgroundColor: "#ffe3d1", alignItems: "center", justifyContent: "center" }]}>
                           <Text style={{ color: "#9b4a1b", fontWeight: "900", fontSize: 20 }}>
@@ -7120,7 +9561,7 @@ function AppInner() {
                         Next: {formatHumanDate(next.date)}
                       </Text>
                     ) : null}
-                    <Pressable
+                    <Pressable {...PRESSABLE_INSTANT}
                       onPress={(ev) => {
                         // Belt & braces: RN's responder system normally has
                         // the inner Pressable win, but on some Android builds
@@ -7153,7 +9594,7 @@ function AppInner() {
             </Text>
             <View style={styles.collectionGrid}>
               {collectionsWithCounts.map((c) => (
-                <Pressable
+                <Pressable {...PRESSABLE_INSTANT}
                   key={`coll-${c.id}`}
                   style={[styles.collectionTile, isDarkTheme && styles.collectionTileDark]}
                   onPress={() => {
@@ -7194,53 +9635,143 @@ function AppInner() {
           </View>
         ) : null}
 
-        {/* Masjids to explore */}
-        {unfollowedMasjidBuckets.length ? (
+        {/* Masjids — below collections: followed masjids get rich cards;
+            everyone else appears under "More near you". */}
+        {followedMasjidSummaries.length > 0 || unfollowedMasjidBuckets.length > 0 ? (
           <View style={styles.discoverSection}>
-            <Text style={[styles.discoverSectionTitle, isDarkTheme && { color: "#f4f7ff" }]}>Masjids to explore</Text>
+            <View style={styles.discoverSectionHeader}>
+              <Text style={[styles.discoverSectionTitle, isDarkTheme && { color: "#f4f7ff" }]}>Masjids</Text>
+              <Pressable {...PRESSABLE_INSTANT} onPress={() => { hapticTap("selection"); switchTab("explore"); }} hitSlop={8}>
+                <Text style={[styles.discoverSeeAll, isDarkTheme && { color: "#9db0db" }]}>Map & list →</Text>
+              </Pressable>
+            </View>
             <Text style={[styles.discoverSectionSub, isDarkTheme && { color: "#9db0db" }]}>
-              Houses of Allah near you that you haven't visited yet. Follow to get their announcements.
+              Follow masjids you care about — programs, amenities, and what's next on the calendar.
             </Text>
-            {unfollowedMasjidBuckets.map((m) => (
-              <Pressable
-                key={`disc-masjid-${m.source}`}
-                style={[styles.discoverMasjidRow, isDarkTheme && styles.discoverMasjidRowDark]}
-                onPress={() => setSelectedMasjidSheet(m.source)}
-              >
-                {renderMasjidLogo(m.source, 44, { style: styles.discoverMasjidAvatar, textStyle: styles.discoverMasjidAvatarText })}
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.discoverMasjidTitle, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={1}>
-                    {formatSourceLabel(m.source)}
-                  </Text>
-                  <Text style={[styles.discoverMasjidSub, isDarkTheme && { color: "#9db0db" }]} numberOfLines={1}>
-                    {m.count} upcoming{m.distance != null ? ` · ${m.distance.toFixed(1)} mi` : ""}
-                    {m.nextDate ? ` · next ${formatHumanDate(m.nextDate)}` : ""}
-                  </Text>
-                </View>
-                <Pressable
-                  hitSlop={10}
-                  onPress={(ev) => {
-                    (ev as unknown as { stopPropagation?: () => void })?.stopPropagation?.();
-                    toggleFollowMasjid(m.source);
-                  }}
-                  onStartShouldSetResponder={() => true}
-                  onResponderTerminationRequest={() => false}
+
+            {followedMasjidSummaries.length > 0 ? (
+              <>
+                <Text style={[styles.discoverSubsectionLabel, isDarkTheme && styles.discoverSubsectionLabelDark]}>
+                  Masjids you follow
+                </Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={{ flexGrow: 0 }}
+                  contentContainerStyle={{ gap: 12, paddingVertical: 6, paddingRight: 8 }}
+                  {...IOS_SCROLL_INSTANT_TOUCH}
+                >
+                  {followedMasjidSummaries.map((row) => {
+                    const chips = discoverAmenityChips(row.amenitiesRec?.amenities, 3);
+                    const desc = (row.amenitiesRec?.description || "").trim();
+                    const shortDesc = desc.length > 80 ? `${desc.slice(0, 78)}…` : desc;
+                    const next = row.nextEvent;
+                    return (
+                      <Pressable {...PRESSABLE_INSTANT}
+                        key={`fol-m-${row.source}`}
+                        style={[styles.discoverFollowedMasjidCard, isDarkTheme && styles.discoverFollowedMasjidCardDark]}
+                        onPress={() => setSelectedMasjidSheet(row.source)}
+                      >
+                        <View style={styles.discoverFollowedMasjidCardTop}>
+                          {renderMasjidLogo(row.source, 40, {
+                            style: styles.discoverFollowedMasjidLogo,
+                            textStyle: styles.discoverMasjidAvatarText,
+                          })}
+                          <View style={{ flex: 1, minWidth: 0 }}>
+                            <Text style={[styles.discoverFollowedMasjidTitle, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={2}>
+                              {formatSourceLabel(row.source)}
+                            </Text>
+                            <Text style={[styles.discoverFollowedMasjidMeta, isDarkTheme && { color: "#9db0db" }]} numberOfLines={2}>
+                              {row.upcomingCount} upcoming
+                              {next?.date ? ` · next ${formatHumanDate(next.date)}` : ""}
+                            </Text>
+                          </View>
+                        </View>
+                        {chips.length > 0 ? (
+                          <View style={styles.discoverFollowedMasjidChips}>
+                            {chips.map((c) => (
+                              <View
+                                key={`${row.source}-chip-${c}`}
+                                style={[styles.discoverAmenityChip, isDarkTheme && styles.discoverAmenityChipDark]}
+                              >
+                                <Text style={[styles.discoverAmenityChipText, isDarkTheme && { color: "#c4cee8" }]}>{c}</Text>
+                              </View>
+                            ))}
+                          </View>
+                        ) : null}
+                        {shortDesc ? (
+                          <Text style={[styles.discoverFollowedMasjidBlurb, isDarkTheme && { color: "#9db0db" }]} numberOfLines={2}>
+                            {shortDesc}
+                          </Text>
+                        ) : null}
+                        {next ? (
+                          <Text style={[styles.discoverFollowedMasjidNext, isDarkTheme && { color: "#c4cee8" }]} numberOfLines={2}>
+                            Next event: {next.title}
+                          </Text>
+                        ) : null}
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </>
+            ) : null}
+
+            {unfollowedMasjidBuckets.length > 0 ? (
+              <>
+                <Text
                   style={[
-                    styles.discoverFollowBtn,
-                    followedMasjids.includes(m.source) && styles.discoverFollowBtnActive,
+                    styles.discoverSubsectionLabel,
+                    isDarkTheme && styles.discoverSubsectionLabelDark,
+                    { marginTop: followedMasjidSummaries.length > 0 ? 16 : 0 },
                   ]}
                 >
-                  <Text
-                    style={[
-                      styles.discoverFollowText,
-                      followedMasjids.includes(m.source) && styles.discoverFollowTextActive,
-                    ]}
+                  More near you
+                </Text>
+                <Text style={[styles.discoverSectionSub, isDarkTheme && { color: "#9db0db" }, { marginTop: 2, marginBottom: 8 }]}>
+                  Masjids in your area you don't follow yet — tap for full profile.
+                </Text>
+                {unfollowedMasjidBuckets.map((m) => (
+                  <Pressable {...PRESSABLE_INSTANT}
+                    key={`disc-masjid-${m.source}`}
+                    style={[styles.discoverMasjidRow, isDarkTheme && styles.discoverMasjidRowDark]}
+                    onPress={() => setSelectedMasjidSheet(m.source)}
                   >
-                    {followedMasjids.includes(m.source) ? "✓ Following" : "+ Follow"}
-                  </Text>
-                </Pressable>
-              </Pressable>
-            ))}
+                    {renderMasjidLogo(m.source, 44, { style: styles.discoverMasjidAvatar, textStyle: styles.discoverMasjidAvatarText })}
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.discoverMasjidTitle, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={1}>
+                        {formatSourceLabel(m.source)}
+                      </Text>
+                      <Text style={[styles.discoverMasjidSub, isDarkTheme && { color: "#9db0db" }]} numberOfLines={1}>
+                        {m.count} upcoming{m.distance != null ? ` · ${m.distance.toFixed(1)} mi` : ""}
+                        {m.nextDate ? ` · next ${formatHumanDate(m.nextDate)}` : ""}
+                      </Text>
+                    </View>
+                    <Pressable {...PRESSABLE_INSTANT}
+                      hitSlop={10}
+                      onPress={(ev) => {
+                        (ev as unknown as { stopPropagation?: () => void })?.stopPropagation?.();
+                        toggleFollowMasjid(m.source);
+                      }}
+                      onStartShouldSetResponder={() => true}
+                      onResponderTerminationRequest={() => false}
+                      style={[
+                        styles.discoverFollowBtn,
+                        followedMasjids.includes(m.source) && styles.discoverFollowBtnActive,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.discoverFollowText,
+                          followedMasjids.includes(m.source) && styles.discoverFollowTextActive,
+                        ]}
+                      >
+                        {followedMasjids.includes(m.source) ? "✓ Following" : "+ Follow"}
+                      </Text>
+                    </Pressable>
+                  </Pressable>
+                ))}
+              </>
+            ) : null}
           </View>
         ) : null}
       </ScrollView>
@@ -7263,13 +9794,21 @@ function AppInner() {
       onPress,
       danger,
       last,
-    }: { icon: string; label: string; value?: string; onPress: () => void; danger?: boolean; last?: boolean }) => (
+    }: { icon: string; label: string; value?: string; onPress: () => void; danger?: boolean; last?: boolean }) => {
+      const iconIsMi = (icon as string) in MI_ICONS;
+      const miTint = danger ? "#c94620" : (isDarkTheme ? "#e8ecf4" : "#273143");
+      return (
       <Pressable
+        {...PRESSABLE_INSTANT}
         onPress={() => { onPress(); hapticTap("selection"); }}
         style={[styles.settingsRow, last && styles.settingsRowLast, isDarkTheme && styles.settingsRowDark]}
       >
         <View style={[styles.settingsRowIcon, isDarkTheme && styles.settingsRowIconDark]}>
-          <Text style={[styles.settingsRowIconText, emojiFontStyle]}>{icon}</Text>
+          {iconIsMi ? (
+            <Mi name={icon as MiName} size={20} color={miTint} />
+          ) : (
+            <Text style={[styles.settingsRowIconText, emojiFontStyle]}>{icon}</Text>
+          )}
         </View>
         <View style={{ flex: 1 }}>
           <Text style={[styles.settingsRowLabel, { color: danger ? "#c94620" : rowProps.textColor }]}>
@@ -7283,7 +9822,8 @@ function AppInner() {
         </View>
         <Text style={[styles.settingsRowChevron, { color: rowProps.chevron }]}>›</Text>
       </Pressable>
-    );
+      );
+    };
     const SectionLabel = ({ children }: { children: any }) => (
       <Text style={[styles.settingsSectionLabel, isDarkTheme && { color: "#8aa3d4" }]}>
         {children}
@@ -7301,12 +9841,75 @@ function AppInner() {
       themeMode === "emerald" ? "Emerald" :
       themeMode === "vitaria" ? "Vitaria" :
       themeMode === "neo" ? "Neo" : "Light";
+    const seedSourceCount = Array.isArray(BUNDLED_SEED_META?.sources) ? BUNDLED_SEED_META.sources.length : 0;
+    const seedEventCount =
+      typeof (BUNDLED_SEED_META as any)?.event_count === "number"
+        ? (BUNDLED_SEED_META as any).event_count
+        : BUNDLED_SEED_EVENTS.length;
+    const seedDataVersion = normalizeText((BUNDLED_SEED_META as any)?.data_version || "unknown");
+    const seedGeneratedAtRaw = normalizeText((BUNDLED_SEED_META as any)?.generated_at_utc || "");
+    const seedGeneratedAtLabel = (() => {
+      if (!seedGeneratedAtRaw) return "Unknown";
+      const parsed = new Date(seedGeneratedAtRaw);
+      if (Number.isNaN(parsed.getTime())) return seedGeneratedAtRaw;
+      return parsed.toLocaleString();
+    })();
+    const seedMinDate = normalizeText((BUNDLED_SEED_META as any)?.min_date || "");
+    const seedMaxDate = normalizeText((BUNDLED_SEED_META as any)?.max_date || "");
+    const upcomingJumuahBySource = new Map<string, EventItem>();
+    for (const e of events) {
+      if (!isJumuahEvent(e)) continue;
+      if ((e.date || "") < today || isEventPastNow(e)) continue;
+      const src = normalizeText(e.source).toLowerCase();
+      if (!src) continue;
+      const prev = upcomingJumuahBySource.get(src);
+      if (!prev) {
+        upcomingJumuahBySource.set(src, e);
+        continue;
+      }
+      const nextKey = `${e.date || ""} ${e.start_time || "99:99"}`;
+      const prevKey = `${prev.date || ""} ${prev.start_time || "99:99"}`;
+      if (nextKey.localeCompare(prevKey) < 0) upcomingJumuahBySource.set(src, e);
+    }
+    const jumuahSettingsRows = (meta?.sources || [])
+      .map((src) => {
+        const sourceKey = normalizeText(src).toLowerCase();
+        const iqRows = iqamaBySource[sourceKey] || {};
+        const jumuahTimes = Array.from(
+          new Set((iqRows["jumuah"]?.jumuah_times || []).map((x) => normalizeText(x)).filter(Boolean)),
+        );
+        const nextJumuah = upcomingJumuahBySource.get(sourceKey) || null;
+        if (!jumuahTimes.length && !nextJumuah) return null;
+        const nextLabel = nextJumuah
+          ? `Next: ${formatHumanDate(nextJumuah.date)}${eventTime(nextJumuah) ? ` · ${eventTime(nextJumuah)}` : ""}`
+          : "";
+        const value = jumuahTimes.length
+          ? `${jumuahTimes.join("  ·  ")}${nextLabel ? ` · ${nextLabel}` : ""}`
+          : nextLabel;
+        return { source: src, value };
+      })
+      .filter((row): row is { source: string; value: string } => !!row)
+      .sort((a, b) => {
+        const af = followedMasjids.some((m) => normalizeText(m).toLowerCase() === normalizeText(a.source).toLowerCase()) ? 0 : 1;
+        const bf = followedMasjids.some((m) => normalizeText(m).toLowerCase() === normalizeText(b.source).toLowerCase()) ? 0 : 1;
+        if (af !== bf) return af - bf;
+        return formatSourceLabel(a.source).localeCompare(formatSourceLabel(b.source));
+      });
+    const scrollToJumuahSettings = () => {
+      hapticTap("selection");
+      settingsScrollRef.current?.scrollTo({
+        y: Math.max(0, settingsJumuahOffsetRef.current - 8),
+        animated: true,
+      });
+    };
 
     return (
       <ScrollView
+        ref={settingsScrollRef}
         style={{ flex: 1 }}
-        contentContainerStyle={[styles.settingsScrollBody, isDarkTheme && styles.settingsScrollBodyDark, { paddingBottom: insets.bottom + 40 }]}
+        contentContainerStyle={[styles.settingsScrollBody, isDarkTheme && styles.settingsScrollBodyDark, { paddingBottom: insets.bottom + 110 }]}
         showsVerticalScrollIndicator={false}
+        {...IOS_SCROLL_INSTANT_TOUCH}
       >
         {/* Profile hero */}
         <View style={[styles.settingsProfileHero, isDarkTheme && styles.settingsProfileHeroDark]}>
@@ -7337,18 +9940,18 @@ function AppInner() {
         <View style={styles.sadaqahCard}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 6 }}>
             <View style={styles.sadaqahIcon}>
-              <Text style={[styles.sadaqahIconText, emojiFontStyle]}>♥</Text>
+              <Mi name="favorite_fill1" size={20} color="#fff" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.sadaqahTitle}>Sadaqah Jar</Text>
-              <Text style={styles.sadaqahSub}>Keep Masjidly free for the ummah</Text>
+              <Text style={styles.sadaqahSub}>Keep Masjid.ly free for the ummah</Text>
             </View>
           </View>
           <Text style={styles.sadaqahBody}>
-            Built and maintained by one brother. If Masjidly helped you find a halaqah or your next masjid —
+            Built and maintained by one brother. If Masjid.ly helped you find a halaqah or your next masjid —
             drop a tip. JazakAllahu khayran.
           </Text>
-          <Pressable
+          <Pressable {...PRESSABLE_INSTANT}
             style={styles.sadaqahBtn}
             onPress={() => { Linking.openURL("https://ko-fi.com/shaheer23407"); hapticTap("success"); }}
           >
@@ -7356,16 +9959,16 @@ function AppInner() {
           </Pressable>
         </View>
 
-        {/* Share Masjidly — win merch. Mirrors the Sadaqah card's visual
+        {/* Share Masjid.ly — win merch. Mirrors the Sadaqah card's visual
             weight so it sits right under the hero and doesn't get lost
             deep in the settings list. */}
         <View style={styles.shareCard}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 6 }}>
             <View style={styles.shareCardIcon}>
-              <Text style={[styles.shareCardIconText, emojiFontStyle]}>★</Text>
+              <Mi name="star_fill1" size={20} color="#fff" />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.shareCardTitle}>Share Masjidly — win merch</Text>
+              <Text style={styles.shareCardTitle}>Share Masjid.ly — win merch</Text>
               <Text style={styles.shareCardSub}>
                 Invite friends, enter the monthly raffle
               </Text>
@@ -7373,21 +9976,21 @@ function AppInner() {
           </View>
           <Text style={styles.shareCardBody}>
             Every friend who signs up with your code counts as a raffle entry.
-            Top inviter each month wins official Masjidly merch —
+            Top inviter each month wins official Masjid.ly merch —
             hoodie, beanie, dua journal. We'll DM the winner in-app.
           </Text>
 
           <View style={styles.shareCodePill}>
             <Text style={styles.shareCodePillLabel}>YOUR CODE</Text>
             <Text style={styles.shareCodePillValue}>{referralCode || "—"}</Text>
-            <Pressable
+            <Pressable {...PRESSABLE_INSTANT}
               style={styles.shareCodeCopyBtn}
               hitSlop={8}
               onPress={() => {
                 if (!referralCode) return;
                 hapticTap("selection");
                 Share.share({
-                  title: "My Masjidly code",
+                  title: "My Masjid.ly code",
                   message: referralCode,
                 });
               }}
@@ -7407,7 +10010,7 @@ function AppInner() {
             </View>
           </View>
 
-          <Pressable
+          <Pressable {...PRESSABLE_INSTANT}
             style={styles.shareCardBtn}
             onPress={() => {
               if (!referralCode) {
@@ -7415,9 +10018,9 @@ function AppInner() {
                 return;
               }
               Share.share({
-                title: "Join me on Masjidly",
+                title: "Join me on Masjid.ly",
                 message:
-                  `Salaam — I've been using Masjidly to find masjid events, halaqahs, and speakers near me. Join with my code ${referralCode} and we both get entered into the monthly merch raffle.\n\nhttps://masjidly.app/invite/${referralCode}`,
+                  `Salaam — I've been using Masjid.ly to find masjid events, halaqahs, and speakers near me. Join with my code ${referralCode} and we both get entered into the monthly merch raffle.\n\nhttps://masjidly.app/invite/${referralCode}`,
               });
               hapticTap("success");
             }}
@@ -7453,7 +10056,7 @@ function AppInner() {
                   placeholderTextColor="#a3aec6"
                   style={styles.shareReferredInput}
                 />
-                <Pressable
+                <Pressable {...PRESSABLE_INSTANT}
                   style={[styles.shareReferredSubmit, referralSavingState === "saving" && { opacity: 0.7 }]}
                   disabled={referralSavingState === "saving"}
                   onPress={async () => {
@@ -7482,17 +10085,33 @@ function AppInner() {
           )}
         </View>
 
+        <View style={styles.settingsQuickTabsRow}>
+          <Pressable {...PRESSABLE_INSTANT}
+            onPress={scrollToJumuahSettings}
+            style={({ pressed }) => [
+              styles.settingsQuickTabBtn,
+              isDarkTheme && styles.settingsQuickTabBtnDark,
+              pressed && styles.settingsQuickTabBtnPressed,
+            ]}
+          >
+            <Mi name="schedule" size={15} color={isDarkTheme ? "#d9e4ff" : "#2d4066"} />
+            <Text style={[styles.settingsQuickTabText, isDarkTheme && styles.settingsQuickTabTextDark]}>
+              Jumu'ah
+            </Text>
+          </Pressable>
+        </View>
+
         {/* ACCOUNT */}
         <SectionLabel>ACCOUNT</SectionLabel>
         <SectionCard>
           <SettingsRow
-            icon="◉"
+            icon="verified_user"
             label="Your profile"
             value={personalization.name ? "Name, interests & preferences" : "Tell us about yourself"}
             onPress={() => setEntryScreen("welcome")}
           />
           <SettingsRow
-            icon="≡"
+            icon="bookmark"
             label="Masjid Passport"
             value={`${passportStamps.length} of 24 masjids stamped`}
             onPress={() => setPassportOpen(true)}
@@ -7504,19 +10123,19 @@ function AppInner() {
         <SectionLabel>NOTIFICATIONS</SectionLabel>
         <SectionCard>
           <SettingsRow
-            icon="◷"
+            icon="notifications"
             label="Push notifications"
             value={pushToken ? "On — you'll get reminders & new-event nudges" : "Off — tap to enable"}
             onPress={() => Linking.openSettings()}
           />
           <SettingsRow
-            icon="✓"
+            icon="check"
             label="RSVP reminders"
             value="Notified 2 hours before events you RSVP'd to"
             onPress={() => Alert.alert("RSVP reminders", "When you tap 'Going' on an event, we schedule a local reminder 2 hours before it starts. No action needed.")}
           />
           <SettingsRow
-            icon="♡"
+            icon="favorite"
             label="Followed masjids"
             value={followedMasjids.length > 0 ? `${followedMasjids.length} masjid${followedMasjids.length === 1 ? "" : "s"} — get their new events` : "Follow a masjid to get its new events"}
             onPress={() => switchTab("discover")}
@@ -7532,7 +10151,7 @@ function AppInner() {
         <SectionLabel>PRAYER & QIBLA</SectionLabel>
         <SectionCard>
           <SettingsRow
-            icon="⌂"
+            icon="explore"
             label="Open Qibla compass"
             value="Google Qibla Finder — points you toward Makkah"
             onPress={() => {
@@ -7543,7 +10162,7 @@ function AppInner() {
             }}
           />
           <SettingsRow
-            icon="◷"
+            icon="schedule"
             label="Today's prayer times"
             value={
               profileDraft.home_lat && profileDraft.home_lon
@@ -7569,17 +10188,48 @@ function AppInner() {
           />
         </SectionCard>
 
+        <View
+          onLayout={(e) => {
+            settingsJumuahOffsetRef.current = e.nativeEvent.layout.y;
+          }}
+        >
+          {/* JUMU'AH */}
+          <SectionLabel>JUMU'AH</SectionLabel>
+          <SectionCard>
+            {jumuahSettingsRows.length ? (
+              jumuahSettingsRows.map((row, idx) => (
+                <SettingsRow
+                  key={`settings-jumuah-${row.source}`}
+                  icon="schedule"
+                  label={formatSourceLabel(row.source)}
+                  value={row.value}
+                  onPress={() => setSelectedMasjidProfile(row.source)}
+                  last={idx === jumuahSettingsRows.length - 1}
+                />
+              ))
+            ) : (
+              <SettingsRow
+                icon="schedule"
+                label="No Jumu'ah entries yet"
+                value="Pull to refresh events or open Explore for full listings"
+                onPress={() => switchTab("explore")}
+                last
+              />
+            )}
+          </SectionCard>
+        </View>
+
         {/* LOCATION & RADIUS */}
         <SectionLabel>LOCATION</SectionLabel>
         <SectionCard>
           <SettingsRow
-            icon="◎"
+            icon="location_on"
             label="Use my location"
             value={profileDraft.home_lat && profileDraft.home_lon ? "Enabled — showing what's near you" : "Disabled — tap to allow"}
             onPress={() => requestLocationAndSave()}
           />
           <SettingsRow
-            icon="◐"
+            icon="search"
             label="Search radius"
             value={radius === "999" ? "Any distance" : `Within ${radius || 35} miles`}
             onPress={() => {
@@ -7604,7 +10254,7 @@ function AppInner() {
         <SectionLabel>CONTENT</SectionLabel>
         <SectionCard>
           <SettingsRow
-            icon="◈"
+            icon="groups"
             label="Default audience"
             value={audienceFilter === "all" ? "Everyone" : audienceFilter[0].toUpperCase() + audienceFilter.slice(1)}
             onPress={() => {
@@ -7622,13 +10272,25 @@ function AppInner() {
             }}
           />
           <SettingsRow
-            icon="✦"
+            icon="school"
             label="Scholars & Speakers"
             value="Browse directory, follow for reminders"
             onPress={() => setScholarScreenOpen(true)}
           />
           <SettingsRow
-            icon="◷"
+            icon="auto_awesome"
+            label="Your Feed setup"
+            value="Pick masjids, speakers, and topics for your feed"
+            onPress={() => openFeedSetupWizard()}
+          />
+          <SettingsRow
+            icon="restart_alt"
+            label="Reset Your Feed"
+            value="Start over and get prompted like a first-time user"
+            onPress={resetFeedSetup}
+          />
+          <SettingsRow
+            icon="calendar_today"
             label="Export next 30 days"
             value="Add upcoming events to your calendar"
             onPress={exportBulkCalendar}
@@ -7640,13 +10302,13 @@ function AppInner() {
         <SectionLabel>APPEARANCE</SectionLabel>
         <SectionCard>
           <SettingsRow
-            icon="◐"
+            icon="contrast"
             label="Theme"
             value={currentThemeLabel}
             onPress={() => {
               Alert.alert(
                 "Theme",
-                "Pick how Masjidly looks.",
+                "Pick how Masjid.ly looks.",
                 [
                   { text: "Light", onPress: () => applyThemeMode("minera") },
                   { text: "Dark", onPress: () => applyThemeMode("inferno") },
@@ -7664,13 +10326,13 @@ function AppInner() {
         <SectionLabel>DATA & STORAGE</SectionLabel>
         <SectionCard>
           <SettingsRow
-            icon="↻"
+            icon="refresh"
             label="Refresh events"
             value={`${events.length} events loaded · tap to sync now`}
             onPress={() => { loadEvents({ force: true }); hapticTap("success"); }}
           />
           <SettingsRow
-            icon="♡"
+            icon="favorite"
             label="Clear saved events"
             value={`${savedEvents.length} saved — remove all`}
             onPress={() => {
@@ -7687,11 +10349,63 @@ function AppInner() {
           />
         </SectionCard>
 
+        {/* SEEDED SNAPSHOT */}
+        <SectionLabel>SEEDED</SectionLabel>
+        <SectionCard>
+          <SettingsRow
+            icon="bookmark"
+            label="Bundled snapshot"
+            value={`${seedEventCount} events · ${seedSourceCount} sources`}
+            onPress={() =>
+              Alert.alert(
+                "Bundled seed snapshot",
+                "This is the offline snapshot packed with the app. Live API sync overlays newer data when available.",
+              )
+            }
+          />
+          <SettingsRow
+            icon="schedule"
+            label="Seed generated"
+            value={seedGeneratedAtLabel}
+            onPress={() =>
+              Alert.alert(
+                "Seed generated",
+                `UTC timestamp from seed-meta.json:\n${seedGeneratedAtRaw || "Unknown"}`,
+              )
+            }
+          />
+          <SettingsRow
+            icon="calendar_today"
+            label="Seed date range"
+            value={seedMinDate && seedMaxDate ? `${seedMinDate} → ${seedMaxDate}` : "Unknown"}
+            onPress={() =>
+              Alert.alert(
+                "Seed date range",
+                seedMinDate && seedMaxDate
+                  ? `From ${seedMinDate} through ${seedMaxDate}.`
+                  : "No range available in seed metadata.",
+              )
+            }
+          />
+          <SettingsRow
+            icon="info"
+            label="Seed version"
+            value={seedDataVersion}
+            onPress={() =>
+              Alert.alert(
+                "Seed version",
+                `Version token from seed-meta.json:\n${seedDataVersion}`,
+              )
+            }
+            last
+          />
+        </SectionCard>
+
         {/* SUPPORT & COMMUNITY */}
         <SectionLabel>SUPPORT & COMMUNITY</SectionLabel>
         <SectionCard>
           <SettingsRow
-            icon="✉"
+            icon="mail"
             label="Send feedback"
             value="Tell us what to fix or add"
             onPress={() =>
@@ -7700,26 +10414,26 @@ function AppInner() {
                 "Email hello@masjidly.app with questions, feature requests, or masjids we should add.",
                 [
                   { text: "Cancel", style: "cancel" },
-                  { text: "Open mail", onPress: () => Linking.openURL("mailto:hello@masjidly.app?subject=Masjidly%20feedback") },
+                  { text: "Open mail", onPress: () => Linking.openURL("mailto:hello@masjidly.app?subject=Masjid.ly%20feedback") },
                 ],
               )
             }
           />
           <SettingsRow
-            icon="◉"
+            icon="share"
             label="Invite a friend"
-            value="Share Masjidly with people who'd love it"
+            value="Share Masjid.ly with people who'd love it"
             onPress={() =>
               Share.share({
-                title: "Invite to Masjidly",
-                message: `Join me on Masjidly for local masjid events. My code: ${referralCode}\n\nhttps://masjidly.app/invite/${referralCode}`,
+                title: "Invite to Masjid.ly",
+                message: `Join me on Masjid.ly for local masjid events. My code: ${referralCode}\n\nhttps://masjidly.app/invite/${referralCode}`,
               })
             }
           />
           <SettingsRow
-            icon="◈"
+            icon="lightbulb"
             label="Replay walkthrough"
-            value="Meet your Masjidly companion again"
+            value="Meet your Masjid.ly companion again"
             onPress={() => {
               // Make sure we're on Home so the tour's tab-highlights are
               // visible behind the overlay, then kick off the guided tour
@@ -7749,7 +10463,7 @@ function AppInner() {
         <SectionLabel>ACCOUNT</SectionLabel>
         <SectionCard>
           <SettingsRow
-            icon="⎋"
+            icon="logout"
             label={currentUser ? "Sign out" : "Sign in or create account"}
             value={currentUser ? (currentUser.email || "Signed in") : "Sync your saves across devices"}
             onPress={() => {
@@ -7778,7 +10492,7 @@ function AppInner() {
             }}
           />
           <SettingsRow
-            icon="✕"
+            icon="warning"
             danger
             label="Delete my account"
             value="Permanently remove your account and data"
@@ -7794,7 +10508,7 @@ function AppInner() {
                     onPress: () => {
                       Alert.alert(
                         "Are you absolutely sure?",
-                        "Tap 'Delete forever' to permanently wipe your Masjidly account. You'll be signed out immediately.",
+                        "Tap 'Delete forever' to permanently wipe your Masjid.ly account. You'll be signed out immediately.",
                         [
                           { text: "Keep my account", style: "cancel" },
                           {
@@ -7844,24 +10558,24 @@ function AppInner() {
         <SectionLabel>LEGAL</SectionLabel>
         <SectionCard>
           <SettingsRow
-            icon="◇"
+            icon="info"
             label="Privacy policy"
             value="Hosted at ssaud1.github.io/masjidly"
             onPress={() => setShowPrivacyPolicy(true)}
           />
           <SettingsRow
-            icon="◇"
+            icon="info"
             label="Terms of use"
             onPress={() => setShowTermsOfUse(true)}
           />
           <SettingsRow
-            icon="◇"
+            icon="info"
             label="Open policy & support on web"
             value="Opens ssaud1.github.io/masjidly in your browser"
             onPress={() => { Linking.openURL(MASJIDLY_URLS.marketing).catch(() => {}); }}
           />
           <SettingsRow
-            icon="◇"
+            icon="info"
             label="Data & permissions"
             value="What we collect, why, and how to delete"
             onPress={() => setShowPrivacyPolicy(true)}
@@ -7873,8 +10587,8 @@ function AppInner() {
         <SectionLabel>ABOUT</SectionLabel>
         <SectionCard>
           <SettingsRow
-            icon="ⓘ"
-            label="About Masjidly"
+            icon="info"
+            label="About Masjid.ly"
             value={`Version ${APP_BUILD_VERSION}`}
             onPress={() => setShowAboutPanel(true)}
             last
@@ -7882,7 +10596,7 @@ function AppInner() {
         </SectionCard>
 
         {/* Tap-to-reveal developer panel */}
-      <Pressable
+      <Pressable {...PRESSABLE_INSTANT}
         onPress={() => {
           const nextCount = devTapCount + 1;
           setDevTapCount(nextCount);
@@ -7896,7 +10610,7 @@ function AppInner() {
         hitSlop={8}
       >
         <Text style={[styles.settingsVersionText, isDarkTheme && { color: "#6b778c" }]}>
-            Masjidly · {APP_BUILD_VERSION} · Made with ♥ for the ummah
+            Masjid.ly · {APP_BUILD_VERSION} · Made with love for the ummah
         </Text>
       </Pressable>
 
@@ -7915,7 +10629,7 @@ function AppInner() {
             <Text style={{ color: isDarkTheme ? "#c4cee8" : "#4a5568", fontSize: 12, marginBottom: 4 }}>
             Today anchor: {today}
           </Text>
-            <Pressable
+            <Pressable {...PRESSABLE_INSTANT}
               style={[styles.utilityActionBtn, { marginTop: 10 }, isDarkTheme && styles.utilityActionBtnDark]}
               onPress={loadModerationQueue}
             >
@@ -7972,22 +10686,52 @@ function AppInner() {
       themeMode,
     ]
   );
-  const savedSceneNode = useMemo(
-    () => renderSaved(),
+  const feedSceneNode = useMemo(
+    () => renderFeed(),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [savedEvents, savedEventsMap, rsvpStatuses, themeMode]
+    [
+      forYouFeedEvents,
+      followedMasjidFeedEvents,
+      followedScholarFeedEvents,
+      interestFeedEvents,
+      savedAndRsvpFeedEvents,
+      feedFollowedMasjidSummaries,
+      feedUnfollowedMasjidBuckets,
+      feedSpeakerCards,
+      followedMasjids,
+      followedScholars,
+      feedTopicFilter,
+      feedTopicOptions,
+      themeMode,
+    ]
   );
   // Memoize home and settings too so tab switching is instant — these only
   // rebuild when their real data inputs change.
   const homeSceneNode = useMemo(
     () => renderHome(),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [upcoming, featuredEvent, savedEventsMap, rsvpStatuses, themeMode, meta, lastSyncedAt, futureVisibleCount]
+    [
+      orderedVisibleEvents,
+      visibleEvents,
+      today,
+      futureVisibleCount,
+      followedMasjids,
+      profileDraft.home_lat,
+      profileDraft.home_lon,
+      reference,
+      personalization.name,
+      currentUser?.email,
+      savedEventsMap,
+      rsvpStatuses,
+      themeMode,
+      meta,
+      lastSyncedAt,
+    ]
   );
   const settingsSceneNode = useMemo(
     () => renderSettings(),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [profileDraft, themeMode, meta, currentUser, followedMasjids]
+    [profileDraft, themeMode, meta, currentUser, followedMasjids, orderedVisibleEvents, iqamaBySource, today]
   );
   const discoverSceneNode = useMemo(
     () => renderDiscover(),
@@ -8000,7 +10744,7 @@ function AppInner() {
     if (sceneTab === "explore") return exploreSceneNode;
     if (sceneTab === "discover") return discoverSceneNode;
     if (sceneTab === "calendar") return calendarSceneNode;
-    if (sceneTab === "saved") return savedSceneNode;
+    if (sceneTab === "feed") return feedSceneNode;
     return settingsSceneNode;
   };
 
@@ -8041,27 +10785,27 @@ function AppInner() {
               {
                 transform: [
                   {
-                    translateX: logoGlowA.interpolate({
+                    translateY: logoGlowA.interpolate({
                       inputRange: [0, 1],
-                      outputRange: [-10, 26],
+                      outputRange: [0, -10],
                     }),
                   },
                   {
-                    translateY: logoGlowA.interpolate({
+                    translateX: logoGlowA.interpolate({
                       inputRange: [0, 1],
-                      outputRange: [0, 18],
+                      outputRange: [0, 7],
                     }),
                   },
                   {
                     scale: logoGlowA.interpolate({
                       inputRange: [0, 1],
-                      outputRange: [1, 1.18],
+                      outputRange: [0.94, 1.08],
                     }),
                   },
                 ],
                 opacity: logoGlowA.interpolate({
                   inputRange: [0, 1],
-                  outputRange: [0.85, 1],
+                  outputRange: [0.5, 0.82],
                 }),
               },
             ]}
@@ -8073,27 +10817,27 @@ function AppInner() {
               {
                 transform: [
                   {
-                    translateX: logoGlowB.interpolate({
+                    translateY: logoGlowA.interpolate({
                       inputRange: [0, 1],
-                      outputRange: [0, -36],
+                      outputRange: [0, 12],
                     }),
                   },
                   {
-                    translateY: logoGlowB.interpolate({
+                    translateX: logoGlowA.interpolate({
                       inputRange: [0, 1],
-                      outputRange: [0, -20],
+                      outputRange: [0, -10],
                     }),
                   },
                   {
-                    scale: logoGlowB.interpolate({
+                    scale: logoGlowA.interpolate({
                       inputRange: [0, 1],
-                      outputRange: [1, 1.12],
+                      outputRange: [1.02, 0.94],
                     }),
                   },
                 ],
-                opacity: logoGlowB.interpolate({
+                opacity: logoGlowA.interpolate({
                   inputRange: [0, 1],
-                  outputRange: [1, 0.78],
+                  outputRange: [0.54, 0.78],
                 }),
               },
             ]}
@@ -8105,7 +10849,7 @@ function AppInner() {
       ) : null}
 
       <View style={styles.tabSceneWrap}>
-        {(["home", "explore", "discover", "calendar", "saved", "settings"] as const).map((id) => {
+        {(["home", "explore", "discover", "calendar", "feed", "settings"] as const).map((id) => {
           if (!mountedTabs.has(id)) return null;
           const isActive = tab === id;
           return (
@@ -8124,50 +10868,79 @@ function AppInner() {
       </View>
 
       <View style={[styles.tabBar, isMidnight && styles.tabBarMidnight, isNeo && styles.tabBarNeo, isVitaria && styles.tabBarVitaria, isInferno && styles.tabBarInferno, isEmerald && styles.tabBarEmerald]}>
-        {[
-          ["home", "⌂", "Home"],
-          ["explore", "◉", "Map"],
-          ["discover", "✦", "Discover"],
-          ["calendar", "◷", "Calendar"],
-          ["saved", "♡", "Saved"],
-          ["settings", "☰", "Settings"],
-        ].map(([id, icon, label]) => (
-          <Pressable
-            key={id}
-            hitSlop={4}
-            style={({ pressed }) => [
-              styles.tabBtn,
-              tab === id && styles.tabBtnActive,
-              isMidnight && tab === id && styles.tabBtnActiveMidnight,
-              isNeo && tab === id && styles.tabBtnActiveNeo,
-              isVitaria && tab === id && styles.tabBtnActiveVitaria,
-              isInferno && tab === id && styles.tabBtnActiveInferno,
-              isEmerald && tab === id && styles.tabBtnActiveEmerald,
-              pressed && { opacity: 0.55 },
-            ]}
-            onPressIn={() => {
-              if (tab !== id) switchTab(id as typeof tab);
-            }}
-          >
-            <Text
-              style={[
-                styles.tabIcon,
-                isMidnight && styles.tabIconMidnight,
-                isNeo && styles.tabIconNeo,
-                isVitaria && styles.tabIconVitaria,
-                isInferno && styles.tabIconInferno,
-                isEmerald && styles.tabIconEmerald,
-                tab === id && styles.tabIconActive,
-                isInferno && tab === id && styles.tabIconActiveInferno,
-                isEmerald && tab === id && styles.tabIconActiveEmerald,
-                id === "saved" && emojiFontStyle,
+        {(
+          [
+            ["home", TAB_ICON_HOME, "Home"],
+            ["explore", TAB_ICON_MAP, "Map"],
+            ["discover", TAB_ICON_DISCOVER, "Discover"],
+            ["calendar", TAB_ICON_CALENDAR, "Calendar"],
+            ["feed", TAB_ICON_FEED, "Your Feed"],
+            ["settings", TAB_ICON_SETTINGS, "Settings"],
+          ] as const
+        ).map(([id, iconSource, label]) => {
+          const active = tab === id;
+          // Derive the correct glyph color for the current theme. Material
+          // Symbols PNGs are grey on transparent — we recolor them via
+          // `tintColor` so they perfectly match the text color of the tab.
+          const inactiveColor = isMidnight
+            ? "#6f7897"
+            : isNeo
+              ? "#4a4a4a"
+              : isVitaria
+                ? "rgba(255,255,255,0.82)"
+                : isInferno
+                  ? "rgba(255,195,162,0.86)"
+                  : isEmerald
+                    ? "#2f6f4a"
+                    : "#8a92a4";
+          const activeColor = isInferno || isEmerald ? "#fffaf6" : "#fff8f2";
+          const tintColor = active ? activeColor : inactiveColor;
+          return (
+            <Pressable
+              {...PRESSABLE_INSTANT}
+              key={id}
+              hitSlop={4}
+              style={({ pressed }) => [
+                styles.tabBtn,
+                active && styles.tabBtnActive,
+                isMidnight && active && styles.tabBtnActiveMidnight,
+                isNeo && active && styles.tabBtnActiveNeo,
+                isVitaria && active && styles.tabBtnActiveVitaria,
+                isInferno && active && styles.tabBtnActiveInferno,
+                isEmerald && active && styles.tabBtnActiveEmerald,
+                pressed && { opacity: 0.55 },
               ]}
+              onPressIn={() => {
+                if (!active) switchTab(id as typeof tab);
+              }}
             >
-              {icon}
-            </Text>
-            <Text style={[styles.tabText, isMidnight && styles.tabTextMidnight, isNeo && styles.tabTextNeo, isVitaria && styles.tabTextVitaria, isInferno && styles.tabTextInferno, isEmerald && styles.tabTextEmerald, tab === id && styles.tabTextActive, isInferno && tab === id && styles.tabTextActiveInferno, isEmerald && tab === id && styles.tabTextActiveEmerald]}>{label}</Text>
-          </Pressable>
-        ))}
+              <Image
+                source={iconSource}
+                style={[styles.tabIconImage, { tintColor }]}
+                resizeMode="contain"
+              />
+              <Text
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.7}
+                allowFontScaling={false}
+                style={[
+                  styles.tabText,
+                  isMidnight && styles.tabTextMidnight,
+                  isNeo && styles.tabTextNeo,
+                  isVitaria && styles.tabTextVitaria,
+                  isInferno && styles.tabTextInferno,
+                  isEmerald && styles.tabTextEmerald,
+                  active && styles.tabTextActive,
+                  isInferno && active && styles.tabTextActiveInferno,
+                  isEmerald && active && styles.tabTextActiveEmerald,
+                ]}
+              >
+                {label}
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
 
       <Modal
@@ -8187,16 +10960,17 @@ function AppInner() {
               />
               <View style={[styles.eventHeroTopRow, { paddingTop: insets.top + 10 }]}>
                 <Pressable
+                  {...PRESSABLE_INSTANT}
                   style={styles.eventHeroIconBtn}
                   hitSlop={10}
                   onPress={() => setSelectedEvent(null)}
                 >
-                  <Text style={styles.eventHeroIconText}>✕</Text>
+                  <Mi name="close" size={18} color="#fff" />
                 </Pressable>
               </View>
               <View style={styles.eventModalSkeletonTitleWrap}>
                 <Text style={styles.eventModalSkeletonTitle} numberOfLines={2}>
-                  {selectedEvent.title}
+                  {eventDisplayTitle(selectedEvent)}
                 </Text>
                 <Text style={styles.eventModalSkeletonSub} numberOfLines={1}>
                   {formatHumanDate(selectedEvent.date)}
@@ -8210,15 +10984,14 @@ function AppInner() {
         ) : null}
         {selectedEvent && detailReady ? (() => {
           const ev = selectedEvent;
+          const displayTitle = eventDisplayTitle(ev);
           const rsvpKey = eventStorageKey(ev);
           const rsvpState = rsvpStatuses[rsvpKey];
           const saved = isSavedEvent(ev);
           const isFollowed = followedMasjids.includes(ev.source);
           const audience = inferAudience(ev);
-          const poster = pickPoster(ev.image_urls);
-          const speaker =
-            ev.speaker ||
-            inferSpeakerFromText(`${ev.poster_ocr_text || ""} ${ev.description || ""} ${ev.raw_text || ""}`);
+          const poster = eventPosterUrl(ev);
+          const speaker = effectiveEventSpeakerName(ev);
           const locationParts = [ev.location_name, ev.address].filter(Boolean);
           const brandColor = masjidBrandColor(ev.source);
           const descRaw = normalizeText((ev.description || "").replace(/<[^>]+>/g, " "));
@@ -8231,8 +11004,8 @@ function AppInner() {
           const recurring = recurringProgramLabel(ev);
           const shareEv = () =>
             Share.share({
-              title: ev.title,
-              message: `${ev.title} • ${formatHumanDate(ev.date)} ${ev.deep_link?.web || ev.source_url || ""}`,
+              title: displayTitle,
+              message: `${displayTitle} • ${formatHumanDate(ev.date)} ${ev.deep_link?.web || ev.source_url || ""}`,
             });
           const feedbackState = feedbackResponses[rsvpKey];
           return (
@@ -8242,6 +11015,7 @@ function AppInner() {
                 contentContainerStyle={{ paddingBottom: insets.bottom + 140 }}
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
+                {...IOS_SCROLL_INSTANT_TOUCH}
               >
                 <View style={[styles.eventHero, { height: Math.min(windowHeight * 0.5, 420) }]}>
                   {poster ? (
@@ -8256,22 +11030,24 @@ function AppInner() {
                   />
                   <View style={[styles.eventHeroTopRow, { paddingTop: insets.top + 10 }]}>
                     <Pressable
+                      {...PRESSABLE_INSTANT}
                       style={styles.eventHeroIconBtn}
                       hitSlop={10}
                       onPress={() => setSelectedEvent(null)}
                     >
-                      <Text style={styles.eventHeroIconText}>✕</Text>
+                      <Mi name="close" size={18} color="#fffdf8" />
                     </Pressable>
                     <View style={{ flex: 1 }} />
                     <Pressable
+                      {...PRESSABLE_INSTANT}
                       style={[styles.eventHeroIconBtn, saved && styles.eventHeroIconBtnActive]}
                       hitSlop={10}
                       onPress={() => toggleSavedEvent(ev)}
                     >
-                      <Text style={styles.eventHeroIconText}>{saved ? "♥" : "♡"}</Text>
+                      <Mi name={saved ? "favorite_fill1" : "favorite"} size={18} color="#fffdf8" />
                     </Pressable>
-                    <Pressable style={styles.eventHeroIconBtn} hitSlop={10} onPress={shareEv}>
-                      <Text style={styles.eventHeroIconText}>↗</Text>
+                    <Pressable {...PRESSABLE_INSTANT} style={styles.eventHeroIconBtn} hitSlop={10} onPress={shareEv}>
+                      <Mi name="open_in_new" size={18} color="#fffdf8" />
             </Pressable>
           </View>
                   <View style={styles.eventHeroBottom}>
@@ -8289,13 +11065,18 @@ function AppInner() {
                         </View>
                       ) : null}
                     </View>
-                    <Text style={styles.eventHeroTitle} numberOfLines={3}>{ev.title}</Text>
+                    <Text style={styles.eventHeroTitle} numberOfLines={3}>{displayTitle}</Text>
                   </View>
                 </View>
 
                 <View style={[styles.eventWhenCard, isDarkTheme && styles.eventWhenCardDark]}>
                   <View style={styles.eventWhenRow}>
-                    <Text style={[styles.eventWhenIcon, emojiFontStyle]}>📅</Text>
+                    <MaterialIcons
+                      name="calendar-month"
+                      size={22}
+                      color={isDarkTheme ? "#c4cee8" : "#4a5568"}
+                      style={styles.eventWhenIconGlyph}
+                    />
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.eventWhenPrimary, isDarkTheme && { color: "#f4f7ff" }]}>
                         {formatHumanDate(ev.date)}
@@ -8306,7 +11087,7 @@ function AppInner() {
                       </Text>
                     </View>
                     {ev.event_uid ? (
-                      <Pressable
+                      <Pressable {...PRESSABLE_INSTANT}
                         style={[styles.eventWhenAddBtn, isDarkTheme && styles.eventWhenAddBtnDark]}
                         onPress={() => openCalendarExportPicker(ev)}
                       >
@@ -8319,7 +11100,7 @@ function AppInner() {
                 <View style={styles.eventSection}>
                   <Text style={[styles.eventSectionLabel, isDarkTheme && { color: "#c4cee8" }]}>Will you attend?</Text>
                   <View style={styles.eventRsvpRow}>
-                    <Pressable
+                    <Pressable {...PRESSABLE_INSTANT}
                       style={[
                         styles.eventRsvpPill,
                         rsvpState === "going" && styles.eventRsvpPillGoing,
@@ -8337,7 +11118,7 @@ function AppInner() {
                         {rsvpState === "going" ? "✓ Going" : "Going"}
               </Text>
                     </Pressable>
-                <Pressable
+                <Pressable {...PRESSABLE_INSTANT}
                   style={[
                         styles.eventRsvpPill,
                         rsvpState === "interested" && styles.eventRsvpPillInterested,
@@ -8357,14 +11138,14 @@ function AppInner() {
                 </Pressable>
                   </View>
                   {ev.rsvp_link ? (
-                  <Pressable
+                  <Pressable {...PRESSABLE_INSTANT}
                       style={[styles.eventRsvpLinkBtn, isDarkTheme && styles.eventRsvpLinkBtnDark]}
                       onPress={() => Linking.openURL(ev.rsvp_link)}
                   >
                       <Text style={[styles.eventRsvpLinkText, isDarkTheme && { color: "#9fc6ff" }]}>Official RSVP →</Text>
                   </Pressable>
                 ) : null}
-                  <Pressable
+                  <Pressable {...PRESSABLE_INSTANT}
                     style={[styles.eventRsvpLinkBtn, isDarkTheme && styles.eventRsvpLinkBtnDark, { marginTop: 8 }]}
                     onPress={() => addEventToDeviceCalendar(ev)}
                   >
@@ -8376,7 +11157,12 @@ function AppInner() {
 
                 {/* #18 Attendees + #12 Invite friends */}
                 <View style={[styles.eventInfoCard, isDarkTheme && styles.eventInfoCardDark]}>
-                  <Text style={[styles.eventInfoIcon, emojiFontStyle]}>👥</Text>
+                  <MaterialIcons
+                    name="groups"
+                    size={20}
+                    color={isDarkTheme ? "#c4cee8" : "#4a5568"}
+                    style={styles.eventInfoIconGlyph}
+                  />
                   <View style={{ flex: 1 }}>
                     {(ev.attendees?.going || 0) > 0 ? (
                       <View style={styles.whosGoingAvatars}>
@@ -8406,7 +11192,7 @@ function AppInner() {
                       Invite a friend — one tap sends them the poster & seat link.
                     </Text>
                   </View>
-                  <Pressable
+                  <Pressable {...PRESSABLE_INSTANT}
                     style={styles.eventInviteBtn}
                     hitSlop={8}
                     onPress={() => inviteFriendsToEvent(ev)}
@@ -8416,12 +11202,17 @@ function AppInner() {
                 </View>
 
                 {locationParts.length ? (
-                  <Pressable
+                  <Pressable {...PRESSABLE_INSTANT}
                     style={[styles.eventInfoCard, isDarkTheme && styles.eventInfoCardDark]}
                     disabled={!ev.map_link}
                     onPress={() => ev.map_link && Linking.openURL(ev.map_link)}
                   >
-                    <Text style={[styles.eventInfoIcon, emojiFontStyle]}>📍</Text>
+                    <MaterialIcons
+                      name="place"
+                      size={20}
+                      color={isDarkTheme ? "#c4cee8" : "#4a5568"}
+                      style={styles.eventInfoIconGlyph}
+                    />
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.eventInfoTitle, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={1}>
                         {locationParts[0]}
@@ -8464,7 +11255,12 @@ function AppInner() {
                       },
                     ]}
                   >
-                    <Text style={styles.eventInfoIcon}>{ev.correction?.flagged ? "⚠" : "✓"}</Text>
+                    <Mi
+                      name={ev.correction?.flagged ? "warning" : "check"}
+                      size={18}
+                      color={ev.correction?.flagged ? "#9a4311" : "#1f7a42"}
+                      style={{ marginRight: 8 }}
+                    />
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.eventInfoTitle, { color: ev.correction?.flagged ? "#9a4311" : "#1f7a42" }]}>
                         {ev.correction?.flagged ? "Community flagged" : "Community verified"}
@@ -8488,14 +11284,19 @@ function AppInner() {
                   if (!evDate || evDate > yestIso || !didRsvp) return null;
                   return (
                     <View style={[styles.eventInfoCard, { backgroundColor: "#f0eefb", borderWidth: 1, borderColor: "#d9d4f0" }]}>
-                      <Text style={[styles.eventInfoIcon, emojiFontStyle]}>💭</Text>
+                      <MaterialIcons
+                        name="forum"
+                        size={20}
+                        color="#5c4fa8"
+                        style={styles.eventInfoIconGlyph}
+                      />
                       <View style={{ flex: 1 }}>
                         <Text style={[styles.eventInfoTitle, { color: "#3a2f7f" }]}>How was it?</Text>
                         <Text style={[styles.eventInfoSub, { color: "#5c4fa8" }]}>
                           Share one benefit so other attendees can see. 2–3 taps, private name.
                         </Text>
                       </View>
-                      <Pressable
+                      <Pressable {...PRESSABLE_INSTANT}
                         style={styles.eventInviteBtn}
                         onPress={() => openReflectionPrompt(ev)}
                       >
@@ -8507,7 +11308,12 @@ function AppInner() {
 
                 {speaker ? (
                   <View style={[styles.eventInfoCard, isDarkTheme && styles.eventInfoCardDark]}>
-                    <Text style={[styles.eventInfoIcon, emojiFontStyle]}>🎤</Text>
+                    <MaterialIcons
+                      name="mic"
+                      size={20}
+                      color={isDarkTheme ? "#c4cee8" : "#4a5568"}
+                      style={styles.eventInfoIconGlyph}
+                    />
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.eventInfoTitle, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={2}>{speaker}</Text>
                       <Text style={[styles.eventInfoSub, isDarkTheme && { color: "#c4cee8" }]}>Speaker</Text>
@@ -8520,7 +11326,7 @@ function AppInner() {
                     <Text style={[styles.eventSectionLabel, isDarkTheme && { color: "#c4cee8" }]}>About</Text>
                     <Text style={[styles.eventDescText, isDarkTheme && { color: "#e4ebf7" }]}>{descShown}</Text>
                     {descIsLong ? (
-                      <Pressable onPress={() => setShowFullDescription((v) => !v)} hitSlop={6}>
+                      <Pressable {...PRESSABLE_INSTANT} onPress={() => setShowFullDescription((v) => !v)} hitSlop={6}>
                         <Text style={[styles.eventDescToggle, isDarkTheme && { color: "#9fc6ff" }]}>
                           {showFullDescription ? "Show less" : "Read more"}
                         </Text>
@@ -8529,7 +11335,7 @@ function AppInner() {
                   </View>
                 ) : null}
 
-                  <Pressable
+                  <Pressable {...PRESSABLE_INSTANT}
                   style={[styles.eventMasjidCard, isDarkTheme && styles.eventMasjidCardDark]}
                   onPress={() => setSelectedMasjidProfile(ev.source)}
                 >
@@ -8540,7 +11346,7 @@ function AppInner() {
                     </Text>
                     <Text style={[styles.eventMasjidSub, isDarkTheme && { color: "#c4cee8" }]}>Tap to view masjid profile</Text>
                   </View>
-                  <Pressable
+                  <Pressable {...PRESSABLE_INSTANT}
                     style={[styles.eventFollowBtn, isFollowed && styles.eventFollowBtnActive]}
                     hitSlop={8}
                     onPress={(e) => {
@@ -8557,29 +11363,44 @@ function AppInner() {
                 {(ev.source_url || ev.deep_link?.web || ev.map_link) ? (
                   <View style={styles.eventLinksRow}>
                     {ev.source_url ? (
-                      <Pressable
+                      <Pressable {...PRESSABLE_INSTANT}
                         style={[styles.eventLinkTile, isDarkTheme && styles.eventLinkTileDark]}
                         onPress={() => Linking.openURL(ev.source_url)}
                       >
-                        <Text style={[styles.eventLinkIcon, emojiFontStyle]}>🌐</Text>
+                        <MaterialIcons
+                          name="language"
+                          size={20}
+                          color={isDarkTheme ? "#c4cee8" : "#4a5568"}
+                          style={styles.eventLinkIconGlyph}
+                        />
                         <Text style={[styles.eventLinkLabel, isDarkTheme && { color: "#f4f7ff" }]}>Event page</Text>
                   </Pressable>
                 ) : null}
                     {ev.deep_link?.web ? (
-                  <Pressable
+                  <Pressable {...PRESSABLE_INSTANT}
                         style={[styles.eventLinkTile, isDarkTheme && styles.eventLinkTileDark]}
                         onPress={() => Linking.openURL(ev.deep_link?.web || "")}
                   >
-                        <Text style={[styles.eventLinkIcon, emojiFontStyle]}>🔗</Text>
+                        <MaterialIcons
+                          name="link"
+                          size={20}
+                          color={isDarkTheme ? "#c4cee8" : "#4a5568"}
+                          style={styles.eventLinkIconGlyph}
+                        />
                         <Text style={[styles.eventLinkLabel, isDarkTheme && { color: "#f4f7ff" }]}>Open link</Text>
                   </Pressable>
                 ) : null}
                     {ev.map_link ? (
-                  <Pressable
+                  <Pressable {...PRESSABLE_INSTANT}
                         style={[styles.eventLinkTile, isDarkTheme && styles.eventLinkTileDark]}
                         onPress={() => Linking.openURL(ev.map_link || "")}
                   >
-                        <Text style={[styles.eventLinkIcon, emojiFontStyle]}>🗺️</Text>
+                        <MaterialIcons
+                          name="map"
+                          size={20}
+                          color={isDarkTheme ? "#c4cee8" : "#4a5568"}
+                          style={styles.eventLinkIconGlyph}
+                        />
                         <Text style={[styles.eventLinkLabel, isDarkTheme && { color: "#f4f7ff" }]}>Directions</Text>
                   </Pressable>
                 ) : null}
@@ -8600,28 +11421,43 @@ function AppInner() {
                     </Text>
                   ) : null}
                   <View style={styles.eventTrustActions}>
-                    <Pressable
-                      style={[styles.eventTrustChip, feedbackState === "helpful" && styles.eventTrustChipActive]}
+                    <Pressable {...PRESSABLE_INSTANT}
+                      style={[styles.eventTrustChip, feedbackState === "helpful" && styles.eventTrustChipActive, { flexDirection: "row", alignItems: "center", gap: 4 }]}
                       onPress={() => submitFeedback(ev, "helpful")}
                     >
-                      <Text style={[styles.eventTrustChipText, feedbackState === "helpful" && styles.eventTrustChipTextActive]}><Text style={emojiFontStyle}>👍</Text> Helpful</Text>
+                      <Mi
+                        name="thumb_up"
+                        size={12}
+                        color={feedbackState === "helpful" ? "#fff" : (isDarkTheme ? "#c4cee8" : "#4a5568")}
+                      />
+                      <Text style={[styles.eventTrustChipText, feedbackState === "helpful" && styles.eventTrustChipTextActive]}>Helpful</Text>
                     </Pressable>
-                    <Pressable
-                      style={[styles.eventTrustChip, feedbackState === "attended" && styles.eventTrustChipActive]}
+                    <Pressable {...PRESSABLE_INSTANT}
+                      style={[styles.eventTrustChip, feedbackState === "attended" && styles.eventTrustChipActive, { flexDirection: "row", alignItems: "center", gap: 4 }]}
                       onPress={() => submitFeedback(ev, "attended")}
                     >
-                      <Text style={[styles.eventTrustChipText, feedbackState === "attended" && styles.eventTrustChipTextActive]}>✓ Attended</Text>
+                      <Mi
+                        name="check"
+                        size={12}
+                        color={feedbackState === "attended" ? "#fff" : (isDarkTheme ? "#c4cee8" : "#4a5568")}
+                      />
+                      <Text style={[styles.eventTrustChipText, feedbackState === "attended" && styles.eventTrustChipTextActive]}>Attended</Text>
                     </Pressable>
-                    <Pressable
-                      style={[styles.eventTrustChip, feedbackState === "off" && styles.eventTrustChipActive]}
+                    <Pressable {...PRESSABLE_INSTANT}
+                      style={[styles.eventTrustChip, feedbackState === "off" && styles.eventTrustChipActive, { flexDirection: "row", alignItems: "center", gap: 4 }]}
                       onPress={() => submitFeedback(ev, "off")}
                     >
-                      <Text style={[styles.eventTrustChipText, feedbackState === "off" && styles.eventTrustChipTextActive]}>⚠ Info off</Text>
+                      <Mi
+                        name="warning"
+                        size={12}
+                        color={feedbackState === "off" ? "#fff" : (isDarkTheme ? "#c4cee8" : "#4a5568")}
+                      />
+                      <Text style={[styles.eventTrustChipText, feedbackState === "off" && styles.eventTrustChipTextActive]}>Info off</Text>
                     </Pressable>
                   </View>
                 </View>
 
-                <Pressable
+                <Pressable {...PRESSABLE_INSTANT}
                   style={styles.eventReportToggle}
                   onPress={() => setShowReportSection((v) => !v)}
                   hitSlop={6}
@@ -8636,7 +11472,7 @@ function AppInner() {
                     <Text style={[styles.eventReportLabel, isDarkTheme && { color: "#c4cee8" }]}>What's incorrect?</Text>
                     <View style={styles.eventReportChipRow}>
                       {[["time", "Time"], ["location", "Location"], ["category", "Category"]].map(([id, label]) => (
-                        <Pressable
+                        <Pressable {...PRESSABLE_INSTANT}
                           key={`rep-${id}`}
                           style={[styles.eventReportChip, reportIssueType === id && styles.eventReportChipActive, isDarkTheme && !reportIssueType.startsWith(id) && styles.eventReportChipDark]}
                           onPress={() => setReportIssueType(id)}
@@ -8653,7 +11489,7 @@ function AppInner() {
                       placeholderTextColor={isDarkTheme ? "#7c89a8" : "#8a95ac"}
                       multiline
                     />
-                    <Pressable style={styles.eventReportSubmitBtn} onPress={submitCommunityCorrection}>
+                    <Pressable {...PRESSABLE_INSTANT} style={styles.eventReportSubmitBtn} onPress={submitCommunityCorrection}>
                       <Text style={styles.eventReportSubmitText}>Submit correction</Text>
                     </Pressable>
                   </View>
@@ -8661,15 +11497,17 @@ function AppInner() {
             </ScrollView>
 
               <View style={[styles.eventStickyFooter, { paddingBottom: Math.max(insets.bottom, 10) }, isDarkTheme && styles.eventStickyFooterDark]}>
-                <Pressable
+                <Pressable {...PRESSABLE_INSTANT}
                   style={[styles.eventStickySaveBtn, saved && styles.eventStickySaveBtnActive]}
                   onPress={() => toggleSavedEvent(ev)}
                 >
-                  <Text style={[styles.eventStickySaveText, saved && styles.eventStickySaveTextActive]}>
-                    {saved ? "♥" : "♡"}
-                  </Text>
+                  <Mi
+                    name={saved ? "favorite_fill1" : "favorite"}
+                    size={22}
+                    color={saved ? "#fffdf8" : "#e85d3b"}
+                  />
                 </Pressable>
-                <Pressable
+                <Pressable {...PRESSABLE_INSTANT}
                   style={styles.eventStickyPrimaryBtn}
                   onPress={() => {
                     if (ev.rsvp_link) {
@@ -8683,8 +11521,8 @@ function AppInner() {
                     {ev.rsvp_link ? "RSVP" : rsvpState === "going" ? "You're going ✓" : "I'm going"}
                   </Text>
                 </Pressable>
-                <Pressable style={styles.eventStickyShareBtn} onPress={shareEv}>
-                  <Text style={styles.eventStickyShareText}>↗</Text>
+                <Pressable {...PRESSABLE_INSTANT} style={styles.eventStickyShareBtn} onPress={shareEv}>
+                  <Mi name="open_in_new" size={20} color="#2e4f82" />
                 </Pressable>
               </View>
             </View>
@@ -8698,7 +11536,7 @@ function AppInner() {
         onRequestClose={() => setSelectedCalendarModalDate("")}
       >
         <View style={styles.bottomSheetBackdrop}>
-          <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setSelectedCalendarModalDate("")} />
+          <Pressable {...PRESSABLE_INSTANT} style={StyleSheet.absoluteFillObject} onPress={() => setSelectedCalendarModalDate("")} />
           <View
             style={[
               styles.bottomSheetCard,
@@ -8717,8 +11555,8 @@ function AppInner() {
                   {calendarModalEvents.length} event{calendarModalEvents.length === 1 ? "" : "s"}
                 </Text>
               </View>
-              <Pressable hitSlop={12} onPress={() => setSelectedCalendarModalDate("")} style={styles.bottomSheetCloseBtn}>
-                <Text style={styles.bottomSheetCloseText}>✕</Text>
+              <Pressable {...PRESSABLE_INSTANT} hitSlop={12} onPress={() => setSelectedCalendarModalDate("")} style={styles.bottomSheetCloseBtn}>
+                <Mi name="close" size={18} color="#454f63" />
               </Pressable>
             </View>
             <FlatList
@@ -8738,7 +11576,7 @@ function AppInner() {
                   <Text style={[styles.bottomSheetSub, { textAlign: "center" }, isDarkTheme && styles.bottomSheetSubDark]}>
                     Check another day or explore upcoming events.
                   </Text>
-                  <Pressable
+                  <Pressable {...PRESSABLE_INSTANT}
                     style={styles.exploreEmptyBtn}
                     onPress={() => {
                       setSelectedCalendarModalDate("");
@@ -8753,9 +11591,9 @@ function AppInner() {
                 const key = eventStorageKey(e);
                 const rsvpState = rsvpStatuses[key];
                 const saved = isSavedEvent(e);
-                const poster = pickPoster(e.image_urls);
+                const poster = eventPosterUrl(e);
                 return (
-                    <Pressable
+                    <Pressable {...PRESSABLE_INSTANT}
                       style={[styles.calendarDayEventCard, isDarkTheme && styles.calendarDayEventCardDark]}
                       onPress={() => setSelectedEvent(e)}
                     >
@@ -8763,7 +11601,7 @@ function AppInner() {
                         <Image source={{ uri: poster }} style={styles.calendarDayEventPoster} resizeMode="cover" />
                       ) : (
                         <View style={[styles.calendarDayEventPoster, styles.calendarDayEventPosterEmpty]}>
-                          <Text style={[styles.calendarDayEventPosterEmptyText, emojiFontStyle]}>🕌</Text>
+                          <Mi name="mosque" size={36} color="#a3b0c8" />
                         </View>
                       )}
                       <View style={{ padding: 12, gap: 6 }}>
@@ -8783,7 +11621,7 @@ function AppInner() {
                           {e.title}
                         </Text>
                         <View style={styles.cardActionRow}>
-                          <Pressable
+                          <Pressable {...PRESSABLE_INSTANT}
                             hitSlop={6}
                             style={[styles.cardActionChip, rsvpState === "going" && styles.cardActionChipActive]}
                             onPress={(ev) => { ev.stopPropagation?.(); toggleRsvp(e, "going"); }}
@@ -8792,7 +11630,7 @@ function AppInner() {
                               {rsvpState === "going" ? "Going ✓" : "Going"}
                             </Text>
                           </Pressable>
-                          <Pressable
+                          <Pressable {...PRESSABLE_INSTANT}
                             hitSlop={6}
                             style={[styles.cardActionChip, rsvpState === "interested" && styles.cardActionChipActive]}
                             onPress={(ev) => { ev.stopPropagation?.(); toggleRsvp(e, "interested"); }}
@@ -8801,29 +11639,31 @@ function AppInner() {
                               {rsvpState === "interested" ? "Interested ✓" : "Interested"}
                             </Text>
                           </Pressable>
-                          <Pressable
+                          <Pressable {...PRESSABLE_INSTANT}
                             hitSlop={6}
                             style={[styles.cardActionChip, saved && styles.cardActionChipActive]}
                             onPress={(ev) => { ev.stopPropagation?.(); toggleSavedEvent(e); }}
                           >
-                            <Text style={[styles.cardActionChipText, saved && styles.cardActionChipTextActive, emojiFontStyle]}>
-                              {saved ? "♥" : "♡"}
-                            </Text>
+                            <Mi
+                              name={saved ? "favorite_fill1" : "favorite"}
+                              size={14}
+                              color={saved ? "#fff" : "#2e4f82"}
+                            />
                           </Pressable>
-                          <Pressable
+                          <Pressable {...PRESSABLE_INSTANT}
                             hitSlop={6}
                             style={styles.cardActionChip}
                             onPress={(ev) => { ev.stopPropagation?.(); shareEvent(e); }}
                           >
-                            <Text style={[styles.cardActionChipText, emojiFontStyle]}>↗</Text>
+                            <Mi name="open_in_new" size={14} color="#2e4f82" />
                           </Pressable>
                           {e.event_uid ? (
-                            <Pressable
+                            <Pressable {...PRESSABLE_INSTANT}
                               hitSlop={6}
                               style={styles.cardActionChip}
                               onPress={(ev) => { ev.stopPropagation?.(); openCalendarExportPicker(e); }}
                             >
-                              <Text style={[styles.cardActionChipText, emojiFontStyle]}>📅</Text>
+                              <Mi name="calendar_today" size={14} color="#2e4f82" />
                             </Pressable>
           ) : null}
                         </View>
@@ -8863,7 +11703,7 @@ function AppInner() {
                 {formatSourceLabel(selectedMasjidProfile)}
               </Text>
             </View>
-            <Pressable style={styles.modalCloseBtn} hitSlop={12} onPress={() => setSelectedMasjidProfile("")}>
+            <Pressable {...PRESSABLE_INSTANT} style={styles.modalCloseBtn} hitSlop={12} onPress={() => setSelectedMasjidProfile("")}>
               <Text style={styles.modalCloseText}>Close</Text>
             </Pressable>
           </View>
@@ -8889,7 +11729,7 @@ function AppInner() {
                     </Text>
                   ) : null}
                   {coord ? (
-                    <Pressable
+                    <Pressable {...PRESSABLE_INSTANT}
                       style={styles.masjidHeroDirectionsBtn}
                       onPress={() =>
                         Linking.openURL(
@@ -8905,25 +11745,84 @@ function AppInner() {
             })()}
 
             <View style={styles.modalActionsRow}>
-              <Pressable style={[styles.modalActionBtn, styles.modalActionBtnPrimary]} onPress={() => toggleFollowMasjid(selectedMasjidProfile)}>
+              <Pressable {...PRESSABLE_INSTANT} style={[styles.modalActionBtn, styles.modalActionBtnPrimary]} onPress={() => toggleFollowMasjid(selectedMasjidProfile)}>
                 <Text style={styles.modalActionBtnText}>
                   {followedMasjids.includes(selectedMasjidProfile) ? "Following masjid" : "Follow masjid"}
                 </Text>
               </Pressable>
               {masjidProfileEvents[0]?.source_url ? (
-                <Pressable style={styles.modalActionBtn} onPress={() => Linking.openURL(masjidProfileEvents[0].source_url)}>
+                <Pressable {...PRESSABLE_INSTANT} style={styles.modalActionBtn} onPress={() => Linking.openURL(masjidProfileEvents[0].source_url)}>
                   <Text style={styles.modalActionBtnText}>Contact / website</Text>
                 </Pressable>
               ) : null}
               {masjidProfileEvents[0]?.map_link ? (
-                <Pressable style={styles.modalActionBtn} onPress={() => Linking.openURL(masjidProfileEvents[0].map_link || "")}>
+                <Pressable {...PRESSABLE_INSTANT} style={styles.modalActionBtn} onPress={() => Linking.openURL(masjidProfileEvents[0].map_link || "")}>
                   <Text style={styles.modalActionBtnText}>Prayer schedule link</Text>
                 </Pressable>
               ) : null}
-              <Pressable style={[styles.modalActionBtn, { backgroundColor: "#eaf7ef" }]} onPress={() => stampPassport(selectedMasjidProfile)}>
+              <Pressable {...PRESSABLE_INSTANT} style={[styles.modalActionBtn, { backgroundColor: "#eaf7ef" }]} onPress={() => stampPassport(selectedMasjidProfile)}>
                 <Text style={[styles.modalActionBtnText, { color: "#1f7a42" }]}>+ Passport stamp</Text>
               </Pressable>
             </View>
+
+            {(() => {
+              // #22 Masjid amenities card — shows the in-masjid facilities
+              // an admin has filled in (basketball court, library, women's
+              // section, etc). Absent sources render nothing instead of a
+              // disappointing "unknown" list.
+              const am = masjidAmenities[(selectedMasjidProfile || "").toLowerCase()];
+              if (!am) return null;
+              const entries = Object.entries(am.amenities || {}).filter(([, v]) => {
+                if (typeof v === "boolean") return v;
+                if (typeof v === "number") return v > 0;
+                if (typeof v === "string") return v && v !== "none";
+                return false;
+              });
+              if (!entries.length && !am.description) return null;
+              const labelize = (k: string) =>
+                k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+              const renderValue = (k: string, v: any) => {
+                if (typeof v === "boolean") return null;
+                if (typeof v === "number") return ` · ${v}`;
+                if (typeof v === "string") return ` · ${v}`;
+                return null;
+              };
+              return (
+                <View style={styles.amenitiesCard}>
+                  <Text style={styles.amenitiesTitle}>Masjid amenities</Text>
+                  {am.description ? (
+                    <Text style={styles.amenitiesBody}>{am.description}</Text>
+                  ) : null}
+                  {entries.length ? (
+                    <View style={styles.amenitiesGrid}>
+                      {entries.map(([k, v]) => (
+                        <View key={`am-${k}`} style={styles.amenitiesChip}>
+                          <Text style={styles.amenitiesChipCheck}>✓</Text>
+                          <Text style={styles.amenitiesChipText}>
+                            {labelize(k)}
+                            {renderValue(k, v) || ""}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  ) : null}
+                  {am.website || am.phone ? (
+                    <View style={styles.amenitiesContactRow}>
+                      {am.website ? (
+                        <Pressable {...PRESSABLE_INSTANT} onPress={() => Linking.openURL(am.website)}>
+                          <Text style={styles.amenitiesContactLink}>Website</Text>
+                        </Pressable>
+                      ) : null}
+                      {am.phone ? (
+                        <Pressable {...PRESSABLE_INSTANT} onPress={() => Linking.openURL(`tel:${am.phone.replace(/[^+0-9]/g, "")}`)}>
+                          <Text style={styles.amenitiesContactLink}>{am.phone}</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })()}
 
             {(() => {
               const iq = iqamaBySource[selectedMasjidProfile] || {};
@@ -8992,7 +11891,7 @@ function AppInner() {
             >
               Moderation Queue
             </Text>
-            <Pressable style={styles.modalCloseBtn} hitSlop={12} onPress={() => setShowModerationQueue(false)}>
+            <Pressable {...PRESSABLE_INSTANT} style={styles.modalCloseBtn} hitSlop={12} onPress={() => setShowModerationQueue(false)}>
               <Text style={styles.modalCloseText}>Close</Text>
             </Pressable>
           </View>
@@ -9017,10 +11916,10 @@ function AppInner() {
                   ) : null}
                 </View>
                 <View style={styles.modalActionsRow}>
-                  <Pressable style={styles.roundGhostBtn} onPress={() => updateModerationReportStatus(Number(r.id), "in_review")}>
+                  <Pressable {...PRESSABLE_INSTANT} style={styles.roundGhostBtn} onPress={() => updateModerationReportStatus(Number(r.id), "in_review")}>
                     <Text style={styles.roundGhostText}>Review</Text>
                   </Pressable>
-                  <Pressable style={styles.roundGhostBtn} onPress={() => updateModerationReportStatus(Number(r.id), "resolved")}>
+                  <Pressable {...PRESSABLE_INSTANT} style={styles.roundGhostBtn} onPress={() => updateModerationReportStatus(Number(r.id), "resolved")}>
                     <Text style={styles.roundGhostText}>Resolve</Text>
                   </Pressable>
                 </View>
@@ -9038,7 +11937,7 @@ function AppInner() {
         onRequestClose={() => setSelectedMasjidSheet("")}
       >
         <View style={styles.bottomSheetBackdrop}>
-          <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setSelectedMasjidSheet("")} />
+          <Pressable {...PRESSABLE_INSTANT} style={StyleSheet.absoluteFillObject} onPress={() => setSelectedMasjidSheet("")} />
           <View
             style={[
               styles.bottomSheetCard,
@@ -9059,10 +11958,10 @@ function AppInner() {
                   {formatSourceLabel(selectedMasjidSheet)}
                 </Text>
                 <Text style={[styles.bottomSheetSub, isDarkTheme && styles.bottomSheetSubDark]}>
-                  {orderedVisibleEvents.filter((ev) => normalizeText(ev.source).toLowerCase() === selectedMasjidSheet.toLowerCase()).length} upcoming event(s)
+                  {(upcomingEventsBySource[selectedMasjidSheet.toLowerCase()] || []).length} upcoming event(s)
                 </Text>
               </View>
-              <Pressable
+              <Pressable {...PRESSABLE_INSTANT}
                 onPress={() => toggleFollowMasjid(selectedMasjidSheet)}
                 hitSlop={8}
                 style={[styles.bottomSheetFollowBtn, followedMasjids.includes(selectedMasjidSheet) && styles.bottomSheetFollowBtnActive]}
@@ -9071,8 +11970,8 @@ function AppInner() {
                   {followedMasjids.includes(selectedMasjidSheet) ? "Following" : "Follow"}
                 </Text>
               </Pressable>
-              <Pressable hitSlop={12} onPress={() => setSelectedMasjidSheet("")} style={styles.bottomSheetCloseBtn}>
-                <Text style={styles.bottomSheetCloseText}>✕</Text>
+              <Pressable {...PRESSABLE_INSTANT} hitSlop={12} onPress={() => setSelectedMasjidSheet("")} style={styles.bottomSheetCloseBtn}>
+                <Mi name="close" size={18} color="#454f63" />
               </Pressable>
             </View>
             <ScrollView
@@ -9085,9 +11984,7 @@ function AppInner() {
                   for. Iqama / prayer-time block renders below so it's
                   still available without burying the upcoming events. */}
               {(() => {
-                const masjidEvents = orderedVisibleEvents.filter(
-                  (ev) => normalizeText(ev.source).toLowerCase() === selectedMasjidSheet.toLowerCase(),
-                );
+                const masjidEvents = upcomingEventsBySource[selectedMasjidSheet.toLowerCase()] || [];
                 if (!masjidEvents.length) {
                   return (
                     <Text style={[styles.bottomSheetSub, { textAlign: "center", marginTop: 24 }, isDarkTheme && styles.bottomSheetSubDark]}>
@@ -9114,9 +12011,9 @@ function AppInner() {
                       contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 8, gap: 16 }}
                     >
                       {masjidEvents.map((ev, idx) => {
-                        const poster = pickPoster(ev.image_urls);
+                        const poster = eventPosterUrl(ev);
                         return (
-                          <Pressable
+                          <Pressable {...PRESSABLE_INSTANT}
                             key={`sheet-poster-${eventStorageKey(ev)}-${idx}`}
                             style={[
                               styles.masjidPosterCard,
@@ -9132,7 +12029,7 @@ function AppInner() {
                               <Image source={{ uri: poster }} style={styles.masjidPosterImage} resizeMode="cover" />
                             ) : (
                               <View style={[styles.masjidPosterImage, styles.masjidPosterImageEmpty]}>
-                                <Text style={[styles.masjidPosterEmptyEmoji, emojiFontStyle]}>🕌</Text>
+                                <Mi name="mosque" size={56} color="#a3b0c8" />
                               </View>
                             )}
                             <View style={styles.masjidPosterCaption}>
@@ -9165,7 +12062,7 @@ function AppInner() {
                       {masjidEvents.map((ev, idx) => {
                         const liveNow = isEventLiveNow(ev);
                         return (
-                          <Pressable
+                          <Pressable {...PRESSABLE_INSTANT}
                             key={`sheet-list-${eventStorageKey(ev)}-${idx}`}
                             style={[styles.sheetEventRow, isDarkTheme && styles.sheetEventRowDark]}
                             onPress={() => {
@@ -9246,7 +12143,7 @@ function AppInner() {
                         Jumu'ah: {jumuah.join("  ·  ")}
                       </Text>
                     ) : null}
-                    <Pressable style={styles.iqamaStampBtn} onPress={() => stampPassport(src)}>
+                    <Pressable {...PRESSABLE_INSTANT} style={styles.iqamaStampBtn} onPress={() => stampPassport(src)}>
                       <Text style={styles.iqamaStampText}>✓ I'm here — stamp passport</Text>
                     </Pressable>
                   </View>
@@ -9346,11 +12243,11 @@ function AppInner() {
                   </Text>
                 </View>
                 {activeFilterCount > 0 ? (
-                  <Pressable onPress={resetAll} hitSlop={10} style={styles.filtersResetPill}>
+                  <Pressable {...PRESSABLE_INSTANT} onPress={resetAll} hitSlop={10} style={styles.filtersResetPill}>
                     <Text style={styles.filtersResetPillText}>Reset</Text>
                   </Pressable>
                 ) : null}
-            <Pressable style={styles.modalCloseBtn} hitSlop={12} onPress={() => setShowExploreFilters(false)}>
+            <Pressable {...PRESSABLE_INSTANT} style={styles.modalCloseBtn} hitSlop={12} onPress={() => setShowExploreFilters(false)}>
               <Text style={styles.modalCloseText}>Done</Text>
             </Pressable>
           </View>
@@ -9378,7 +12275,7 @@ function AppInner() {
                     ].map(([id, label]) => {
                       const active = dateKind === id;
                       return (
-                        <Pressable
+                        <Pressable {...PRESSABLE_INSTANT}
                           key={`when-${id}`}
                           style={[styles.filtersChip, active && styles.filtersChipActive, isDarkTheme && styles.filtersChipDark, active && isDarkTheme && styles.filtersChipActiveDark]}
                           onPress={() => applyDatePreset(id as any)}
@@ -9398,14 +12295,14 @@ function AppInner() {
                   </View>
                   <View style={styles.filtersChipRow}>
                     {([
-                      ["all", "◉  Everyone"],
+                      ["all", "Everyone"],
                       ["brothers", "Brothers"],
                       ["sisters", "Sisters"],
                       ["family", "Family"],
                     ] as const).map(([id, label]) => {
                       const active = audienceFilter === id;
                       return (
-                        <Pressable
+                        <Pressable {...PRESSABLE_INSTANT}
                           key={`aud-${id}`}
                           style={[styles.filtersChip, active && styles.filtersChipActive, isDarkTheme && styles.filtersChipDark, active && isDarkTheme && styles.filtersChipActiveDark]}
                           onPress={() => { setAudienceFilter(id); hapticTap("selection"); }}
@@ -9436,7 +12333,7 @@ function AppInner() {
                     ].map(([id, label]) => {
                       const active = quickFilters.includes(id as QuickFilterId);
                       return (
-                        <Pressable
+                        <Pressable {...PRESSABLE_INSTANT}
                           key={`qp-${id}`}
                           style={[styles.filtersChip, active && styles.filtersChipActive, isDarkTheme && styles.filtersChipDark, active && isDarkTheme && styles.filtersChipActiveDark]}
                           onPress={() => {
@@ -9469,7 +12366,7 @@ function AppInner() {
                     ].map(([id, label]) => {
                       const active = sortMode === id;
                       return (
-                        <Pressable
+                        <Pressable {...PRESSABLE_INSTANT}
                           key={`sort-${id}`}
                           style={[styles.filtersChip, active && styles.filtersChipActive, isDarkTheme && styles.filtersChipDark, active && isDarkTheme && styles.filtersChipActiveDark]}
                           onPress={() => { setSortMode(id as SortMode); hapticTap("selection"); }}
@@ -9499,7 +12396,7 @@ function AppInner() {
                     ].map(([val, label]) => {
                       const active = radius === val;
                       return (
-                        <Pressable
+                        <Pressable {...PRESSABLE_INSTANT}
                           key={`dist-${val}`}
                           style={[styles.filtersChip, active && styles.filtersChipActive, isDarkTheme && styles.filtersChipDark, active && isDarkTheme && styles.filtersChipActiveDark]}
                           onPress={() => { setRadius(val as string); hapticTap("selection"); }}
@@ -9521,7 +12418,7 @@ function AppInner() {
                   </View>
                   <View style={styles.filtersChipRow}>
                     {selectedSources.size > 0 ? (
-                      <Pressable
+                      <Pressable {...PRESSABLE_INSTANT}
                         style={[styles.filtersChip, styles.filtersChipGhost, isDarkTheme && styles.filtersChipDark]}
                         onPress={() => { setSelectedSources(new Set()); hapticTap("selection"); }}
                       >
@@ -9531,7 +12428,7 @@ function AppInner() {
                     {(meta?.sources || []).map((src) => {
                       const active = selectedSources.has(src);
                       return (
-                        <Pressable
+                        <Pressable {...PRESSABLE_INSTANT}
                           key={`msj-${src}`}
                           onPress={() => { toggleSource(src); hapticTap("selection"); }}
                           style={[styles.filtersChip, active && styles.filtersChipActive, isDarkTheme && styles.filtersChipDark, active && isDarkTheme && styles.filtersChipActiveDark]}
@@ -9600,12 +12497,12 @@ function AppInner() {
                     </View>
                     <View style={styles.filtersChipRow}>
                       {savedFilterPresets.map((preset) => (
-                        <Pressable
+                        <Pressable {...PRESSABLE_INSTANT}
                           key={`preset-${preset.id}`}
                           style={[styles.filtersChip, isDarkTheme && styles.filtersChipDark]}
                           onPress={() => { applyPreset(preset); hapticTap("selection"); }}
                         >
-                          <Text style={[styles.filtersChipText, isDarkTheme && styles.filtersChipTextDark]}>◷  {preset.label}</Text>
+                          <Text style={[styles.filtersChipText, isDarkTheme && styles.filtersChipTextDark]}>{preset.label}</Text>
                         </Pressable>
                       ))}
                     </View>
@@ -9624,18 +12521,18 @@ function AppInner() {
                       placeholder="Preset name"
                       placeholderTextColor={isDarkTheme ? "#5a6a8a" : "#a0a9bd"}
                     />
-                    <Pressable style={styles.filtersSavePresetBtn} onPress={saveCurrentPreset}>
+                    <Pressable {...PRESSABLE_INSTANT} style={styles.filtersSavePresetBtn} onPress={saveCurrentPreset}>
                       <Text style={styles.filtersSavePresetText}>{editingPresetId ? "Update" : "Save"}</Text>
               </Pressable>
               {editingPresetId ? (
-                <Pressable
+                <Pressable {...PRESSABLE_INSTANT}
                         style={[styles.filtersChip, styles.filtersChipGhost]}
                   onPress={() => {
                     setEditingPresetId("");
                     setPresetDraftLabel("");
                   }}
                 >
-                        <Text style={[styles.filtersChipText, styles.filtersChipGhostText]}>✕</Text>
+                        <Mi name="close" size={14} color="#c94620" />
                 </Pressable>
               ) : null}
             </View>
@@ -9644,7 +12541,7 @@ function AppInner() {
 
               {/* Sticky apply bar */}
               <View style={[styles.filtersStickyApplyWrap, { paddingBottom: insets.bottom + 12 }, isDarkTheme && styles.filtersStickyApplyWrapDark]}>
-                <Pressable
+                <Pressable {...PRESSABLE_INSTANT}
                   style={styles.filtersApplyBtn}
                   onPress={() => {
                     loadEvents({ force: true });
@@ -9672,7 +12569,7 @@ function AppInner() {
         <View style={[styles.modalContainer, isDarkTheme && styles.modalContainerMidnight, { flex: 1, paddingTop: modalChromeTopPad }]}>
           <View style={[styles.modalTop, isDarkTheme && styles.modalTopMidnight]}>
             <Text style={[styles.modalTitle, isDarkTheme && styles.modalTitleMidnight]} numberOfLines={1}>Privacy policy</Text>
-            <Pressable style={styles.modalCloseBtn} hitSlop={12} onPress={() => setShowPrivacyPolicy(false)}>
+            <Pressable {...PRESSABLE_INSTANT} style={styles.modalCloseBtn} hitSlop={12} onPress={() => setShowPrivacyPolicy(false)}>
               <Text style={styles.modalCloseText}>Close</Text>
             </Pressable>
           </View>
@@ -9684,7 +12581,7 @@ function AppInner() {
             <Text style={[styles.legalUpdated, isDarkTheme && { color: "#9db0db" }]}>Last updated: April 21, 2026</Text>
 
             <Text style={[styles.legalIntro, isDarkTheme && { color: "#c4cee8" }]}>
-              Masjidly is a tool to help you find and attend events at local masjids. We built it with
+              Masjid.ly is a tool to help you find and attend events at local masjids. We built it with
               the same adab we'd want from any service touching our community — collect only what's
               needed, never sell your data, and give you plain-English control.
             </Text>
@@ -9746,7 +12643,7 @@ function AppInner() {
 
             <Text style={[styles.legalSectionTitle, isDarkTheme && { color: "#f4f7ff" }]}>Children</Text>
             <Text style={[styles.legalBody, isDarkTheme && { color: "#c4cee8" }]}>
-              Masjidly is intended for users age 13 and up. We don't knowingly collect data from anyone
+              Masjid.ly is intended for users age 13 and up. We don't knowingly collect data from anyone
               under 13. If you think a child has provided information, email us and we'll delete it.
             </Text>
 
@@ -9757,7 +12654,7 @@ function AppInner() {
             </Text>
 
             <Text style={[styles.legalSectionTitle, isDarkTheme && { color: "#f4f7ff" }]}>Contact</Text>
-            <Pressable onPress={() => Linking.openURL("mailto:hello@masjidly.app?subject=Masjidly%20privacy")}>
+            <Pressable {...PRESSABLE_INSTANT} onPress={() => Linking.openURL("mailto:hello@masjidly.app?subject=Masjid.ly%20privacy")}>
               <Text style={[styles.legalBody, { color: "#2e4f82", fontWeight: "700" }]}>
                 hello@masjidly.app
               </Text>
@@ -9776,7 +12673,7 @@ function AppInner() {
         <View style={[styles.modalContainer, isDarkTheme && styles.modalContainerMidnight, { flex: 1, paddingTop: modalChromeTopPad }]}>
           <View style={[styles.modalTop, isDarkTheme && styles.modalTopMidnight]}>
             <Text style={[styles.modalTitle, isDarkTheme && styles.modalTitleMidnight]} numberOfLines={1}>Terms of use</Text>
-            <Pressable style={styles.modalCloseBtn} hitSlop={12} onPress={() => setShowTermsOfUse(false)}>
+            <Pressable {...PRESSABLE_INSTANT} style={styles.modalCloseBtn} hitSlop={12} onPress={() => setShowTermsOfUse(false)}>
               <Text style={styles.modalCloseText}>Close</Text>
             </Pressable>
           </View>
@@ -9788,13 +12685,13 @@ function AppInner() {
             <Text style={[styles.legalUpdated, isDarkTheme && { color: "#9db0db" }]}>Last updated: April 21, 2026</Text>
 
             <Text style={[styles.legalIntro, isDarkTheme && { color: "#c4cee8" }]}>
-              By using Masjidly, you agree to the following. Most of it is common sense — we're including
+              By using Masjid.ly, you agree to the following. Most of it is common sense — we're including
               it so everyone's clear.
             </Text>
 
             <Text style={[styles.legalSectionTitle, isDarkTheme && { color: "#f4f7ff" }]}>The service</Text>
             <Text style={[styles.legalBody, isDarkTheme && { color: "#c4cee8" }]}>
-              Masjidly aggregates publicly-posted event information from masjids, Islamic centers, and
+              Masjid.ly aggregates publicly-posted event information from masjids, Islamic centers, and
               scholars in New Jersey and nearby areas. We do our best to keep it accurate, but event
               details (times, speakers, topics) are set by the masjid, not by us. <Text style={styles.legalBold}>Always
               confirm with the masjid before travelling.</Text>
@@ -9809,7 +12706,7 @@ function AppInner() {
 
             <Text style={[styles.legalSectionTitle, isDarkTheme && { color: "#f4f7ff" }]}>Conduct</Text>
             <Text style={[styles.legalBody, isDarkTheme && { color: "#c4cee8" }]}>
-              Masjidly is a tool for the community. Don't use it to harass, impersonate, spam, or scrape
+              Masjid.ly is a tool for the community. Don't use it to harass, impersonate, spam, or scrape
               in a way that burdens our servers. Don't use the app to attend a masjid and misbehave —
               that's between you and Allah, but reflect on it.
             </Text>
@@ -9834,7 +12731,7 @@ function AppInner() {
             </Text>
 
             <Text style={[styles.legalSectionTitle, isDarkTheme && { color: "#f4f7ff" }]}>Contact</Text>
-            <Pressable onPress={() => Linking.openURL("mailto:hello@masjidly.app?subject=Masjidly%20terms")}>
+            <Pressable {...PRESSABLE_INSTANT} onPress={() => Linking.openURL("mailto:hello@masjidly.app?subject=Masjid.ly%20terms")}>
               <Text style={[styles.legalBody, { color: "#2e4f82", fontWeight: "700" }]}>
                 hello@masjidly.app
               </Text>
@@ -9852,8 +12749,8 @@ function AppInner() {
       >
         <View style={[styles.modalContainer, isDarkTheme && styles.modalContainerMidnight, { flex: 1, paddingTop: 14 }]}>
           <View style={[styles.modalTop, isDarkTheme && styles.modalTopMidnight]}>
-            <Text style={[styles.modalTitle, isDarkTheme && styles.modalTitleMidnight]} numberOfLines={1}>About Masjidly</Text>
-            <Pressable style={styles.modalCloseBtn} hitSlop={12} onPress={() => setShowAboutPanel(false)}>
+            <Text style={[styles.modalTitle, isDarkTheme && styles.modalTitleMidnight]} numberOfLines={1}>About Masjid.ly</Text>
+            <Pressable {...PRESSABLE_INSTANT} style={styles.modalCloseBtn} hitSlop={12} onPress={() => setShowAboutPanel(false)}>
               <Text style={styles.modalCloseText}>Close</Text>
             </Pressable>
           </View>
@@ -9863,42 +12760,42 @@ function AppInner() {
             showsVerticalScrollIndicator={false}
           >
             <Image source={require("./assets/masjidly-logo.png")} style={{ width: 84, height: 84, borderRadius: 20 }} />
-            <Text style={[styles.aboutAppName, isDarkTheme && { color: "#f4f7ff" }]}>Masjidly</Text>
+            <Text style={[styles.aboutAppName, isDarkTheme && { color: "#f4f7ff" }]}>Masjid.ly</Text>
             <Text style={[styles.aboutVersion, isDarkTheme && { color: "#9db0db" }]}>Version {APP_BUILD_VERSION}</Text>
             <Text style={[styles.aboutTagline, isDarkTheme && { color: "#c4cee8" }]}>
               Every halaqah, talk, and class at your local masjids — in one place.
             </Text>
             <View style={[styles.settingsSectionCard, isDarkTheme && styles.settingsSectionCardDark, { width: "100%", marginTop: 12 }]}>
-              <Pressable
+              <Pressable {...PRESSABLE_INSTANT}
                 style={[styles.settingsRow, isDarkTheme && styles.settingsRowDark]}
                 onPress={() => Linking.openURL("mailto:hello@masjidly.app")}
               >
                 <View style={[styles.settingsRowIcon, isDarkTheme && styles.settingsRowIconDark]}>
-                  <Text style={styles.settingsRowIconText}>✉</Text>
+                  <Mi name="mail" size={20} color={isDarkTheme ? "#e8ecf4" : "#273143"} />
                 </View>
                 <Text style={[styles.settingsRowLabel, isDarkTheme && { color: "#f4f7ff" }]}>hello@masjidly.app</Text>
               </Pressable>
-              <Pressable
+              <Pressable {...PRESSABLE_INSTANT}
                 style={[styles.settingsRow, isDarkTheme && styles.settingsRowDark]}
                 onPress={() => Linking.openURL("https://ko-fi.com/shaheer23407")}
               >
                 <View style={[styles.settingsRowIcon, isDarkTheme && styles.settingsRowIconDark]}>
-                  <Text style={styles.settingsRowIconText}>♥</Text>
+                  <Mi name="favorite_fill1" size={20} color={isDarkTheme ? "#ff7a9c" : "#c94660"} />
                 </View>
                 <Text style={[styles.settingsRowLabel, isDarkTheme && { color: "#f4f7ff" }]}>Support the project</Text>
               </Pressable>
-              <Pressable
+              <Pressable {...PRESSABLE_INSTANT}
                 style={[styles.settingsRow, styles.settingsRowLast, isDarkTheme && styles.settingsRowDark]}
                 onPress={() => { setShowAboutPanel(false); setTimeout(() => setShowPrivacyPolicy(true), 250); }}
               >
                 <View style={[styles.settingsRowIcon, isDarkTheme && styles.settingsRowIconDark]}>
-                  <Text style={styles.settingsRowIconText}>◇</Text>
+                  <Mi name="info" size={20} color={isDarkTheme ? "#e8ecf4" : "#273143"} />
                 </View>
                 <Text style={[styles.settingsRowLabel, isDarkTheme && { color: "#f4f7ff" }]}>Privacy policy</Text>
               </Pressable>
             </View>
             <Text style={[styles.aboutFooter, isDarkTheme && { color: "#6b778c" }]}>
-              Built with ♥ by one brother for the ummah.{"\n"}
+              Built with love by one brother for the ummah.{"\n"}
               Jazakum Allahu khayran for using it.
             </Text>
           </ScrollView>
@@ -9913,7 +12810,7 @@ function AppInner() {
         onRequestClose={() => setReflectionState(null)}
       >
         <View style={styles.bottomSheetBackdrop}>
-          <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setReflectionState(null)} />
+          <Pressable {...PRESSABLE_INSTANT} style={StyleSheet.absoluteFillObject} onPress={() => setReflectionState(null)} />
           <View style={[styles.bottomSheetCard, { paddingBottom: insets.bottom + 24 }]}>
             <View style={styles.bottomSheetHandle} />
             <Text style={[styles.bottomSheetTitle, { marginHorizontal: 16 }]}>
@@ -9924,7 +12821,7 @@ function AppInner() {
             </Text>
             <View style={{ flexDirection: "row", gap: 6, marginHorizontal: 16 }}>
               {[1, 2, 3, 4, 5].map((n) => (
-                <Pressable
+                <Pressable {...PRESSABLE_INSTANT}
                   key={n}
                   onPress={() =>
                     setReflectionState((s) => (s ? { ...s, rating: n } : s))
@@ -9934,9 +12831,11 @@ function AppInner() {
                     (reflectionState?.rating || 0) >= n && styles.reflectStarActive,
                   ]}
                 >
-                  <Text style={[styles.reflectStarText, (reflectionState?.rating || 0) >= n && styles.reflectStarTextActive]}>
-                    ★
-                  </Text>
+                  <Mi
+                    name={(reflectionState?.rating || 0) >= n ? "star_fill1" : "star"}
+                    size={22}
+                    color={(reflectionState?.rating || 0) >= n ? "#8a5c00" : "#b6c0d6"}
+                  />
                 </Pressable>
               ))}
             </View>
@@ -9950,10 +12849,10 @@ function AppInner() {
               }
             />
             <View style={{ flexDirection: "row", gap: 8, marginHorizontal: 16, marginTop: 12 }}>
-              <Pressable style={[styles.modalActionBtn, { flex: 1 }]} onPress={() => setReflectionState(null)}>
+              <Pressable {...PRESSABLE_INSTANT} style={[styles.modalActionBtn, { flex: 1 }]} onPress={() => setReflectionState(null)}>
                 <Text style={styles.modalActionBtnText}>Cancel</Text>
               </Pressable>
-              <Pressable
+              <Pressable {...PRESSABLE_INSTANT}
                 style={[styles.modalActionBtn, styles.modalActionBtnPrimary, { flex: 1 }]}
                 onPress={submitReflection}
               >
@@ -9975,7 +12874,7 @@ function AppInner() {
         <View style={[styles.modalContainer, { flex: 1, paddingTop: modalChromeTopPad }]}>
           <View style={styles.modalTop}>
             <Text style={styles.modalTitle} numberOfLines={1}>Masjid Passport</Text>
-            <Pressable style={styles.modalCloseBtn} hitSlop={12} onPress={() => setPassportOpen(false)}>
+            <Pressable {...PRESSABLE_INSTANT} style={styles.modalCloseBtn} hitSlop={12} onPress={() => setPassportOpen(false)}>
               <Text style={styles.modalCloseText}>Close</Text>
             </Pressable>
           </View>
@@ -9998,7 +12897,7 @@ function AppInner() {
                 onChangeText={setQrEntryBuffer}
                 autoCapitalize="none"
               />
-              <Pressable
+              <Pressable {...PRESSABLE_INSTANT}
                 style={[styles.modalActionBtn, styles.modalActionBtnPrimary]}
                 onPress={() => {
                   const code = qrEntryBuffer.trim().toLowerCase();
@@ -10016,7 +12915,7 @@ function AppInner() {
               {meta?.sources.map((src) => {
                 const has = passportStamps.some((s) => s.source === src);
                 return (
-                  <Pressable
+                  <Pressable {...PRESSABLE_INSTANT}
                     key={`pp-${src}`}
                     style={[styles.passportStampCell, has && styles.passportStampCellDone]}
                     onPress={() => setSelectedMasjidProfile(src)}
@@ -10055,7 +12954,7 @@ function AppInner() {
                 </Text>
               ) : null}
             </View>
-            <Pressable
+            <Pressable {...PRESSABLE_INSTANT}
               style={styles.modalCloseBtn}
               hitSlop={12}
               onPress={() => setCollectionPreview(null)}
@@ -10074,10 +12973,10 @@ function AppInner() {
                   {collectionPreview.events.length === 1 ? "" : "s"} match
                 </Text>
                 {collectionPreview.events.map((e, i) => {
-                  const poster = pickPoster(e.image_urls);
+                  const poster = eventPosterUrl(e);
                   const saved = isSavedEvent(e);
                   return (
-                    <Pressable
+                    <Pressable {...PRESSABLE_INSTANT}
                       key={`coll-ev-${i}-${eventStorageKey(e)}`}
                       style={({ pressed }) => [
                         styles.discoverFollowedScholarsRow,
@@ -10115,7 +13014,7 @@ function AppInner() {
                         {formatHumanDate(e.date)} · {eventTime(e)}
                       </Text>
                       <View style={{ flexDirection: "row", gap: 8, marginTop: 4 }}>
-                        <Pressable
+                        <Pressable {...PRESSABLE_INSTANT}
                           hitSlop={6}
                           onPress={(ev) => {
                             ev.stopPropagation?.();
@@ -10125,10 +13024,16 @@ function AppInner() {
                             styles.cardActionChip,
                             saved && styles.cardActionChipActive,
                             pressed && styles.cardActionChipPressed,
+                            { flexDirection: "row", alignItems: "center", gap: 4 },
                           ]}
                         >
-                          <Text style={[styles.cardActionChipText, saved && styles.cardActionChipTextActive, emojiFontStyle]}>
-                            {saved ? "♥ Saved" : "♡ Save"}
+                          <Mi
+                            name={saved ? "favorite_fill1" : "favorite"}
+                            size={12}
+                            color={saved ? "#fff" : "#2e4f82"}
+                          />
+                          <Text style={[styles.cardActionChipText, saved && styles.cardActionChipTextActive]}>
+                            {saved ? "Saved" : "Save"}
                           </Text>
                         </Pressable>
                       </View>
@@ -10136,7 +13041,7 @@ function AppInner() {
                   );
                 })}
                 {collectionPreview.exploreHandoff ? (
-                  <Pressable
+                  <Pressable {...PRESSABLE_INSTANT}
                     style={[styles.sadaqahBtn, { marginTop: 12 }]}
                     onPress={() => {
                       const handoff = collectionPreview.exploreHandoff!;
@@ -10185,14 +13090,17 @@ function AppInner() {
             >
               <View style={{ flex: 1 }}>
                 <Text style={styles.knowledgePlanModalKicker}>AI learning plan</Text>
-                <Text style={styles.knowledgePlanModalTitle} numberOfLines={2}>
-                  {knowledgePlanPreview.emoji}  {knowledgePlanPreview.title}
-                </Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 }}>
+                  <Mi name={knowledgePlanPreview.mi} size={22} color="#ffffff" />
+                  <Text style={styles.knowledgePlanModalTitle} numberOfLines={2}>
+                    {knowledgePlanPreview.title}
+                  </Text>
+                </View>
                 <Text style={styles.knowledgePlanModalSub} numberOfLines={3}>
                   {knowledgePlanPreview.sub}
                 </Text>
               </View>
-              <Pressable
+              <Pressable {...PRESSABLE_INSTANT}
                 hitSlop={14}
                 onPress={() => setKnowledgePlanPreview(null)}
                 style={styles.knowledgePlanModalClose}
@@ -10215,11 +13123,11 @@ function AppInner() {
               </View>
 
               {knowledgePlanPreview.events.map((e, idx) => {
-                const poster = pickPoster(e.image_urls);
+                const poster = eventPosterUrl(e);
                 const saved = isSavedEvent(e);
                 const rsvpState = rsvpStatuses[eventStorageKey(e)];
                 return (
-                  <Pressable
+                  <Pressable {...PRESSABLE_INSTANT}
                     key={`plan-ev-${idx}-${eventStorageKey(e)}`}
                     onPress={() => {
                       setKnowledgePlanPreview(null);
@@ -10242,7 +13150,7 @@ function AppInner() {
                         {e.speaker ? ` · ${e.speaker}` : ""}
                       </Text>
                       <View style={styles.cardActionRow}>
-                        <Pressable
+                        <Pressable {...PRESSABLE_INSTANT}
                           hitSlop={6}
                           onPress={(ev) => {
                             ev.stopPropagation?.();
@@ -10258,7 +13166,7 @@ function AppInner() {
                             {rsvpState === "going" ? "Going ✓" : "Going"}
                           </Text>
                         </Pressable>
-                        <Pressable
+                        <Pressable {...PRESSABLE_INSTANT}
                           hitSlop={6}
                           onPress={(ev) => {
                             ev.stopPropagation?.();
@@ -10268,16 +13176,22 @@ function AppInner() {
                             styles.cardActionChip,
                             saved && styles.cardActionChipActive,
                             pressed && styles.cardActionChipPressed,
+                            { flexDirection: "row", alignItems: "center", gap: 4 },
                           ]}
                         >
-                          <Text style={[styles.cardActionChipText, saved && styles.cardActionChipTextActive, emojiFontStyle]}>
-                            {saved ? "♥ Saved" : "♡ Save"}
+                          <Mi
+                            name={saved ? "favorite_fill1" : "favorite"}
+                            size={12}
+                            color={saved ? "#fff" : "#2e4f82"}
+                          />
+                          <Text style={[styles.cardActionChipText, saved && styles.cardActionChipTextActive]}>
+                            {saved ? "Saved" : "Save"}
                           </Text>
                         </Pressable>
                       </View>
                     </View>
                     {poster ? (
-                      <Image source={{ uri: poster }} style={styles.knowledgePlanStepPoster} />
+                      <Image source={{ uri: poster }} style={styles.knowledgePlanStepPoster} resizeMode="cover" />
                     ) : (
                       <View style={[styles.knowledgePlanStepPoster, { alignItems: "center", justifyContent: "center", backgroundColor: masjidBrandColor(e.source) }]}>
                         <Text style={{ color: "#fff", fontWeight: "900" }}>{masjidInitials(e.source)}</Text>
@@ -10287,7 +13201,7 @@ function AppInner() {
                 );
               })}
 
-              <Pressable
+              <Pressable {...PRESSABLE_INSTANT}
                 style={[styles.sadaqahBtn, { backgroundColor: knowledgePlanPreview.color }]}
                 onPress={() => {
                   // Batch all plan events into Saved in one state update so
@@ -10336,7 +13250,7 @@ function AppInner() {
             <Text style={styles.modalTitle} numberOfLines={1}>
               {selectedSpeaker ? speakers.find((s) => s.slug === selectedSpeaker)?.name || "Scholar" : "Scholars & Speakers"}
             </Text>
-            <Pressable
+            <Pressable {...PRESSABLE_INSTANT}
               style={styles.modalCloseBtn}
               hitSlop={12}
               onPress={() => {
@@ -10361,7 +13275,7 @@ function AppInner() {
                   : (() => {
                       const agg = new Map<string, Speaker>();
                       for (const ev of orderedVisibleEvents) {
-                        const raw = (ev.speaker || "").trim();
+                        const raw = effectiveEventSpeakerName(ev).trim();
                         if (!raw) continue;
                         const slug = raw.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
                         if (!slug) continue;
@@ -10374,6 +13288,8 @@ function AppInner() {
                           cur.next_title = ev.title;
                           cur.next_date = ev.date || null;
                         }
+                        const evPoster = eventPosterUrl(ev);
+                        if (!cur.image_url && evPoster) cur.image_url = evPoster;
                         agg.set(slug, cur);
                       }
                       return [...agg.values()]
@@ -10386,7 +13302,7 @@ function AppInner() {
                       <Text style={[styles.bottomSheetSub, { textAlign: "center" }]}>
                         Your scholar directory is warming up. Pull down to refresh, or try a wider radius in Explore.
                       </Text>
-                      <Pressable
+                      <Pressable {...PRESSABLE_INSTANT}
                         onPress={() => { hapticTap("selection"); loadSpeakers(); }}
                         style={({ pressed }) => [styles.bottomSheetFollowBtn, pressed && styles.cardActionChipPressed]}
                       >
@@ -10396,13 +13312,13 @@ function AppInner() {
                   );
                 }
                 return list.slice(0, 80).map((sp) => (
-                  <Pressable
+                  <Pressable {...PRESSABLE_INSTANT}
                     key={`sp-${sp.slug}`}
                     style={({ pressed }) => [styles.scholarCard, pressed && styles.cardActionChipPressed]}
                     onPress={() => { hapticTap("selection"); setSelectedSpeaker(sp.slug); }}
                   >
                     {sp.image_url ? (
-                      <Image source={{ uri: sp.image_url }} style={styles.scholarAvatar} />
+                      <Image source={{ uri: sp.image_url }} style={styles.scholarAvatar} resizeMode="cover" />
                     ) : (
                       <View style={[styles.scholarAvatar, { backgroundColor: "#eef2fa", justifyContent: "center", alignItems: "center" }]}>
                         <Text style={{ fontWeight: "800", color: "#5b6a88" }}>{sp.name.split(" ").map((p) => p[0]).slice(0, 2).join("")}</Text>
@@ -10424,7 +13340,7 @@ function AppInner() {
               (() => {
                 const upcomingMatches = orderedVisibleEvents.filter(
                   (ev) =>
-                    (ev.speaker || "")
+                    effectiveEventSpeakerName(ev)
                       .toLowerCase()
                       .replace(/[^a-z0-9]+/g, "-")
                       .replace(/^-+|-+$/g, "") === selectedSpeaker
@@ -10433,13 +13349,15 @@ function AppInner() {
                   || (upcomingMatches.length
                     ? {
                         slug: selectedSpeaker,
-                        name: upcomingMatches[0].speaker || selectedSpeaker,
+                        name: effectiveEventSpeakerName(upcomingMatches[0]) || selectedSpeaker,
                         total_events: upcomingMatches.length,
                         upcoming_events: upcomingMatches.filter((e) => (e.date || "") >= today && !isEventPastNow(e)).length,
                         sources: Array.from(new Set(upcomingMatches.map((e) => normalizeText(e.source)).filter(Boolean))),
                       } as Speaker
                     : null);
                 if (!sp) return null;
+                const videoState = speakerVideos[selectedSpeaker] || { videos: [], loading: false };
+                const videos = videoState.videos;
                 return (
                   <>
                     <View style={styles.scholarHero}>
@@ -10456,6 +13374,45 @@ function AppInner() {
                     ) : (
                       <Text style={styles.bottomSheetSub}>No upcoming talks matching the active filters.</Text>
                     )}
+                    <View style={styles.pastTalksHeaderRow}>
+                      <Text style={styles.pastTalksHeader}>Past talks on YouTube</Text>
+                      {videoState.loading ? (
+                        <ActivityIndicator size="small" color="#4a3bb0" />
+                      ) : null}
+                    </View>
+                    {!videoState.loading && videos.length === 0 ? (
+                      <Text style={styles.bottomSheetSub}>
+                        {videoState.status === "offline"
+                          ? "Couldn't reach YouTube — try again in a bit."
+                          : "No lectures found yet. We'll try again next time the directory syncs."}
+                      </Text>
+                    ) : null}
+                    {videos.slice(0, 12).map((v) => (
+                      <Pressable {...PRESSABLE_INSTANT}
+                        key={`yt-${v.video_id}`}
+                        style={({ pressed }) => [styles.videoCard, pressed && styles.cardActionChipPressed]}
+                        onPress={() => {
+                          hapticTap("selection");
+                          Linking.openURL(v.url);
+                        }}
+                      >
+                        {v.thumbnail_url ? (
+                          <Image source={{ uri: v.thumbnail_url }} style={styles.videoThumb} />
+                        ) : (
+                          <View style={[styles.videoThumb, { backgroundColor: "#16131f", justifyContent: "center", alignItems: "center" }]}>
+                            <Mi name="play_arrow" size={24} color="#ff4b4b" />
+                          </View>
+                        )}
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.videoTitle} numberOfLines={2}>{v.title}</Text>
+                          <Text style={styles.videoMeta} numberOfLines={1}>
+                            {v.channel || "YouTube"}
+                            {v.duration_label ? ` · ${v.duration_label}` : ""}
+                            {v.published_at ? ` · ${v.published_at}` : ""}
+                          </Text>
+                        </View>
+                      </Pressable>
+                    ))}
                   </>
                 );
               })()
@@ -10485,15 +13442,16 @@ function AppInner() {
         pointerEvents="box-none"
       >
         <Pressable
+          {...PRESSABLE_INSTANT}
           accessibilityRole="button"
-          accessibilityLabel="Open Masjidly assistant"
+          accessibilityLabel="Open Masjid.ly assistant"
           onPress={() => {
             hapticTap("selection");
             if (chatMessages.length === 0) {
               setChatMessages([
                 {
                   role: "bot",
-                  text: "As-salāmu ʿalaykum! Ask me about events — \"what's tonight?\", \"sisters this week\", \"closest event\", or a scholar's name.",
+                  text: "As-salāmu ʿalaykum! Ask me anything: dates, topics, sisters/brothers/family, scholar names, masjid names, closest events, free events, livestreams, or \"who made this app?\"",
                   ts: Date.now(),
                 },
               ]);
@@ -10507,10 +13465,298 @@ function AppInner() {
           }}
           style={({ pressed }) => [styles.floatingSpriteBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.95 }] }]}
         >
-          <View style={styles.floatingSpriteHalo} />
+          <Animated.View
+            style={[
+              styles.floatingSpriteHalo,
+              {
+                opacity: floatingSpriteHaloPulse.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0.42, 0.92],
+                }),
+                transform: [
+                  {
+                    scale: floatingSpriteHaloPulse.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0.88, 1.14],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          />
           {renderPixelSprite(undefined, 38, "avatar")}
         </Pressable>
       </Animated.View>
+
+      <Modal
+        visible={feedSetupOpen}
+        animationType="fade"
+        transparent
+        statusBarTranslucent
+        onRequestClose={() => {
+          if (feedSetupDone) setFeedSetupOpen(false);
+        }}
+      >
+        <View style={styles.feedSetupBackdrop}>
+          <View style={[styles.feedSetupCard, isDarkTheme && styles.feedSetupCardDark]}>
+            {feedSetupStep === 3 ? (
+              <View style={[styles.feedBuildWrap, { paddingVertical: 24 }]}>
+                {feedBuildPhase === "success" ? (
+                  <Animated.View
+                    style={[
+                      styles.feedBuildSuccessCard,
+                      isDarkTheme && styles.feedBuildSuccessCardDark,
+                      { transform: [{ scale: feedBuildSuccessScale }], shadowOpacity: 0 },
+                    ]}
+                  >
+                    <View style={styles.feedBuildSuccessBadge}>
+                      <Mi name="check" size={48} color="#ffffff" />
+                    </View>
+                    <Text style={[styles.feedBuildTitle, isDarkTheme && styles.feedBuildTitleDark]}>
+                      Your feed is ready
+                    </Text>
+                  </Animated.View>
+                ) : (
+                  <View style={[styles.feedBuildCard, isDarkTheme && styles.feedBuildCardDark, { shadowOpacity: 0 }]}>
+                    <Animated.View
+                      style={[
+                        styles.feedBuildGifWrap,
+                        {
+                          transform: [
+                            {
+                              rotate: feedBuildHammerTilt.interpolate({
+                                inputRange: [-1, 0, 1],
+                                outputRange: ["-2.5deg", "0deg", "2.5deg"],
+                              }),
+                            },
+                          ],
+                        },
+                      ]}
+                    >
+                      <Image source={FEED_BUILDING_CAT} style={styles.feedBuildGif} resizeMode="cover" />
+                    </Animated.View>
+                    <Text style={[styles.feedBuildTitle, isDarkTheme && styles.feedBuildTitleDark]}>
+                      Building your feed
+                    </Text>
+                    <Text style={[styles.feedBuildSub, isDarkTheme && styles.feedBuildSubDark]}>
+                      Our hard workers are working.
+                    </Text>
+                    <View style={[styles.feedBuildBarTrack, isDarkTheme && styles.feedBuildBarTrackDark]}>
+                      <Animated.View
+                        style={[
+                          styles.feedBuildBarFill,
+                          {
+                            width: feedBuildProgress.interpolate({
+                              inputRange: [0, 1],
+                              outputRange: ["0%", "100%"],
+                            }),
+                          },
+                        ]}
+                      />
+                    </View>
+                  </View>
+                )}
+              </View>
+            ) : (
+              <>
+                <ScrollView
+                  style={styles.feedSetupScroll}
+                  contentContainerStyle={styles.feedSetupScrollContent}
+                  showsVerticalScrollIndicator
+                  keyboardShouldPersistTaps="handled"
+                  nestedScrollEnabled
+                  {...IOS_SCROLL_INSTANT_TOUCH}
+                >
+                  <Text
+                    style={[
+                      styles.feedWizardExplainer,
+                      isDarkTheme && styles.feedWizardExplainerDark,
+                      isNeo && styles.feedWizardExplainerNeo,
+                      isEmerald && styles.feedWizardExplainerEmerald,
+                      isInferno && styles.feedWizardExplainerInferno,
+                      isVitaria && styles.feedWizardExplainerVitaria,
+                    ]}
+                  >
+                    {feedSetupDone
+                      ? "Your feed ranks upcoming programs from what you pick below, plus your saves and RSVPs. Scroll through every option; Next moves between steps; changes save when you finish."
+                      : "Your feed is your personalized stream: masjids and speakers you follow, topics you care about, plus saves and RSVPs. Select below and scroll to see every choice."}
+                  </Text>
+                  <View style={[styles.feedSetupHeader, { borderBottomWidth: 0, paddingTop: 6, paddingBottom: 6 }]}>
+                    <View style={styles.feedSetupHeaderTop}>
+                      <Text style={[styles.feedSetupStepPill, isDarkTheme && styles.feedSetupStepPillDark]}>
+                        Step {feedSetupStep + 1} of 3
+                      </Text>
+                      <Pressable
+                        {...PRESSABLE_INSTANT}
+                        style={styles.feedSetupCloseBtn}
+                        onPress={() => {
+                          if (feedSetupDone) {
+                            setFeedSetupOpen(false);
+                            setFeedSetupStep(0);
+                            setFeedSetupApplying(false);
+                            return;
+                          }
+                          Alert.alert(
+                            "Finish feed setup?",
+                            "Complete this one-time setup now, or continue later from Settings.",
+                            [
+                              { text: "Keep going", style: "cancel" },
+                              {
+                                text: "Continue later",
+                                onPress: () => {
+                                  setFeedSetupOpen(false);
+                                  setFeedSetupStep(0);
+                                  setFeedSetupApplying(false);
+                                },
+                              },
+                            ]
+                          );
+                        }}
+                      >
+                        <Mi name="close" size={13} color="#5f7395" />
+                      </Pressable>
+                    </View>
+                    <Text style={[styles.feedSetupTitle, isDarkTheme && styles.feedSetupTitleDark]}>
+                      {feedSetupStep === 0
+                        ? "Which masjids do you want to follow?"
+                        : feedSetupStep === 1
+                          ? "Which speakers do you want in your feed?"
+                          : "Pick topics for your feed"}
+                    </Text>
+                    <Text style={[styles.feedSetupSub, isDarkTheme && styles.feedSetupSubDark]}>
+                      {feedSetupStep === 0
+                        ? "Tap to select masjids. You can change this anytime in Settings."
+                        : feedSetupStep === 1
+                          ? "Choose speakers and we'll prioritize their upcoming events."
+                          : "Select what you care about most. This powers recommendations."}
+                    </Text>
+                  </View>
+
+                  {feedSetupStep === 0
+                    ? feedSetupMasjidOptions.map((source) => {
+                        const active = feedSetupMasjids.includes(source);
+                        const upcomingCount = feedUpcomingEvents.filter((e) => normalizeText(e.source).toLowerCase() === source.toLowerCase()).length;
+                        return (
+                          <Pressable
+                            {...PRESSABLE_INSTANT}
+                            key={`feed-setup-m-${source}`}
+                            style={[styles.feedSetupChoiceRow, isDarkTheme && styles.feedSetupChoiceRowDark, active && styles.feedSetupChoiceRowActive]}
+                            onPress={() =>
+                              setFeedSetupMasjids((prev) =>
+                                prev.includes(source) ? prev.filter((x) => x !== source) : [...prev, source]
+                              )
+                            }
+                          >
+                            {renderMasjidLogo(source, 38, { style: styles.feedSetupMasjidLogo, textStyle: styles.discoverMasjidAvatarText })}
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.feedSetupChoiceTitle, isDarkTheme && styles.feedSetupChoiceTitleDark]} numberOfLines={1}>
+                                {formatSourceLabel(source)}
+                              </Text>
+                              <Text style={[styles.feedSetupChoiceMeta, isDarkTheme && styles.feedSetupChoiceMetaDark]} numberOfLines={1}>
+                                {upcomingCount} upcoming events
+                              </Text>
+                            </View>
+                            <Text style={[styles.feedSetupChoiceState, active && styles.feedSetupChoiceStateActive]}>
+                              {active ? "✓" : "+"}
+                            </Text>
+                          </Pressable>
+                        );
+                      })
+                    : null}
+
+                  {feedSetupStep === 1
+                    ? feedSetupSpeakerOptions.map((sp) => {
+                        const active = feedSetupScholars.includes(sp.slug);
+                        return (
+                          <Pressable
+                            {...PRESSABLE_INSTANT}
+                            key={`feed-setup-sp-${sp.slug}`}
+                            style={[styles.feedSetupChoiceRow, isDarkTheme && styles.feedSetupChoiceRowDark, active && styles.feedSetupChoiceRowActive]}
+                            onPress={() =>
+                              setFeedSetupScholars((prev) =>
+                                prev.includes(sp.slug) ? prev.filter((x) => x !== sp.slug) : [...prev, sp.slug]
+                              )
+                            }
+                          >
+                            <View style={styles.feedSetupSpeakerAvatar}>
+                              <Text style={styles.feedSetupSpeakerAvatarText}>
+                                {sp.name
+                                  .split(" ")
+                                  .map((p) => p[0])
+                                  .filter(Boolean)
+                                  .slice(0, 2)
+                                  .join("")
+                                  .toUpperCase()}
+                              </Text>
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.feedSetupChoiceTitle, isDarkTheme && styles.feedSetupChoiceTitleDark]} numberOfLines={1}>
+                                {sp.name}
+                              </Text>
+                              <Text style={[styles.feedSetupChoiceMeta, isDarkTheme && styles.feedSetupChoiceMetaDark]} numberOfLines={1}>
+                                {sp.upcoming} upcoming talks
+                              </Text>
+                            </View>
+                            <Text style={[styles.feedSetupChoiceState, active && styles.feedSetupChoiceStateActive]}>
+                              {active ? "✓" : "+"}
+                            </Text>
+                          </Pressable>
+                        );
+                      })
+                    : null}
+
+                  {feedSetupStep === 2 ? (
+                    <View style={styles.feedSetupTopicWrap}>
+                      {feedSetupTopicOptions.map((topic) => {
+                        const active = feedSetupTopics.includes(topic);
+                        return (
+                          <Pressable
+                            {...PRESSABLE_INSTANT}
+                            key={`feed-setup-topic-${topic}`}
+                            style={[styles.feedTopicChip, active && styles.feedTopicChipActive]}
+                            onPress={() =>
+                              setFeedSetupTopics((prev) =>
+                                prev.includes(topic) ? prev.filter((x) => x !== topic) : [...prev, topic]
+                              )
+                            }
+                          >
+                            <Text style={[styles.feedTopicChipText, active && styles.feedTopicChipTextActive]}>{topic}</Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  ) : null}
+                </ScrollView>
+
+                <View style={[styles.feedSetupFooter, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+                  <Pressable
+                    {...PRESSABLE_INSTANT}
+                    style={[styles.feedSetupBackBtn, (feedSetupStep === 0 || feedSetupApplying) && { opacity: 0.5 }]}
+                    disabled={feedSetupStep === 0 || feedSetupApplying}
+                    onPress={() => setFeedSetupStep((s) => (s > 0 ? ((s - 1) as 0 | 1 | 2 | 3) : s))}
+                  >
+                    <Text style={styles.feedSetupBackText}>Back</Text>
+                  </Pressable>
+                  <Pressable
+                    {...PRESSABLE_INSTANT}
+                    style={[styles.feedSetupNextBtn, feedSetupApplying && { opacity: 0.6 }]}
+                    disabled={feedSetupApplying}
+                    onPress={() => {
+                      if (feedSetupStep < 2) {
+                        setFeedSetupStep((s) => ((s + 1) as 0 | 1 | 2 | 3));
+                      } else {
+                        void applyFeedSetupWizard();
+                      }
+                    }}
+                  >
+                    <Text style={styles.feedSetupNextText}>{feedSetupStep < 2 ? "Next →" : "Build my feed"}</Text>
+                  </Pressable>
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
 
       {/* Guided tour overlay — first-time walkthrough narrated by the sprite.
           Uses a translucent backdrop so the actual app UI stays visible
@@ -10609,8 +13855,11 @@ function AppInner() {
               easing: Easing.in(Easing.cubic),
               useNativeDriver: true,
             }).start(() => {
+              if (guidedTourAutoOpenTimeoutRef.current) {
+                clearTimeout(guidedTourAutoOpenTimeoutRef.current);
+                guidedTourAutoOpenTimeoutRef.current = null;
+              }
               setGuidedTourOpen(false);
-              setGuidedTourStep(0);
               SecureStore.setItemAsync(GUIDED_TOUR_DONE_KEY, "1").catch(() => {});
               tourContentOpacity.setValue(1);
               tourContentTranslate.setValue(0);
@@ -10631,7 +13880,7 @@ function AppInner() {
                   Suppressed on task steps so touches pass through to the
                   real UI underneath (the whole point: user does the thing). */}
               {isTaskStep ? null : (
-                <Pressable
+                <Pressable {...PRESSABLE_INSTANT}
                   style={StyleSheet.absoluteFillObject}
                   onPress={nextTour}
                 />
@@ -10704,15 +13953,15 @@ function AppInner() {
                     </View>
                   ) : null}
                   <View style={styles.tourBtnRow}>
-                    <Pressable style={styles.tourSkipBtn} onPress={skipTour}>
+                    <Pressable {...PRESSABLE_INSTANT} style={styles.tourSkipBtn} onPress={skipTour}>
                       <Text style={styles.tourSkipText}>Skip tour</Text>
                     </Pressable>
                     {isTaskStep ? (
-                      <Pressable style={styles.tourSkipStepBtn} onPress={nextTour}>
+                      <Pressable {...PRESSABLE_INSTANT} style={styles.tourSkipStepBtn} onPress={nextTour}>
                         <Text style={styles.tourSkipStepText}>Skip this step →</Text>
                       </Pressable>
                     ) : (
-                      <Pressable style={styles.tourNextBtn} onPress={nextTour}>
+                      <Pressable {...PRESSABLE_INSTANT} style={styles.tourNextBtn} onPress={nextTour}>
                         <Text style={styles.tourNextText}>
                           {isLast ? "Let's go!" : "Next →"}
                         </Text>
@@ -10762,18 +14011,18 @@ function AppInner() {
                   numberOfLines={1}
                   ellipsizeMode="tail"
                 >
-                  Masjidly buddy
+                  Masjid.ly buddy
                 </Text>
                 <Text
                   style={[styles.chatHeaderSub, isDarkTheme && { color: "#9db0db" }]}
                   numberOfLines={1}
                   ellipsizeMode="tail"
                 >
-                  Events, scholars, or masjids
+                  Ask about events, topics, masjids, or scholars
                 </Text>
               </View>
             </View>
-            <Pressable hitSlop={10} onPress={() => setChatOpen(false)} style={styles.chatCloseBtn}>
+            <Pressable {...PRESSABLE_INSTANT} hitSlop={10} onPress={() => setChatOpen(false)} style={styles.chatCloseBtn}>
               <Text style={[styles.chatCloseText, isDarkTheme && { color: "#f4f7ff" }]}>Done</Text>
             </Pressable>
           </View>
@@ -10824,7 +14073,7 @@ function AppInner() {
               return (
                 <View style={styles.chatEventListWrap}>
                   {attached.map((e, idx) => (
-                    <Pressable
+                    <Pressable {...PRESSABLE_INSTANT}
                       key={`chat-ev-${idx}-${e.event_uid || e.id || idx}`}
                       onPress={() => {
                         setChatOpen(false);
@@ -10849,9 +14098,15 @@ function AppInner() {
           </ScrollView>
 
           {/* Suggested chips */}
-          <View style={styles.chatSuggestRow}>
-            {["What's tonight?", "Sisters this week", "Closest event", "Free events", "Tafsir this weekend"].map((s) => (
-              <Pressable
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.chatSuggestRow}
+            contentContainerStyle={styles.chatSuggestRowContent}
+            {...IOS_SCROLL_INSTANT_TOUCH}
+          >
+            {CHAT_SUGGESTIONS.map((s) => (
+              <Pressable {...PRESSABLE_INSTANT}
                 key={`sugg-${s}`}
                 style={[styles.chatChip, isDarkTheme && styles.chatChipDark]}
                 onPress={() => {
@@ -10872,7 +14127,7 @@ function AppInner() {
                 <Text style={[styles.chatChipText, isDarkTheme && { color: "#c4cee8" }]}>{s}</Text>
               </Pressable>
             ))}
-          </View>
+          </ScrollView>
 
           <View style={[styles.chatInputRow, isDarkTheme && { backgroundColor: "#0c1121", borderTopColor: "#1f2640" }]}>
             <TextInput
@@ -10900,7 +14155,7 @@ function AppInner() {
                 setChatMessages((prev) => [...prev, userMsg, botMsg]);
               }}
             />
-            <Pressable
+            <Pressable {...PRESSABLE_INSTANT}
               style={[styles.chatSendBtn, !chatInput.trim() && { opacity: 0.45 }]}
               disabled={!chatInput.trim()}
               onPress={() => {
@@ -11331,14 +14586,17 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   chatSuggestRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    maxHeight: 54,
     backgroundColor: "#ffffff",
     borderTopWidth: 1,
     borderTopColor: "#eef0f6",
+  },
+  chatSuggestRowContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   chatChip: {
     paddingHorizontal: 12,
@@ -11508,26 +14766,6 @@ const styles = StyleSheet.create({
   welcomeCombinedDividerDark: { backgroundColor: "rgba(208,219,246,0.26)" },
   welcomeCombinedDividerNeo: { backgroundColor: "rgba(120,120,120,0.35)" },
   welcomeCombinedDividerEmerald: { backgroundColor: "rgba(105,149,122,0.35)" },
-  welcomeChatToast: {
-    position: "absolute",
-    top: 14,
-    alignSelf: "center",
-    zIndex: 3,
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    backgroundColor: "rgba(255,255,255,0.92)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.95)",
-    shadowColor: "#000",
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 4,
-  },
-  welcomeChatToastDark: { backgroundColor: "rgba(15,19,39,0.95)", borderColor: "rgba(207,216,255,0.42)" },
-  welcomeChatToastText: { color: "#f07c56", fontSize: 13, fontWeight: "800", letterSpacing: 0.2 },
-  welcomeChatToastTextDark: { color: "#f3f6ff" },
   welcomeSwipeHint: {
     marginTop: 14,
     color: "#e8f0ff",
@@ -11537,6 +14775,55 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
   welcomeSwipeHintDark: { color: "#cfd4de" },
+  welcomeCatTagline: {
+    color: "#ffe4d0",
+    fontSize: 15,
+    fontWeight: "700",
+    textAlign: "center",
+    letterSpacing: 0.2,
+    marginTop: -2,
+    marginBottom: 14,
+  },
+  welcomeCatTaglineMinera: { color: "#fff4ec" },
+  welcomeCatTaglineEmerald: { color: "#244c35" },
+  welcomeCatTaglineNeo: { color: "#333" },
+  welcomeCatCard: {
+    alignSelf: "center",
+    width: "100%",
+    aspectRatio: 4 / 3,
+    borderRadius: 20,
+    overflow: "hidden",
+    backgroundColor: "rgba(0,0,0,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.22)",
+    shadowColor: "#000",
+    shadowOpacity: 0.28,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
+    marginBottom: 14,
+  },
+  welcomeCatCardTight: {
+    aspectRatio: 4 / 3,
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  welcomeCatImage: {
+    width: "100%",
+    height: "100%",
+  },
+  welcomeCatCaption: {
+    color: "#ffffff",
+    fontSize: 20,
+    fontWeight: "800",
+    textAlign: "center",
+    letterSpacing: -0.2,
+    marginTop: 2,
+    marginBottom: 4,
+  },
+  welcomeCatCaptionMinera: { color: "#fff4ec" },
+  welcomeCatCaptionEmerald: { color: "#1f3b2a" },
+  welcomeCatCaptionNeo: { color: "#1e1e1e" },
   welcomeCardHint: {
     marginTop: 10,
     color: "#7d8ca8",
@@ -11554,8 +14841,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     gap: 8,
-    marginTop: 8,
-    marginBottom: 14,
+    marginTop: 4,
+    marginBottom: 10,
   },
   welcomePagerDot: { width: 8, height: 8, borderRadius: 999, backgroundColor: "#9fb3d6" },
   welcomePagerDotActive: { width: 20, backgroundColor: "#345fbc" },
@@ -11655,8 +14942,8 @@ const styles = StyleSheet.create({
   welcomeBetaBadgeNeo: { backgroundColor: "#f2f2f2", borderColor: "#b8b8b8", color: "#2e2e2e" },
   welcomeBetaBadgeEmerald: { backgroundColor: "#e8f4ec", borderColor: "#a7c7b3", color: "#2f6245" },
   welcomeBrand: { marginTop: 10, fontSize: 32, fontWeight: "900", color: "#ffffff", letterSpacing: -0.6, maxWidth: "100%" },
-  welcomeTitle: { marginTop: -6, fontSize: 22, fontWeight: "900", color: "#ffffff", lineHeight: 28, letterSpacing: -0.4, maxWidth: "100%" },
-  welcomeSub: { marginTop: 10, color: "#dce7ff", fontSize: 15, lineHeight: 23, maxWidth: "96%" },
+  welcomeTitle: { marginTop: -6, fontSize: 22, fontWeight: "900", color: "#ffffff", lineHeight: 28, letterSpacing: -0.4, maxWidth: "100%", textAlign: "center", alignSelf: "center" },
+  welcomeSub: { marginTop: 10, color: "#dce7ff", fontSize: 15, lineHeight: 23, maxWidth: "96%", textAlign: "center", alignSelf: "center" },
   welcomeBrandMinera: { color: "#fffaf6", fontFamily: MINERA_FONT_BOLD, fontWeight: "700", letterSpacing: -0.15 },
   welcomeTitleMinera: { color: "#fff7f2", fontFamily: MINERA_FONT_MEDIUM, fontWeight: "700", letterSpacing: -0.05 },
   welcomeSubMinera: { color: "#ffece0", fontFamily: MINERA_FONT_REGULAR, fontWeight: "500" },
@@ -11666,16 +14953,19 @@ const styles = StyleSheet.create({
   welcomeBrandNeo: { color: "#151515" },
   welcomeTitleNeo: { color: "#121212" },
   welcomeSubNeo: { color: "#4e4e4e" },
-  heroTrustRow: { marginTop: 18, flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 10 },
+  heroTrustRow: { marginTop: 18, flexDirection: "row", flexWrap: "nowrap", justifyContent: "space-between", alignItems: "center", gap: 6 },
   heroTrustPill: {
+    flex: 1,
+    minWidth: 0,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: "#ffffff2f",
     backgroundColor: "#ffffff1a",
     color: "#f3f8ff",
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: "700",
-    paddingHorizontal: 10,
+    textAlign: "center",
+    paddingHorizontal: 8,
     paddingVertical: 5,
   },
   heroTrustPillMinera: { backgroundColor: "rgba(255,255,255,0.2)", borderColor: "rgba(255,255,255,0.45)", color: "#fff8f2", fontFamily: MINERA_FONT_MEDIUM, fontWeight: "600" },
@@ -11826,7 +15116,9 @@ const styles = StyleSheet.create({
   welcomeSkipPillTextNeo: { color: "#2e2e2e" },
   welcomeSkipPillTextEmerald: { color: "#2f6245" },
   captureTitle: { color: "#fff8f2", fontSize: 26, fontWeight: "900", letterSpacing: -0.6, lineHeight: 32, maxWidth: "100%" },
+  captureTitleCentered: { textAlign: "center", alignSelf: "center" },
   captureSub: { color: "#ffe8d6", fontSize: 15, lineHeight: 22, marginBottom: 4 },
+  captureSubCentered: { textAlign: "center", alignSelf: "center", maxWidth: 560 },
   captureFieldGroup: { gap: 7, marginTop: 6 },
   captureLabel: { color: "#ffeede", fontSize: 13, fontWeight: "700", letterSpacing: 0.1 },
   captureInput: {
@@ -11842,7 +15134,7 @@ const styles = StyleSheet.create({
   },
   captureInputNeo: { backgroundColor: "rgba(255,255,255,0.78)", borderColor: "#b0b0b0", color: "#1d1d1d" },
   captureInputEmerald: { backgroundColor: "rgba(239,248,242,0.75)", borderColor: "#a3c7b1", color: "#1f5137" },
-  captureChoiceRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  captureChoiceRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, justifyContent: "center" },
   captureChoicePill: {
     borderRadius: 999,
     borderWidth: 1,
@@ -11908,6 +15200,110 @@ const styles = StyleSheet.create({
     marginTop: 3,
     fontWeight: "500",
   },
+  captureReviewCard: {
+    marginTop: 8,
+    padding: 14,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.24)",
+    gap: 6,
+  },
+  captureReviewRow: {
+    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "600",
+    lineHeight: 20,
+  },
+  captureReviewKey: {
+    color: "#ffdfc9",
+    fontWeight: "900",
+  },
+  setupSubStepBtnRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginTop: 12,
+  },
+  setupSubStepBackBtn: {
+    flex: 1,
+    backgroundColor: "rgba(255,255,255,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.35)",
+  },
+  setupSubStepBackBtnText: {
+    color: "#ffffff",
+    fontWeight: "800",
+    fontSize: 15,
+  },
+  setupSubStepNextBtn: {
+    flex: 1.4,
+  },
+  capturePrivacyRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+  },
+  capturePrivacyCheckWrap: { alignSelf: "flex-start" },
+  capturePrivacyCheck: {
+    width: 24,
+    height: 24,
+    borderRadius: 7,
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.55)",
+    backgroundColor: "transparent",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 1,
+  },
+  capturePrivacyCheckOn: {
+    backgroundColor: "#ff7a3c",
+    borderColor: "#ff9255",
+  },
+  capturePrivacyCheckMark: { color: "#fff", fontSize: 14, fontWeight: "900" },
+  capturePrivacyLegalText: { flex: 1, fontSize: 13, lineHeight: 20, fontWeight: "600" },
+  capturePrivacyLink: { fontWeight: "900", textDecorationLine: "underline" },
+  loadingMasjidlyOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(5, 9, 18, 0.34)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 28,
+  },
+  loadingMasjidlyCard: {
+    width: "100%",
+    maxWidth: 320,
+    backgroundColor: "#ffffff",
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
+    paddingHorizontal: 22,
+    paddingVertical: 26,
+    shadowColor: "#0b1330",
+    shadowOpacity: 0.13,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 9,
+  },
+  loadingMasjidlyCardDark: {
+    backgroundColor: "#171d2d",
+    shadowOpacity: 0.38,
+  },
+  loadingMasjidlyTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#1d2433",
+    letterSpacing: -0.2,
+  },
+  loadingMasjidlyTitleDark: {
+    color: "#f1f5ff",
+  },
   launchWrap: { flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 24, overflow: "hidden" },
   launchGlowOne: { top: -62, right: -38, width: 210, height: 210, opacity: 0.78 },
   launchGlowTwo: { bottom: -34, left: -22, width: 148, height: 148, opacity: 0.82 },
@@ -11916,8 +15312,11 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     borderWidth: 1,
     alignItems: "center",
-    paddingVertical: 28,
-    paddingHorizontal: 18,
+    justifyContent: "space-between",
+    paddingTop: 20,
+    paddingBottom: 18,
+    paddingHorizontal: 20,
+    minHeight: 390,
     shadowOpacity: 0.22,
     shadowRadius: 20,
     shadowOffset: { width: 0, height: 9 },
@@ -11949,11 +15348,25 @@ const styles = StyleSheet.create({
     shadowColor: "#180700",
   },
   launchCardSurfaceVitaria: {
-    backgroundColor: "rgba(255,150,113,0.26)",
-    borderColor: "rgba(255,226,208,0.42)",
+    backgroundColor: "#ff865c",
+    borderColor: "rgba(255,235,220,0.62)",
     shadowColor: "#8a4a2a",
   },
-  launchLogo: { width: 200, height: 200, marginBottom: -8 },
+  launchTopCluster: {
+    width: "100%",
+    alignItems: "center",
+    gap: 8,
+  },
+  launchKicker: {
+    color: "rgba(255,255,255,0.86)",
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 1.3,
+    textAlign: "center",
+  },
+  launchKickerDark: { color: "rgba(226,233,255,0.92)" },
+  launchKickerNeo: { color: "#4e4e4e" },
+  launchKickerEmerald: { color: "#2b5a41" },
   launchGreeting: {
     marginTop: 28,
     color: "#b55624",
@@ -11966,6 +15379,26 @@ const styles = StyleSheet.create({
   },
   launchGreetingNeo: { color: "#8f4a25" },
   launchGreetingEmerald: { color: "#1f5137" },
+  launchCatCard: {
+    alignSelf: "center",
+    marginTop: 18,
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    overflow: "hidden",
+    backgroundColor: "rgba(255, 255, 255, 0.22)",
+    borderWidth: 4,
+    borderColor: "rgba(255, 255, 255, 0.55)",
+    shadowColor: "#0d1221",
+    shadowOpacity: 0.22,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 14 },
+    elevation: 10,
+  },
+  launchCatImage: {
+    width: "100%",
+    height: "100%",
+  },
   launchDotsRow: {
     marginTop: 22,
     flexDirection: "row",
@@ -11980,14 +15413,97 @@ const styles = StyleSheet.create({
     backgroundColor: "#d68750",
   },
   launchDotDark: { backgroundColor: "#ffb486" },
-  launchTitle: { color: "#ffffff", fontSize: 30, fontWeight: "900", letterSpacing: -0.4, textAlign: "center" },
+  launchTitle: { color: "#ffffff", fontSize: 38, fontWeight: "900", letterSpacing: -0.5, textAlign: "center", lineHeight: 42 },
   launchTitleDark: { color: "#eef2ff" },
   launchTitleNeo: { color: "#1f1f1f" },
   launchTitleEmerald: { color: "#1f5137" },
-  launchSub: { marginTop: 8, color: "#fff0e3", fontSize: 16, fontWeight: "600", textAlign: "center" },
+  launchTitleVitaria: { color: "#fffaf6" },
+  launchLead: {
+    color: "#ffe9da",
+    fontSize: 15,
+    fontWeight: "600",
+    textAlign: "center",
+    lineHeight: 21,
+    paddingHorizontal: 4,
+  },
+  launchBottomNote: {
+    width: "100%",
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.26)",
+    backgroundColor: "rgba(255,255,255,0.14)",
+  },
+  launchBottomNoteDark: {
+    borderColor: "rgba(219,227,255,0.26)",
+    backgroundColor: "rgba(219,227,255,0.1)",
+  },
+  launchBottomNoteNeo: {
+    borderColor: "rgba(111,111,111,0.22)",
+    backgroundColor: "rgba(255,255,255,0.66)",
+  },
+  launchBottomNoteEmerald: {
+    borderColor: "rgba(104,146,120,0.28)",
+    backgroundColor: "rgba(246,255,249,0.62)",
+  },
+  launchFeatureStack: {
+    width: "100%",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.26)",
+    backgroundColor: "rgba(255,255,255,0.12)",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  launchFeatureStackDark: {
+    borderColor: "rgba(219,227,255,0.25)",
+    backgroundColor: "rgba(219,227,255,0.08)",
+  },
+  launchFeatureStackNeo: {
+    borderColor: "rgba(126,126,126,0.24)",
+    backgroundColor: "rgba(255,255,255,0.64)",
+  },
+  launchFeatureStackEmerald: {
+    borderColor: "rgba(104,146,120,0.28)",
+    backgroundColor: "rgba(246,255,249,0.58)",
+  },
+  launchFeatureStackVitaria: {
+    borderColor: "rgba(255,255,255,0.32)",
+    backgroundColor: "rgba(255,255,255,0.16)",
+  },
+  launchFeatureRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  launchFeatureDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: "#fff2e6",
+    marginTop: 6,
+  },
+  launchFeatureDotDark: { backgroundColor: "#d8e2ff" },
+  launchFeatureDotNeo: { backgroundColor: "#585858" },
+  launchFeatureDotEmerald: { backgroundColor: "#2f6c47" },
+  launchFeatureText: {
+    flex: 1,
+    color: "#fff5ec",
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: "700",
+  },
+  launchFeatureTextDark: { color: "#d7e0f6" },
+  launchFeatureTextNeo: { color: "#505050" },
+  launchFeatureTextEmerald: { color: "#305f47" },
+  launchFeatureTextVitaria: { color: "#fff8f3" },
+  launchSub: { color: "#fff0e3", fontSize: 15, fontWeight: "700", textAlign: "center", lineHeight: 20 },
   launchSubDark: { color: "#cad3ec" },
   launchSubNeo: { color: "#626262" },
   launchSubEmerald: { color: "#3f6a53" },
+  launchSubVitaria: { color: "#fff8f3" },
   premiumHero: {
     borderRadius: 28,
     padding: 18,
@@ -12458,26 +15974,26 @@ const styles = StyleSheet.create({
   },
   topBarGlow: {
     position: "absolute",
-    top: -40,
-    left: -20,
-    width: 180,
-    height: 180,
-    borderRadius: 90,
-    backgroundColor: "rgba(255,255,255,0.18)",
+    top: -38,
+    left: -6,
+    width: 206,
+    height: 206,
+    borderRadius: 103,
+    backgroundColor: "rgba(255,206,168,0.5)",
   },
   topBarGlowB: {
     position: "absolute",
-    bottom: -60,
-    right: -30,
-    width: 220,
-    height: 220,
-    borderRadius: 110,
-    backgroundColor: "rgba(0,0,0,0.14)",
+    bottom: -86,
+    right: -24,
+    width: 244,
+    height: 244,
+    borderRadius: 122,
+    backgroundColor: "rgba(255,195,152,0.46)",
   },
   topBarBrandRow: { alignItems: "center", justifyContent: "center", flex: 1 },
   topBarWordmark: { width: "100%", height: "100%", alignSelf: "center" },
   tabSceneWrap: { flex: 1 },
-  scrollBody: { width: "100%", maxWidth: "100%", paddingHorizontal: 12, paddingBottom: 96, gap: 10, flexGrow: 1 },
+  scrollBody: { width: "100%", maxWidth: "100%", paddingHorizontal: 12, paddingBottom: 120, gap: 10, flexGrow: 1 },
   scrollBodyMidnight: { backgroundColor: "#080a12" },
   scrollBodyNeo: { backgroundColor: "#d4d4d4" },
   scrollBodyVitaria: { backgroundColor: "#7f6672" },
@@ -12571,6 +16087,554 @@ const styles = StyleSheet.create({
   premiumSectionTitleNeo: { color: "#151515" },
   premiumSectionSubDark: { color: "#c2cce6" },
   premiumSectionSubNeo: { color: "#4d4d4d" },
+  feedWizardExplainer: {
+    marginTop: 10,
+    fontSize: 13,
+    lineHeight: 20,
+    color: "#5a657c",
+    fontWeight: "500",
+  },
+  feedWizardExplainerDark: { color: "#c5d0ef" },
+  feedWizardExplainerNeo: { color: "#3d3d3d" },
+  feedWizardExplainerEmerald: { color: "#2f5a40" },
+  feedWizardExplainerInferno: { color: "rgba(255,210,180,0.92)" },
+  feedWizardExplainerVitaria: { color: "rgba(255,255,255,0.88)" },
+  feedWizardTopBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginHorizontal: 12,
+    marginTop: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#d8dce7",
+    backgroundColor: "rgba(248,251,255,0.92)",
+  },
+  feedWizardTopBarDark: { borderColor: "#2c3654", backgroundColor: "rgba(18,24,40,0.96)" },
+  feedWizardTopBarNeo: { borderColor: "#c4c4c4", backgroundColor: "rgba(245,245,245,0.95)" },
+  feedWizardTopBarEmerald: { borderColor: "#9fcab0", backgroundColor: "rgba(238,248,241,0.95)" },
+  feedWizardTopBarInferno: { borderColor: "rgba(255,126,50,0.35)", backgroundColor: "rgba(28,12,8,0.94)" },
+  feedWizardTopBarVitaria: { borderColor: "rgba(255,255,255,0.2)", backgroundColor: "rgba(60,40,68,0.55)" },
+  feedWizardTopTitle: { fontSize: 17, fontWeight: "900", color: "#1f2430", letterSpacing: -0.3 },
+  feedWizardTopTitleDark: { color: "#f4f7ff" },
+  feedWizardTopTitleNeo: { color: "#151515" },
+  feedWizardTopTitleEmerald: { color: "#0f5130" },
+  feedWizardTopTitleInferno: { color: "#fff4e8" },
+  feedWizardTopTitleVitaria: { color: "#ffffff" },
+  feedWizardTopSub: { marginTop: 2, fontSize: 12, lineHeight: 16, color: "#5d7192", fontWeight: "600" },
+  feedWizardTopSubDark: { color: "#aebcdc" },
+  feedWizardTopSubNeo: { color: "#454545" },
+  feedWizardTopSubEmerald: { color: "#2f6f4a" },
+  feedWizardTopSubInferno: { color: "rgba(255,210,180,0.9)" },
+  feedWizardTopSubVitaria: { color: "rgba(255,255,255,0.85)" },
+  feedWizardCancelLink: { fontSize: 14, fontWeight: "800", color: "#2a5fb0", paddingLeft: 8 },
+  feedWizardCancelLinkDark: { color: "#9eb9ff" },
+  feedWizardExplainerCompact: { fontSize: 12, lineHeight: 17, color: "#5d7192", fontWeight: "500", marginBottom: 4 },
+  feedWizardExplainerCompactDark: { color: "#9db0db" },
+  feedWizardExplainerCompactNeo: { color: "#4a5568" },
+  feedWizardExplainerCompactEmerald: { color: "#3a5c47" },
+  feedHeaderEditBtn: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(42,95,176,0.35)",
+    backgroundColor: "rgba(42,95,176,0.08)",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    alignSelf: "flex-start",
+  },
+  feedHeaderEditBtnDark: { borderColor: "rgba(158,185,255,0.45)", backgroundColor: "rgba(120,160,255,0.12)" },
+  feedHeaderEditBtnNeo: { borderColor: "#9a9a9a", backgroundColor: "rgba(0,0,0,0.04)" },
+  feedHeaderEditBtnEmerald: { borderColor: "#5aa97a", backgroundColor: "rgba(90,169,122,0.12)" },
+  feedHeaderEditBtnInferno: { borderColor: "rgba(255,140,80,0.5)", backgroundColor: "rgba(255,100,40,0.12)" },
+  feedHeaderEditBtnVitaria: { borderColor: "rgba(255,255,255,0.35)", backgroundColor: "rgba(255,255,255,0.1)" },
+  feedHeaderEditBtnText: { fontSize: 13, fontWeight: "900", color: "#2a4a7c" },
+  feedHeaderEditBtnTextDark: { color: "#dbe6ff" },
+  feedHeaderEditBtnTextNeo: { color: "#222" },
+  feedHeaderEditBtnTextEmerald: { color: "#14532d" },
+  feedHeaderEditBtnTextInferno: { color: "#fff4e8" },
+  feedHeaderEditBtnTextVitaria: { color: "#ffffff" },
+  feedTopicRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  feedTopicChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#cfd7ea",
+    backgroundColor: "#f8fbff",
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+  },
+  feedTopicChipActive: {
+    borderColor: "#8cb3f2",
+    backgroundColor: "#e2ecff",
+  },
+  feedTopicChipDark: {
+    borderColor: "rgba(190,204,236,0.3)",
+    backgroundColor: "rgba(255,255,255,0.07)",
+  },
+  feedTopicChipNeo: {
+    borderColor: "#b8b8b8",
+    backgroundColor: "#f2f2f2",
+  },
+  feedTopicChipEmerald: {
+    borderColor: "#9fcab0",
+    backgroundColor: "#eef8f1",
+  },
+  feedTopicChipActiveDark: {
+    borderColor: "rgba(143,183,255,0.8)",
+    backgroundColor: "rgba(97,142,222,0.35)",
+  },
+  feedTopicChipText: {
+    color: "#476185",
+    fontSize: 12,
+    fontWeight: "700",
+    textTransform: "capitalize",
+  },
+  feedTopicChipTextDark: {
+    color: "#d5dff7",
+  },
+  feedTopicChipTextNeo: {
+    color: "#4f4f4f",
+  },
+  feedTopicChipTextEmerald: {
+    color: "#2a6644",
+  },
+  feedTopicChipTextActive: {
+    color: "#224d88",
+  },
+  feedTopicChipTextActiveDark: {
+    color: "#f4f8ff",
+  },
+  feedBuilderCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#dbe3f2",
+    backgroundColor: "#f7f9ff",
+    padding: 12,
+    gap: 8,
+  },
+  feedBuilderStepLabel: {
+    marginTop: 2,
+    color: "#294971",
+    fontSize: 13,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
+  feedBuilderStepLabelDark: {
+    color: "#ced9f4",
+  },
+  feedInlineFollowBtn: {
+    marginTop: 8,
+    alignSelf: "flex-start",
+  },
+  feedSetupBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(8,12,20,0.55)",
+    justifyContent: "center",
+    paddingHorizontal: 16,
+  },
+  feedSetupCard: {
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#d7e0f0",
+    backgroundColor: "#f8fbff",
+    maxHeight: "84%",
+    overflow: "hidden",
+  },
+  feedSetupCardDark: {
+    borderColor: "#2a3550",
+    backgroundColor: "#10192c",
+  },
+  feedSetupHeader: {
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(112,132,168,0.18)",
+    gap: 6,
+  },
+  feedSetupHeaderTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  feedSetupCloseBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#d1dbef",
+    backgroundColor: "#ffffff",
+  },
+  feedSetupCloseText: {
+    color: "#5f7395",
+    fontSize: 13,
+    fontWeight: "900",
+    lineHeight: 15,
+  },
+  feedSetupStepPill: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#c6d5ee",
+    backgroundColor: "#eaf1ff",
+    color: "#2a4a7c",
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.4,
+  },
+  feedSetupStepPillDark: {
+    borderColor: "#3c4d70",
+    backgroundColor: "#1d2b47",
+    color: "#dbe6ff",
+  },
+  feedSetupTitle: {
+    color: "#1d2d48",
+    fontSize: 23,
+    fontWeight: "900",
+    lineHeight: 29,
+    letterSpacing: -0.4,
+  },
+  feedSetupTitleDark: { color: "#edf3ff" },
+  feedSetupSub: {
+    color: "#5d7192",
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: "600",
+  },
+  feedSetupSubDark: { color: "#aebcdc" },
+  feedSetupScroll: { flex: 1 },
+  feedSetupScrollContent: { paddingHorizontal: 12, paddingVertical: 10, gap: 8 },
+  feedSetupChoiceRow: {
+    minHeight: 58,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: "#dbe3f2",
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+  },
+  feedSetupChoiceRowDark: {
+    borderColor: "#304162",
+    backgroundColor: "#151f35",
+  },
+  feedSetupChoiceRowActive: {
+    borderColor: "#8eb2f5",
+    backgroundColor: "#e7efff",
+  },
+  feedSetupChoiceTitle: {
+    color: "#1f355a",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  feedSetupChoiceTitleDark: { color: "#e8f0ff" },
+  feedSetupChoiceMeta: {
+    marginTop: 1,
+    color: "#6a7f9f",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  feedSetupChoiceMetaDark: { color: "#aebede" },
+  feedSetupChoiceState: {
+    color: "#6a7f9f",
+    fontSize: 22,
+    fontWeight: "900",
+    paddingHorizontal: 4,
+  },
+  feedSetupChoiceStateActive: { color: "#2a5fb0" },
+  feedSetupMasjidLogo: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+  },
+  feedSetupSpeakerAvatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ffe3d1",
+    borderWidth: 1,
+    borderColor: "#ffd0b4",
+  },
+  feedSetupSpeakerAvatarText: {
+    color: "#9b4a1b",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  feedSetupTopicWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  feedSetupFooter: {
+    borderTopWidth: 1,
+    borderTopColor: "rgba(112,132,168,0.18)",
+    padding: 12,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  feedSetupBackBtn: {
+    minHeight: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#cad6ee",
+    backgroundColor: "#f3f7ff",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    flex: 1,
+  },
+  feedSetupBackText: { color: "#3f5f90", fontSize: 14, fontWeight: "800" },
+  feedSetupNextBtn: {
+    minHeight: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#4c84e6",
+    backgroundColor: "#4a81e2",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    flex: 1.3,
+  },
+  feedSetupNextText: { color: "#ffffff", fontSize: 14, fontWeight: "900" },
+  feedSetupLoadingWrap: {
+    padding: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+  feedSetupLoadingDots: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 },
+  feedSetupLoadingDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#7ea7ef",
+  },
+  feedBuildWrap: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 24,
+    paddingVertical: 32,
+  },
+  feedBuildWrapDark: {},
+  feedBuildCard: {
+    width: "100%",
+    maxWidth: 360,
+    alignItems: "center",
+    backgroundColor: "#ffffff",
+    borderRadius: 24,
+    paddingHorizontal: 22,
+    paddingTop: 22,
+    paddingBottom: 24,
+    shadowColor: "#0b1330",
+    shadowOpacity: 0.08,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 6,
+  },
+  feedBuildCardDark: {
+    backgroundColor: "#151b2c",
+    shadowOpacity: 0.4,
+  },
+  feedBuildGifWrap: {
+    width: 188,
+    height: 188,
+    borderRadius: 22,
+    overflow: "hidden",
+    marginBottom: 18,
+    backgroundColor: "#f5f6fb",
+  },
+  feedBuildGif: {
+    width: "100%",
+    height: "100%",
+  },
+  feedBuildTitle: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: "#0f172a",
+    letterSpacing: -0.3,
+    textAlign: "center",
+  },
+  feedBuildTitleDark: { color: "#f4f7ff" },
+  feedBuildSub: {
+    marginTop: 6,
+    fontSize: 14,
+    color: "#5b6478",
+    textAlign: "center",
+    lineHeight: 20,
+  },
+  feedBuildSubDark: { color: "#a6b1c9" },
+  feedBuildBarTrack: {
+    marginTop: 20,
+    width: "100%",
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: "#e7ebf3",
+    overflow: "hidden",
+  },
+  feedBuildBarTrackDark: {
+    backgroundColor: "#263049",
+  },
+  feedBuildBarFill: {
+    height: "100%",
+    backgroundColor: "#2f6bff",
+    borderRadius: 999,
+  },
+  feedBuildPercent: {
+    marginTop: 10,
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#6d7590",
+    letterSpacing: 0.2,
+    textAlign: "center",
+  },
+  feedBuildPercentDark: { color: "#8da0c7" },
+  feedBuildSuccessCard: {
+    width: "100%",
+    maxWidth: 360,
+    alignItems: "center",
+    backgroundColor: "#ffffff",
+    borderRadius: 24,
+    paddingHorizontal: 22,
+    paddingTop: 32,
+    paddingBottom: 28,
+    shadowColor: "#0b1330",
+    shadowOpacity: 0.08,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 6,
+  },
+  feedBuildSuccessCardDark: {
+    backgroundColor: "#151b2c",
+    shadowOpacity: 0.4,
+  },
+  feedBuildSuccessBadge: {
+    width: 92,
+    height: 92,
+    borderRadius: 46,
+    backgroundColor: "#19a870",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 18,
+    shadowColor: "#19a870",
+    shadowOpacity: 0.35,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 8,
+  },
+  feedEditCancelPill: {
+    alignSelf: "flex-start",
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.3)",
+  },
+  feedEditCancelPillText: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 0.3,
+  },
+  feedViewSwitch: {
+    flexDirection: "row",
+    marginHorizontal: 12,
+    marginTop: 10,
+    marginBottom: 4,
+    padding: 4,
+    borderRadius: 14,
+    backgroundColor: "#eef1f7",
+    borderWidth: 1,
+    borderColor: "#dfe4ef",
+    gap: 4,
+  },
+  feedViewSwitchDark: {
+    backgroundColor: "rgba(22,27,44,0.85)",
+    borderColor: "rgba(255,255,255,0.1)",
+  },
+  feedViewSwitchBtn: {
+    flex: 1,
+    flexBasis: 0,
+    minWidth: 0,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  feedViewSwitchBtnActive: {
+    backgroundColor: "#ff7d50",
+    shadowColor: "#000",
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  feedViewSwitchText: {
+    color: "#54617b",
+    fontWeight: "800",
+    fontSize: 13,
+    letterSpacing: 0.2,
+  },
+  feedViewSwitchTextDark: {
+    color: "#b3bed8",
+  },
+  feedViewSwitchTextActive: {
+    color: "#fff8f2",
+  },
+  feedSavedEmptyCard: {
+    borderRadius: 18,
+    padding: 20,
+    backgroundColor: "#fff4ec",
+    borderWidth: 1,
+    borderColor: "#ffd6b9",
+    gap: 10,
+    alignItems: "flex-start",
+  },
+  feedSavedEmptyCardDark: {
+    backgroundColor: "rgba(255,125,80,0.12)",
+    borderColor: "rgba(255,125,80,0.3)",
+  },
+  feedSavedEmptyTitle: {
+    color: "#3e1d05",
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  feedSavedEmptySub: {
+    color: "#7a4a28",
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: "600",
+  },
+  feedSavedEmptyBtn: {
+    marginTop: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: "#ff7d50",
+  },
+  feedSavedEmptyBtnText: {
+    color: "#fff8f2",
+    fontWeight: "900",
+    fontSize: 13,
+    letterSpacing: 0.3,
+  },
   nextRow: {
     borderWidth: 1,
     borderColor: "#e2ebfa",
@@ -13004,8 +17068,8 @@ const styles = StyleSheet.create({
     borderColor: "#d9dde7",
     backgroundColor: "#f8f9fc",
     flexDirection: "row",
-    padding: 8,
-    gap: 6,
+    padding: 6,
+    gap: 4,
   },
   tabBarMidnight: { backgroundColor: "#111424", borderColor: "#23273a" },
   tabBarNeo: { backgroundColor: "#d8d8d8", borderColor: "#b9b9b9", borderRadius: 16 },
@@ -13014,10 +17078,14 @@ const styles = StyleSheet.create({
   tabBarEmerald: { backgroundColor: "#e0f2e7", borderColor: "#8fc6a7" },
   tabBtn: {
     flex: 1,
-    height: 46,
+    flexBasis: 0,
+    minWidth: 0,
+    height: 52,
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
+    paddingHorizontal: 2,
+    paddingVertical: 4,
   },
   tabBtnActive: { backgroundColor: "#ff7d50" },
   tabBtnActiveMidnight: { backgroundColor: "#ff7d50" },
@@ -13025,7 +17093,8 @@ const styles = StyleSheet.create({
   tabBtnActiveVitaria: { backgroundColor: "#ff7d50" },
   tabBtnActiveInferno: { backgroundColor: "#ff7d50" },
   tabBtnActiveEmerald: { backgroundColor: "#ff7d50" },
-  tabIcon: { color: "#8a92a4", fontSize: 14, marginBottom: 2 },
+  tabIcon: { color: "#8a92a4", fontSize: 18, lineHeight: 20, marginBottom: 2, textAlign: "center" },
+  tabIconImage: { width: 22, height: 22, marginBottom: 3, alignSelf: "center" },
   tabIconMidnight: { color: "#6f7897" },
   tabIconNeo: { color: "#4a4a4a" },
   tabIconVitaria: { color: "rgba(255,255,255,0.82)" },
@@ -13034,7 +17103,7 @@ const styles = StyleSheet.create({
   tabIconActive: { color: "#fff8f2" },
   tabIconActiveInferno: { color: "#fffaf6" },
   tabIconActiveEmerald: { color: "#fff8f2" },
-  tabText: { color: "#7a8397", fontWeight: "700", fontSize: 11 },
+  tabText: { color: "#7a8397", fontWeight: "700", fontSize: 10, lineHeight: 12, textAlign: "center", includeFontPadding: false },
   tabTextMidnight: { color: "#8f97b2" },
   tabTextNeo: { color: "#4a4a4a" },
   tabTextVitaria: { color: "rgba(255,255,255,0.82)" },
@@ -13236,6 +17305,7 @@ const styles = StyleSheet.create({
   eventWhenCardDark: { backgroundColor: "#121a29", borderColor: "#22304d" },
   eventWhenRow: { flexDirection: "row", alignItems: "center", gap: 12 },
   eventWhenIcon: { fontSize: 22 },
+  eventWhenIconGlyph: { width: 24, textAlign: "center" },
   eventWhenPrimary: { color: "#1b2333", fontSize: 15, fontWeight: "900", letterSpacing: -0.2 },
   eventWhenSecondary: { color: "#6b7894", fontSize: 13, fontWeight: "600", marginTop: 2 },
   eventWhenAddBtn: {
@@ -13298,6 +17368,7 @@ const styles = StyleSheet.create({
   },
   eventInfoCardDark: { backgroundColor: "#121a29", borderColor: "#22304d" },
   eventInfoIcon: { fontSize: 20 },
+  eventInfoIconGlyph: { width: 24, textAlign: "center" },
   eventInfoTitle: { color: "#1b2333", fontSize: 14, fontWeight: "800" },
   eventInfoSub: { color: "#6b7894", fontSize: 12, marginTop: 2, fontWeight: "600" },
   eventInfoChevron: { color: "#b0b9cf", fontSize: 24, fontWeight: "700", marginLeft: 4 },
@@ -13351,6 +17422,7 @@ const styles = StyleSheet.create({
   },
   eventLinkTileDark: { backgroundColor: "#121a29", borderColor: "#22304d" },
   eventLinkIcon: { fontSize: 20 },
+  eventLinkIconGlyph: { width: 24, textAlign: "center" },
   eventLinkLabel: { color: "#1b2333", fontSize: 12, fontWeight: "800" },
 
   eventTrustCard: {
@@ -13535,14 +17607,6 @@ const styles = StyleSheet.create({
     borderRadius: 120,
     backgroundColor: "rgba(255,255,255,0.28)",
   },
-  homeHeroShimmer: {
-    position: "absolute",
-    top: -30,
-    left: 0,
-    width: 80,
-    height: 260,
-    backgroundColor: "rgba(255,255,255,0.55)",
-  },
   homeHeroHi: { color: "#fff", fontSize: 14, fontWeight: "700", letterSpacing: 0.2 },
   homeHeroCount: { color: "#fff", fontSize: 34, fontWeight: "900", letterSpacing: -0.8, marginTop: 2 },
   homeHeroSub: { color: "rgba(255,255,255,0.9)", fontSize: 13, fontWeight: "600", marginTop: 2 },
@@ -13636,7 +17700,7 @@ const styles = StyleSheet.create({
   },
   sadaqahBtnText: { color: "#fff", fontWeight: "900", fontSize: 14, letterSpacing: 0.2 },
 
-  // Share Masjidly / raffle card. Purple-leaning palette so it reads as
+  // Share Masjid.ly / raffle card. Purple-leaning palette so it reads as
   // a reward-flavored section and doesn't compete visually with Sadaqah.
   shareCard: {
     marginTop: 14,
@@ -13755,7 +17819,58 @@ const styles = StyleSheet.create({
   discoverSectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   discoverSectionTitle: { fontSize: 18, fontWeight: "900", color: "#1f2a3d", letterSpacing: -0.2 },
   discoverSectionSub: { fontSize: 13, color: "#6b7894", marginTop: 4, marginBottom: 10, lineHeight: 19 },
+  discoverSubsectionLabel: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: "#4a5c85",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    marginTop: 4,
+    marginBottom: 2,
+  },
+  discoverSubsectionLabelDark: { color: "#8aa3d4" },
   discoverSeeAll: { fontSize: 13, fontWeight: "800", color: "#4a5c85" },
+  discoverFollowedMasjidCard: {
+    width: 228,
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#e8ecf4",
+    shadowColor: "#1e2942",
+    shadowOpacity: 0.07,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 12,
+    elevation: 2,
+  },
+  discoverFollowedMasjidCardDark: {
+    backgroundColor: "#1a2035",
+    borderColor: "#2c3654",
+    shadowOpacity: 0.12,
+  },
+  discoverFollowedMasjidCardTop: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  discoverFollowedMasjidLogo: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  discoverFollowedMasjidTitle: { fontSize: 14, fontWeight: "900", color: "#1f2a3d", lineHeight: 18 },
+  discoverFollowedMasjidMeta: { fontSize: 11.5, color: "#6b7894", marginTop: 4, fontWeight: "600", lineHeight: 15 },
+  discoverFollowedMasjidChips: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 10 },
+  discoverAmenityChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: "#f0f3fa",
+    borderWidth: 1,
+    borderColor: "#dce2f0",
+  },
+  discoverAmenityChipDark: { backgroundColor: "#252b42", borderColor: "#3d4a6b" },
+  discoverAmenityChipText: { fontSize: 10.5, fontWeight: "800", color: "#4a5c85", letterSpacing: 0.2 },
+  discoverFollowedMasjidBlurb: { fontSize: 11.5, color: "#6b7894", marginTop: 8, lineHeight: 16, fontWeight: "500" },
+  discoverFollowedMasjidNext: { fontSize: 11.5, color: "#ff7a3c", marginTop: 8, fontWeight: "800", lineHeight: 16 },
   discoverEmpty: {
     padding: 14, borderRadius: 14, backgroundColor: "#f4f5f9",
     borderWidth: 1, borderColor: "#e4e7ef",
@@ -13772,7 +17887,7 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   discoverScholarCardDark: { backgroundColor: "#1a2035", borderColor: "#2c3654" },
-  discoverScholarAvatarWrap: { width: "100%", aspectRatio: 1, borderRadius: 14, overflow: "hidden", backgroundColor: "#ffd7b8" },
+  discoverScholarAvatarWrap: { width: "100%", aspectRatio: 4 / 5, borderRadius: 14, overflow: "hidden", backgroundColor: "#ffd7b8" },
   discoverScholarAvatar: { width: "100%", height: "100%" },
   discoverScholarName: { fontSize: 14, fontWeight: "900", color: "#1f2a3d", marginTop: 6, lineHeight: 18 },
   discoverScholarSub: { fontSize: 11, color: "#6b7894", fontWeight: "600" },
@@ -14670,6 +18785,101 @@ const styles = StyleSheet.create({
     borderColor: "#dde5f4",
     gap: 4,
   },
+  pastTalksHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 18,
+    marginBottom: 4,
+  },
+  pastTalksHeader: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#222a3f",
+    letterSpacing: 0.2,
+  },
+  videoCard: {
+    flexDirection: "row",
+    gap: 12,
+    padding: 10,
+    borderRadius: 14,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#eceff9",
+    alignItems: "center",
+  },
+  videoThumb: {
+    width: 120,
+    height: 68,
+    borderRadius: 10,
+    backgroundColor: "#16131f",
+  },
+  videoTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#222a3f",
+    lineHeight: 17,
+  },
+  videoMeta: {
+    marginTop: 3,
+    fontSize: 11,
+    color: "#6f7b94",
+  },
+  amenitiesCard: {
+    padding: 14,
+    borderRadius: 16,
+    backgroundColor: "#f4f9f1",
+    borderWidth: 1,
+    borderColor: "#d5e4cb",
+    gap: 10,
+    marginTop: 8,
+  },
+  amenitiesTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#27451d",
+  },
+  amenitiesBody: {
+    fontSize: 13,
+    color: "#3c5a30",
+    lineHeight: 18,
+  },
+  amenitiesGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  amenitiesChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#d5e4cb",
+  },
+  amenitiesChipCheck: {
+    color: "#2f7a1c",
+    fontWeight: "800",
+    fontSize: 12,
+  },
+  amenitiesChipText: {
+    color: "#27451d",
+    fontWeight: "700",
+    fontSize: 12,
+  },
+  amenitiesContactRow: {
+    flexDirection: "row",
+    gap: 16,
+    marginTop: 2,
+  },
+  amenitiesContactLink: {
+    color: "#235ea8",
+    fontWeight: "700",
+    fontSize: 13,
+  },
   topicChip: {
     paddingHorizontal: 14,
     paddingVertical: 9,
@@ -14821,6 +19031,41 @@ const styles = StyleSheet.create({
     borderColor: "#e5e8ef",
   },
   settingsProfileMetaChipText: { color: "#4a5568", fontSize: 11, fontWeight: "800" },
+  settingsQuickTabsRow: {
+    marginTop: 10,
+    marginBottom: 2,
+    marginHorizontal: 16,
+    flexDirection: "row",
+    gap: 8,
+  },
+  settingsQuickTabBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#d7e2f3",
+    backgroundColor: "#eef4ff",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  settingsQuickTabBtnDark: {
+    backgroundColor: "#16233a",
+    borderColor: "#2c446b",
+  },
+  settingsQuickTabBtnPressed: {
+    opacity: 0.82,
+    transform: [{ scale: 0.98 }],
+  },
+  settingsQuickTabText: {
+    color: "#2d4066",
+    fontSize: 13,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
+  settingsQuickTabTextDark: {
+    color: "#d9e4ff",
+  },
   settingsSectionLabel: {
     color: "#7a859b",
     fontSize: 11,
