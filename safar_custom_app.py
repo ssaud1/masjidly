@@ -17,11 +17,13 @@ import os
 import re
 import secrets
 import sqlite3
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from flask import Flask, jsonify, request, send_from_directory
+import requests
 from werkzeug.security import check_password_hash, generate_password_hash
 
 app = Flask(__name__)
@@ -46,6 +48,27 @@ DATA_FILES = [
     str(PROJECT_ROOT / "target_masjids_events.json"),
     str(PROJECT_ROOT / "target_masjids_future_events.json"),
 ]
+
+_env_clean = lambda v: " ".join((v or "").split()).strip()
+SUPABASE_URL = _env_clean(os.getenv("SUPABASE_URL", "") or os.getenv("supabaseurl", ""))
+SUPABASE_SERVICE_ROLE_KEY = _env_clean(
+    os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    or os.getenv("servicerole", "")
+    or os.getenv("supabasekey", "")
+)
+SUPABASE_EVENTS_TABLE = _env_clean(os.getenv("SUPABASE_EVENTS_TABLE", "events")) or "events"
+try:
+    SUPABASE_FETCH_TIMEOUT_S = max(3.0, float(os.getenv("SUPABASE_FETCH_TIMEOUT_S", "8") or "8"))
+except ValueError:
+    SUPABASE_FETCH_TIMEOUT_S = 8.0
+try:
+    SUPABASE_FETCH_RETRIES = max(1, int(os.getenv("SUPABASE_FETCH_RETRIES", "2") or "2"))
+except ValueError:
+    SUPABASE_FETCH_RETRIES = 2
+try:
+    SUPABASE_REFRESH_INTERVAL_S = max(20.0, float(os.getenv("SUPABASE_REFRESH_INTERVAL_S", "120") or "120"))
+except ValueError:
+    SUPABASE_REFRESH_INTERVAL_S = 120.0
 
 MASJID_COORDS: Dict[str, Tuple[float, float]] = {
     "iceb": (40.4308, -74.4122),
@@ -275,6 +298,56 @@ def init_db() -> None:
         """
     )
     cur.execute("create index if not exists event_views_event_idx on event_views(event_uid)")
+
+    # --- Speaker YouTube archive (#17 past talks feed) ---
+    cur.execute(
+        """
+        create table if not exists speaker_videos (
+          id integer primary key autoincrement,
+          speaker_slug text not null,
+          video_id text not null,
+          title text not null,
+          channel text not null default '',
+          published_at text not null default '',
+          duration_seconds integer not null default 0,
+          duration_label text not null default '',
+          view_count integer not null default 0,
+          thumbnail_url text not null default '',
+          url text not null,
+          fetched_at text not null,
+          unique(speaker_slug, video_id)
+        )
+        """
+    )
+    cur.execute(
+        "create index if not exists speaker_videos_slug_idx on speaker_videos(speaker_slug)"
+    )
+    cur.execute(
+        """
+        create table if not exists speaker_fetches (
+          speaker_slug text primary key,
+          last_fetched_at text not null,
+          status text not null default 'ok',
+          error text not null default ''
+        )
+        """
+    )
+
+    # --- Masjid amenities profile (#22) ---
+    cur.execute(
+        """
+        create table if not exists masjid_amenities (
+          source text primary key,
+          amenities_json text not null default '{}',
+          description text not null default '',
+          website text not null default '',
+          phone text not null default '',
+          email text not null default '',
+          updated_by integer,
+          updated_at text not null
+        )
+        """
+    )
 
     # --- referrals (merch-raffle bookkeeping) ---
     # Each row is a single "signed up with someone's code" event. We store
@@ -548,10 +621,131 @@ def _apply_weekday_override(event: Dict, rules: List[Dict]) -> None:
         return
 
 
-def load_events() -> List[Dict]:
-    path = pick_data_file()
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    weekday_rules = _load_weekday_overrides()
+# Speaker normalization (must run before load_events — used when building EVENTS_CACHE).
+SPEAKER_JUNK_WORDS = {
+    "gallery",
+    "contact",
+    "education",
+    "services",
+    "appointment",
+    "nikkah",
+    "home",
+    "about",
+    "donate",
+    "menu",
+    "team",
+    "privacy",
+    "policy",
+    "terms",
+    "login",
+    "register",
+    "subscribe",
+    "the",
+    "for",
+    "with",
+    "an",
+    "to",
+    "of",
+    "and",
+    "at",
+    "on",
+    "in",
+    "by",
+    "muslim",
+    "center",
+    "masjid",
+    "islamic",
+    "tonight",
+    "night",
+    "reminder",
+    "lesson",
+    "lecture",
+    "khutbah",
+    "reciting",
+    "adhan",
+    "ages",
+    "continuation",
+    "being",
+    "our",
+    "calendar",
+    "volunteers",
+    "volunteer",
+    "staff",
+    "committee",
+    "board",
+    "visit",
+    "phone",
+    "support",
+    "welcome",
+    "newsletter",
+    "resources",
+    "programs",
+    "events",
+    "media",
+}
+
+
+def _speaker_is_clean(name: str) -> bool:
+    tokens = [t.lower() for t in re.findall(r"[A-Za-z]+", name)]
+    if not tokens or len(tokens) > 5:
+        return False
+    if sum(1 for t in tokens if t in SPEAKER_JUNK_WORDS) > 0:
+        return False
+    letters = sum(len(t) for t in tokens)
+    if letters < 4:
+        return False
+    return True
+
+
+_SPEAKER_STOP_PHRASES = (
+    " will be ",
+    " will speak",
+    " speaking ",
+    " presents ",
+    " talks ",
+    " talk on ",
+    " teaches ",
+    " delivers ",
+    " leads ",
+    " join us ",
+    " join ",
+    " on ",
+    " at ",
+    " for ",
+    " about ",
+    " discussing ",
+    " register ",
+    " rsvp ",
+)
+
+
+def _truncate_speaker_blurb(s: str) -> str:
+    """Cut scraped speaker strings at common flyer/IG sentence tails."""
+    cut = clean(s)
+    if not cut:
+        return ""
+    low = cut.lower()
+    for stop in _SPEAKER_STOP_PHRASES:
+        idx = low.find(stop)
+        if idx > 3:
+            cut = cut[:idx].strip()
+            low = cut.lower()
+    cut = re.split(r"[,;—–-]\s*", cut, maxsplit=1)[0].strip()
+    return cut
+
+
+def _normalize_speaker_field(raw: str) -> str:
+    """Pipeline: trim blurb junk, then drop speakers that fail _speaker_is_clean."""
+    s = _truncate_speaker_blurb(str(raw or ""))
+    if not s or s.lower() in {"n/a", "tba", "tbd"}:
+        return ""
+    if not _speaker_is_clean(s):
+        return ""
+    return s
+
+
+def _normalize_events_rows(raw: List[Dict], weekday_rules: Optional[List[Dict]] = None) -> List[Dict]:
+    rules = weekday_rules if weekday_rules is not None else _load_weekday_overrides()
     events: List[Dict] = []
     for e in raw:
         title = clean(e.get("title", ""))
@@ -589,7 +783,7 @@ def load_events() -> List[Dict]:
             "location_name": clean(e.get("location_name", "")),
             "address": address,
             "city": clean(e.get("city", "")),
-            "speaker": clean(e.get("speaker", "")),
+            "speaker": _normalize_speaker_field(e.get("speaker", "")),
             "category": clean(e.get("category", "")),
             "audience": clean(e.get("audience", "")),
             "rsvp_link": clean(e.get("rsvp_link", "")),
@@ -599,29 +793,117 @@ def load_events() -> List[Dict]:
             "deep_link": deep_link_for(event_uid),
             "map_link": f"https://maps.google.com/?q={address.replace(' ', '+')}" if address else "",
         }
-        _apply_weekday_override(normalized_event, weekday_rules)
+        _apply_weekday_override(normalized_event, rules)
         events.append(normalized_event)
     events.sort(key=lambda x: (x["parsed_date"] or "9999-12-31", x["start_time"] or "99:99", x["title"]))
     return events
 
 
-EVENTS_CACHE = load_events()
-try:
-    EVENTS_CACHE_MTIME = pick_data_file().stat().st_mtime
-except Exception:
-    EVENTS_CACHE_MTIME = 0.0
+def _load_events_from_json() -> Tuple[List[Dict], float]:
+    path = pick_data_file()
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    events = _normalize_events_rows(raw if isinstance(raw, list) else [])
+    mtime = path.stat().st_mtime
+    return events, mtime
+
+
+def _supabase_enabled() -> bool:
+    return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
+
+
+def _supabase_headers() -> Dict[str, str]:
+    return {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Accept": "application/json",
+    }
+
+
+def _load_events_from_supabase() -> Tuple[List[Dict], float]:
+    url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_EVENTS_TABLE}"
+    headers = _supabase_headers()
+    rows: List[Dict] = []
+    page_size = 1000
+    offset = 0
+    for _ in range(30):
+        params = {
+            "select": "*",
+            "order": "date.asc,start_time.asc,title.asc,event_uid.asc",
+            "limit": str(page_size),
+            "offset": str(offset),
+        }
+        resp = requests.get(url, headers=headers, params=params, timeout=SUPABASE_FETCH_TIMEOUT_S)
+        if resp.status_code != 200:
+            raise RuntimeError(f"supabase_http_{resp.status_code}: {clean(resp.text)[:180]}")
+        chunk = resp.json()
+        if not isinstance(chunk, list):
+            raise RuntimeError("supabase_payload_not_list")
+        rows.extend(chunk)
+        if len(chunk) < page_size:
+            break
+        offset += page_size
+    if not rows:
+        raise RuntimeError("supabase_empty_rows")
+    events = _normalize_events_rows(rows)
+    batch_tokens = [clean(str(r.get("sync_batch_id", ""))) for r in rows if clean(str(r.get("sync_batch_id", "")))]
+    if batch_tokens:
+        batch = max(batch_tokens)
+        version = float(batch) if batch.isdigit() else float(int(time.time()))
+    else:
+        version = float(int(time.time()))
+    return events, version
+
+
+EVENTS_CACHE: List[Dict] = []
+EVENTS_CACHE_MTIME = 0.0
+EVENTS_SOURCE = "bootstrap"
+EVENTS_SOURCE_ERROR = ""
+EVENTS_LAST_REFRESH_TS = 0.0
 init_db()
 
 
 def refresh_events_cache_if_needed(force: bool = False) -> None:
-    global EVENTS_CACHE, EVENTS_CACHE_MTIME
+    global EVENTS_CACHE, EVENTS_CACHE_MTIME, EVENTS_SOURCE, EVENTS_SOURCE_ERROR, EVENTS_LAST_REFRESH_TS
+    now = time.time()
+    supabase_enabled = _supabase_enabled()
+    # Supabase primary path.
+    if supabase_enabled:
+        should_poll_supabase = force or (now - EVENTS_LAST_REFRESH_TS) >= SUPABASE_REFRESH_INTERVAL_S
+        if should_poll_supabase:
+            supabase_error = ""
+            for attempt in range(SUPABASE_FETCH_RETRIES):
+                try:
+                    events, version = _load_events_from_supabase()
+                    EVENTS_CACHE = events
+                    apply_event_overrides(EVENTS_CACHE)
+                    EVENTS_CACHE_MTIME = version
+                    EVENTS_SOURCE = "supabase"
+                    EVENTS_SOURCE_ERROR = ""
+                    EVENTS_LAST_REFRESH_TS = now
+                    return
+                except Exception as exc:
+                    supabase_error = str(exc)
+                    if attempt < SUPABASE_FETCH_RETRIES - 1:
+                        time.sleep(0.3 * (attempt + 1))
+            EVENTS_SOURCE_ERROR = supabase_error or "supabase_fetch_failed"
+        elif EVENTS_SOURCE == "supabase":
+            # Stay on Supabase-backed cache until next poll interval.
+            return
+    elif force and EVENTS_SOURCE != "json-fallback":
+        EVENTS_SOURCE_ERROR = "supabase_disabled_missing_env"
+
+    # JSON fallback path (keeps service alive when Supabase is unavailable).
     try:
         data_path = pick_data_file()
         mtime = data_path.stat().st_mtime
-        if force or mtime > EVENTS_CACHE_MTIME:
-            EVENTS_CACHE = load_events()
+        needs_reload = force or EVENTS_SOURCE != "json-fallback" or mtime > EVENTS_CACHE_MTIME
+        if needs_reload:
+            events, version = _load_events_from_json()
+            EVENTS_CACHE = events
             apply_event_overrides(EVENTS_CACHE)
-            EVENTS_CACHE_MTIME = mtime
+            EVENTS_CACHE_MTIME = version
+            EVENTS_SOURCE = "json-fallback"
+            EVENTS_LAST_REFRESH_TS = now
     except Exception:
         # keep serving existing in-memory cache on transient file errors
         return
@@ -732,6 +1014,9 @@ def apply_event_overrides(events: List[Dict]) -> None:
                 e.update(patch)
             except Exception:
                 pass
+
+
+refresh_events_cache_if_needed(force=True)
 
 
 def enrich_events(events: List[Dict]) -> List[Dict]:
@@ -939,6 +1224,8 @@ def api_meta():
             # string forces every client to refetch so new fields (freshness,
             # topics, correction, attendees) appear on previously cached events.
             "data_version": (str(int(EVENTS_CACHE_MTIME)) if EVENTS_CACHE_MTIME else "0") + "-v3",
+            "events_source": EVENTS_SOURCE,
+            "events_source_error": EVENTS_SOURCE_ERROR,
         }
     )
 
@@ -1020,7 +1307,7 @@ def api_event_ics(event_uid: str):
     lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
-        "PRODID:-//Masjidly//Events//EN",
+        "PRODID:-//Masjid.ly//Events//EN",
         "BEGIN:VEVENT",
         f"UID:{uid}@masjidly",
         f"DTSTAMP:{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}",
@@ -1186,7 +1473,15 @@ def api_healthz():
             con.execute("select 1").fetchone()
         finally:
             con.close()
-        return jsonify({"ok": True, "time": now_iso()})
+        return jsonify(
+            {
+                "ok": True,
+                "time": now_iso(),
+                "events_source": EVENTS_SOURCE,
+                "events_source_error": EVENTS_SOURCE_ERROR,
+                "events_count": len(EVENTS_CACHE),
+            }
+        )
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
@@ -2061,37 +2356,6 @@ def _user_manages_source(user_id: int, source: str) -> bool:
 
 
 # ---- Speakers / scholar directory (#24) ----------------------------------
-SPEAKER_JUNK_WORDS = {
-    "gallery",
-    "contact",
-    "education",
-    "services",
-    "appointment",
-    "nikkah",
-    "home",
-    "about",
-    "donate",
-    "menu",
-    "team",
-    "privacy",
-    "policy",
-    "terms",
-    "login",
-    "register",
-    "subscribe",
-}
-
-
-def _speaker_is_clean(name: str) -> bool:
-    tokens = [t.lower() for t in re.findall(r"[A-Za-z]+", name)]
-    if not tokens or len(tokens) > 5:
-        return False
-    if sum(1 for t in tokens if t in SPEAKER_JUNK_WORDS) > 0:
-        return False
-    letters = sum(len(t) for t in tokens)
-    if letters < 4:
-        return False
-    return True
 
 
 @app.get("/api/speakers")
@@ -2160,6 +2424,560 @@ def api_speaker_detail(slug: str):
             "upcoming": upcoming,
             "past": past,
             "total_events": len(matches),
+        }
+    )
+
+
+# ---- Speaker YouTube archive (#17 past talks) ----------------------------
+SPEAKER_VIDEO_STALE_SECONDS = 72 * 3600  # refresh at most every 72 hours
+
+
+def _speaker_name_for_slug(slug: str) -> str:
+    slug = clean(slug).lower()
+    for e in EVENTS_CACHE:
+        sp = clean(e.get("speaker", ""))
+        if not sp:
+            continue
+        key = re.sub(r"[^a-z0-9]+", "-", sp.lower()).strip("-")
+        if key == slug and _speaker_is_clean(sp):
+            return sp
+    return ""
+
+
+def _speaker_videos_stale(con: sqlite3.Connection, slug: str) -> bool:
+    row = con.execute(
+        "select last_fetched_at from speaker_fetches where speaker_slug = ?",
+        (slug,),
+    ).fetchone()
+    if not row:
+        return True
+    last = clean(row["last_fetched_at"])
+    if not last:
+        return True
+    try:
+        dt = datetime.fromisoformat(last)
+    except ValueError:
+        return True
+    return (datetime.utcnow() - dt).total_seconds() > SPEAKER_VIDEO_STALE_SECONDS
+
+
+def _refresh_speaker_videos(slug: str, name: str) -> Tuple[int, str]:
+    """Fetch YouTube videos for a speaker and upsert into the local DB.
+
+    Returns (number_of_rows_written, error_string).  A non-empty error is
+    recorded in `speaker_fetches.status` so clients can surface degraded
+    results without blocking on repeated network calls.
+    """
+    try:
+        from speaker_youtube import search_speaker_videos
+    except Exception as exc:  # pragma: no cover — defensive
+        return 0, f"import failed: {exc}"
+    try:
+        videos = search_speaker_videos(name, limit=12)
+    except Exception as exc:  # pragma: no cover — defensive
+        videos = []
+        err = str(exc)[:200]
+    else:
+        err = ""
+    con = db_conn()
+    try:
+        now = now_iso()
+        for v in videos:
+            con.execute(
+                """
+                insert into speaker_videos
+                  (speaker_slug, video_id, title, channel, published_at,
+                   duration_seconds, duration_label, view_count, thumbnail_url, url, fetched_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                on conflict(speaker_slug, video_id) do update set
+                  title = excluded.title,
+                  channel = excluded.channel,
+                  published_at = excluded.published_at,
+                  duration_seconds = excluded.duration_seconds,
+                  duration_label = excluded.duration_label,
+                  view_count = excluded.view_count,
+                  thumbnail_url = excluded.thumbnail_url,
+                  url = excluded.url,
+                  fetched_at = excluded.fetched_at
+                """,
+                (
+                    slug,
+                    v.get("video_id", ""),
+                    v.get("title", ""),
+                    v.get("channel", ""),
+                    v.get("published_at", ""),
+                    int(v.get("duration_seconds") or 0),
+                    v.get("duration_label", ""),
+                    int(v.get("view_count") or 0),
+                    v.get("thumbnail_url", ""),
+                    v.get("url", ""),
+                    now,
+                ),
+            )
+        con.execute(
+            """
+            insert into speaker_fetches (speaker_slug, last_fetched_at, status, error)
+            values (?, ?, ?, ?)
+            on conflict(speaker_slug) do update set
+              last_fetched_at = excluded.last_fetched_at,
+              status = excluded.status,
+              error = excluded.error
+            """,
+            (
+                slug,
+                now,
+                "ok" if not err and videos else ("empty" if not err else "error"),
+                err,
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return len(videos), err
+
+
+@app.get("/api/speakers/<slug>/videos")
+def api_speaker_videos(slug: str):
+    slug = clean(slug).lower()
+    if not slug:
+        return jsonify({"error": "slug required"}), 400
+    name = _speaker_name_for_slug(slug)
+    if not name:
+        return jsonify({"error": "Unknown speaker"}), 404
+    con = db_conn()
+    try:
+        if _speaker_videos_stale(con, slug):
+            con.close()
+            _refresh_speaker_videos(slug, name)
+            con = db_conn()
+        rows = con.execute(
+            """
+            select video_id, title, channel, published_at, duration_seconds,
+                   duration_label, view_count, thumbnail_url, url, fetched_at
+            from speaker_videos where speaker_slug = ?
+            order by coalesce(nullif(published_at, ''), fetched_at) desc, id desc
+            limit 20
+            """,
+            (slug,),
+        ).fetchall()
+        fetch_row = con.execute(
+            "select last_fetched_at, status from speaker_fetches where speaker_slug = ?",
+            (slug,),
+        ).fetchone()
+    finally:
+        con.close()
+    return jsonify(
+        {
+            "slug": slug,
+            "name": name,
+            "videos": [dict(r) for r in rows],
+            "last_fetched_at": clean(fetch_row["last_fetched_at"]) if fetch_row else "",
+            "status": clean(fetch_row["status"]) if fetch_row else "pending",
+        }
+    )
+
+
+@app.post("/api/speakers/<slug>/videos/refresh")
+def api_speaker_videos_refresh(slug: str):
+    user = auth_user()
+    slug = clean(slug).lower()
+    if not slug:
+        return jsonify({"error": "slug required"}), 400
+    name = _speaker_name_for_slug(slug)
+    if not name:
+        return jsonify({"error": "Unknown speaker"}), 404
+    # Open to everyone but rate-limited per-speaker by the staleness window
+    # so anonymous users can't hammer YouTube from behind us.
+    con = db_conn()
+    try:
+        if not is_admin(user) and not _speaker_videos_stale(con, slug):
+            con.close()
+            return jsonify({"ok": True, "throttled": True})
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+    count, err = _refresh_speaker_videos(slug, name)
+    return jsonify({"ok": True, "count": count, "error": err})
+
+
+# ---- Masjid amenities (#22) ---------------------------------------------
+AMENITY_SCHEMA: Dict[str, str] = {
+    # Prayer space
+    "wudu_stations": "int",
+    "women_section": "enum:none|balcony|curtain|separate|same_hall",
+    "sisters_entrance": "bool",
+    "stroller_friendly": "bool",
+    "wheelchair_access": "bool",
+    "elevator": "bool",
+    # Programs & classrooms
+    "full_time_school": "bool",
+    "sunday_school": "bool",
+    "quran_classes": "bool",
+    "hifz_program": "bool",
+    "youth_program": "bool",
+    "library": "bool",
+    "classrooms": "bool",
+    # Rec & community
+    "basketball_court": "bool",
+    "gym": "bool",
+    "kitchen": "bool",
+    "multi_purpose_hall": "bool",
+    # Services
+    "funeral_services": "bool",
+    "nikah_services": "bool",
+    "counseling": "bool",
+    "food_pantry": "bool",
+    "new_muslim_classes": "bool",
+    # Jumu'ah
+    "arabic_khutbah": "bool",
+    "english_khutbah": "bool",
+    "urdu_khutbah": "bool",
+    "livestream_jumuah": "bool",
+    # Logistics
+    "parking_spaces": "int",
+    "wifi": "bool",
+    "shoe_storage": "bool",
+    "childcare_during_jumuah": "bool",
+}
+
+
+def _coerce_amenity(key: str, value) -> Optional[object]:
+    kind = AMENITY_SCHEMA.get(key)
+    if kind is None:
+        return None
+    if kind == "bool":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return False
+    if kind == "int":
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+    if kind.startswith("enum:"):
+        allowed = set(kind.split(":", 1)[1].split("|"))
+        s = clean(str(value)).lower()
+        return s if s in allowed else ""
+    return None
+
+
+def _sanitize_amenities(payload: Dict) -> Dict:
+    out: Dict = {}
+    for k, v in (payload or {}).items():
+        coerced = _coerce_amenity(k, v)
+        if coerced is None:
+            continue
+        out[k] = coerced
+    return out
+
+
+def _row_to_amenities(row: Optional[sqlite3.Row]) -> Dict:
+    if not row:
+        return {
+            "amenities": {},
+            "description": "",
+            "website": "",
+            "phone": "",
+            "email": "",
+            "updated_at": "",
+        }
+    try:
+        amenities = json.loads(row["amenities_json"] or "{}")
+    except json.JSONDecodeError:
+        amenities = {}
+    return {
+        "amenities": amenities,
+        "description": clean(row["description"] or ""),
+        "website": clean(row["website"] or ""),
+        "phone": clean(row["phone"] or ""),
+        "email": clean(row["email"] or ""),
+        "updated_at": clean(row["updated_at"] or ""),
+    }
+
+
+@app.get("/api/masjids/amenities/schema")
+def api_masjid_amenities_schema():
+    """Exposes the amenity whitelist so the mobile admin form is data-driven."""
+    return jsonify({"schema": AMENITY_SCHEMA})
+
+
+@app.get("/api/masjids/<source>/amenities")
+def api_masjid_amenities_get(source: str):
+    src = clean(source).lower()
+    if not src:
+        return jsonify({"error": "source required"}), 400
+    con = db_conn()
+    try:
+        row = con.execute(
+            "select source, amenities_json, description, website, phone, email, updated_at "
+            "from masjid_amenities where source = ?",
+            (src,),
+        ).fetchone()
+    finally:
+        con.close()
+    return jsonify({"source": src, **_row_to_amenities(row)})
+
+
+@app.get("/api/masjids/amenities")
+def api_masjid_amenities_all():
+    """Bulk fetch used by the mobile app to populate every masjid profile
+    with one round-trip."""
+    con = db_conn()
+    try:
+        rows = con.execute(
+            "select source, amenities_json, description, website, phone, email, updated_at "
+            "from masjid_amenities"
+        ).fetchall()
+    finally:
+        con.close()
+    return jsonify(
+        {
+            "masjids": {clean(r["source"]).lower(): _row_to_amenities(r) for r in rows},
+            "count": len(rows),
+        }
+    )
+
+
+@app.put("/api/admin/masjid/<source>/amenities")
+def api_masjid_amenities_update(source: str):
+    user = auth_user()
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    src = clean(source).lower()
+    if not src:
+        return jsonify({"error": "source required"}), 400
+    if not is_admin(user) and not _user_manages_source(int(user["id"]), src):
+        return jsonify({"error": "Not authorized for this masjid"}), 403
+    payload = request.get_json(silent=True) or {}
+    amenities = _sanitize_amenities(payload.get("amenities") or {})
+    description = clean(str(payload.get("description", "")))[:600]
+    website = clean(str(payload.get("website", "")))[:200]
+    phone = clean(str(payload.get("phone", "")))[:40]
+    email = clean(str(payload.get("email", "")))[:120]
+    con = db_conn()
+    try:
+        con.execute(
+            """
+            insert into masjid_amenities (source, amenities_json, description, website, phone, email, updated_by, updated_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(source) do update set
+              amenities_json = excluded.amenities_json,
+              description = excluded.description,
+              website = excluded.website,
+              phone = excluded.phone,
+              email = excluded.email,
+              updated_by = excluded.updated_by,
+              updated_at = excluded.updated_at
+            """,
+            (
+                src,
+                json.dumps(amenities, sort_keys=True),
+                description,
+                website,
+                phone,
+                email,
+                int(user["id"]),
+                now_iso(),
+            ),
+        )
+        con.commit()
+        row = con.execute(
+            "select source, amenities_json, description, website, phone, email, updated_at "
+            "from masjid_amenities where source = ?",
+            (src,),
+        ).fetchone()
+    finally:
+        con.close()
+    return jsonify({"ok": True, "source": src, **_row_to_amenities(row)})
+
+
+# ---- Cron / content-refresh (nightly YouTube + baseline amenities) -------
+# Protected by a shared secret so it can be safely hit from the Mac's
+# daily pipeline without a user login token.  Every source gets a
+# baseline amenity row (english+arabic khutbah default on, rest empty)
+# so the mobile "Amenities" card always has something to render even
+# for masjids we haven't curated yet.
+
+CRON_SECRET_ENV = "SAFAR_CRON_SECRET"
+DEFAULT_BASELINE_AMENITIES = {
+    "arabic_khutbah": True,
+    "english_khutbah": True,
+}
+
+
+def _ensure_baseline_amenities() -> Tuple[int, int]:
+    """For every known masjid source in EVENTS_CACHE (or MASJID_COORDS),
+    insert a baseline amenity row if none exists yet.  Returns
+    (inserted, already_present)."""
+    known = set(MASJID_COORDS.keys())
+    for e in EVENTS_CACHE:
+        src = clean(e.get("source", "")).lower()
+        if src:
+            known.add(src)
+    con = db_conn()
+    inserted = 0
+    existing = 0
+    try:
+        rows = con.execute("select source from masjid_amenities").fetchall()
+        present = {clean(r["source"]).lower() for r in rows}
+        pretty = lambda s: s.replace("_", " ").title()
+        now = now_iso()
+        for src in sorted(known):
+            if src in present:
+                existing += 1
+                continue
+            con.execute(
+                """
+                insert into masjid_amenities (source, amenities_json, description, website, phone, email, updated_by, updated_at)
+                values (?, ?, ?, '', '', '', NULL, ?)
+                """,
+                (
+                    src,
+                    json.dumps(DEFAULT_BASELINE_AMENITIES, sort_keys=True),
+                    f"{pretty(src)} — baseline profile. Details will be filled in by the masjid admin.",
+                    now,
+                ),
+            )
+            inserted += 1
+        con.commit()
+    finally:
+        con.close()
+    return inserted, existing
+
+
+def _purge_junk_speaker_rows() -> Tuple[int, int]:
+    """Delete speaker_videos + speaker_fetches rows whose slug no longer
+    passes `_speaker_is_clean`.  Happens every cron run so both the
+    local Mac DB and the Railway volume self-heal when we tighten the
+    junk-word list.  Returns (video_rows_deleted, fetch_rows_deleted).
+    """
+    con = db_conn()
+    try:
+        fetched = con.execute("select speaker_slug from speaker_fetches").fetchall()
+        junk = []
+        for row in fetched:
+            slug = clean(row["speaker_slug"])
+            name = slug.replace("-", " ")
+            if not slug or not _speaker_is_clean(name):
+                junk.append(slug)
+        if not junk:
+            return 0, 0
+        placeholders = ",".join("?" * len(junk))
+        vc = con.execute(
+            f"delete from speaker_videos where speaker_slug in ({placeholders})",
+            junk,
+        ).rowcount
+        fc = con.execute(
+            f"delete from speaker_fetches where speaker_slug in ({placeholders})",
+            junk,
+        ).rowcount
+        con.commit()
+        return int(vc or 0), int(fc or 0)
+    finally:
+        con.close()
+
+
+def _clean_speaker_slugs() -> List[Tuple[str, str]]:
+    """List of (slug, canonical_name) pairs for speakers clean enough to
+    query YouTube for.  De-dupes by slug."""
+    seen: Dict[str, str] = {}
+    for e in EVENTS_CACHE:
+        sp = clean(e.get("speaker", ""))
+        if not sp or not _speaker_is_clean(sp):
+            continue
+        slug = re.sub(r"[^a-z0-9]+", "-", sp.lower()).strip("-")
+        if slug and slug not in seen:
+            seen[slug] = sp
+    return sorted(seen.items())
+
+
+@app.post("/api/admin/cron/refresh-content")
+def api_cron_refresh_content():
+    """Runs the nightly refresh: warms every speaker's YouTube cache,
+    ensures every masjid has a baseline amenity row.  Auth is a single
+    shared secret passed in `X-Cron-Secret` so the Mac pipeline doesn't
+    need to stash user credentials."""
+    secret = os.getenv(CRON_SECRET_ENV, "")
+    supplied = clean(request.headers.get("X-Cron-Secret", ""))
+    if not secret or supplied != secret:
+        return jsonify({"error": "forbidden"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    max_speakers = int(payload.get("max_speakers") or 0)  # 0 = all
+    force = bool(payload.get("force"))
+
+    inserted, already = _ensure_baseline_amenities()
+    purged_videos, purged_fetches = _purge_junk_speaker_rows()
+    pairs = _clean_speaker_slugs()
+    if max_speakers > 0:
+        pairs = pairs[:max_speakers]
+
+    refreshed = 0
+    kept_cached = 0
+    errors = 0
+    total_videos = 0
+    con = db_conn()
+    try:
+        for slug, name in pairs:
+            stale = force or _speaker_videos_stale(con, slug)
+            if not stale:
+                kept_cached += 1
+                continue
+            # Close the connection while we hit the network so SQLite
+            # doesn't keep a long-lived handle open for 3+ minutes.
+            con.close()
+            count, err = _refresh_speaker_videos(slug, name)
+            con = db_conn()
+            if err:
+                errors += 1
+            else:
+                refreshed += 1
+                total_videos += count
+    finally:
+        con.close()
+
+    return jsonify(
+        {
+            "ok": True,
+            "amenities": {"inserted_baseline": inserted, "already_present": already},
+            "speakers": {
+                "total_clean": len(pairs),
+                "refreshed": refreshed,
+                "kept_cached": kept_cached,
+                "errors": errors,
+                "videos_written": total_videos,
+                "purged_videos": purged_videos,
+                "purged_fetches": purged_fetches,
+            },
+        }
+    )
+
+
+@app.get("/api/admin/cron/status")
+def api_cron_status():
+    """Lightweight peek at the cron tables so you can see when the last
+    run happened without re-hitting YouTube.  No auth — purely read-only
+    aggregate counts, no user data leaves the DB."""
+    con = db_conn()
+    try:
+        sv = con.execute("select count(*) as n, count(distinct speaker_slug) as s from speaker_videos").fetchone()
+        sf = con.execute(
+            "select max(last_fetched_at) as last, count(*) as n from speaker_fetches"
+        ).fetchone()
+        am = con.execute("select count(*) as n from masjid_amenities").fetchone()
+    finally:
+        con.close()
+    return jsonify(
+        {
+            "speaker_videos": {"rows": int(sv["n"] or 0), "speakers": int(sv["s"] or 0)},
+            "speaker_fetches": {"rows": int(sf["n"] or 0), "last": clean(sf["last"] or "")},
+            "masjid_amenities": {"rows": int(am["n"] or 0)},
         }
     )
 
@@ -2327,7 +3145,7 @@ def api_events_bulk_ics():
     start_d = parse_iso_date(start_raw) or date.today()
     end_d = parse_iso_date(until_raw) or (start_d + timedelta(days=30))
     sources = [clean(s).lower() for s in sources_raw.split(",") if clean(s)]
-    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Masjidly//Bulk//EN", "X-WR-CALNAME:Masjidly Events"]
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Masjid.ly//Bulk//EN", "X-WR-CALNAME:Masjid.ly Events"]
     count = 0
     for e in EVENTS_CACHE:
         d = parse_iso_date(e.get("date", ""))
@@ -2614,7 +3432,7 @@ def index():
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Masjidly - Local Masjid Events</title>
+  <title>Masjid.ly - Local Masjid Events</title>
   <style>
     :root {
       --bg: #f4f7fb;
@@ -2741,7 +3559,7 @@ def index():
 <body>
   <div class="wrap">
     <div class="hero">
-      <h1 class="title">Masjidly Local Events</h1>
+      <h1 class="title">Masjid.ly Local Events</h1>
       <div class="subtitle">Find nearby masjid events by date, distance, and interest — clear for families and community members.</div>
     </div>
 

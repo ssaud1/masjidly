@@ -1,94 +1,61 @@
-name: Daily scraper pipeline
+name: Instagram scraper pipeline
 
-# Runs the full Safar pipeline (website scrapers + Gmail IMAP + Instagram +
-# enrichment + dashboards + seed regeneration) once a day, commits the
-# refreshed events JSON and mobile seed back to main, and Railway
-# auto-redeploys the API off the new commit.
+# Runs only Instagram → enrich → Jummah → target JSON + mobile seed (same committed
+# artifacts as the tail of the daily pipeline). Use when you want a fresh IG pass
+# without re-scraping every masjid website or Gmail.
 #
-# Timezone note: GitHub cron is UTC only. 17:00 UTC is:
-#   - 1 PM EDT (summer, Mar-Nov)
-#   - Noon EST (winter)
-# Adjust here or via workflow_dispatch whenever you need a one-off run.
+# Commits: target_masjids_*.json, safar-mobile/assets/seed-*.json
 
 on:
-  schedule:
-    - cron: "0 17 * * *"
   workflow_dispatch:
     inputs:
       fast_mode:
-        description: "Fast mode? (skips heavier OCR / poster audit)"
+        description: "Fast mode? (shorter IG window, lighter enrich OCR)"
         required: false
         default: "false"
         type: choice
         options:
           - "false"
           - "true"
-      skip_instagram:
-        description: "Skip Instagram scraper?"
+      skip_scrape:
+        description: "Skip Instagram scrape (only enrich + seed from existing JSON on runner cache)?"
         required: false
         default: "false"
         type: choice
         options:
           - "false"
           - "true"
-      skip_email:
-        description: "Skip Gmail IMAP ingest?"
+      ig_usernames:
+        description: "Optional comma-separated IG usernames (empty = all mapped accounts)"
         required: false
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
+        default: ""
 
-# We push commits back to main, so the workflow-scoped token needs write access.
 permissions:
   contents: write
 
 concurrency:
-  group: daily-pipeline
+  group: instagram-pipeline
   cancel-in-progress: false
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    # Old-style fast-fail retries + 30s inter-account pause fit well under 90 min
-    # (~24 accounts * ~1.5 min worst case = 36 min IG, plus 10 min everything else).
     timeout-minutes: 90
 
     env:
-      # Pipeline flags
       SAFAR_FAST_MODE: ${{ github.event.inputs.fast_mode == 'true' && '1' || '0' }}
-      SAFAR_SKIP_INSTAGRAM: ${{ github.event.inputs.skip_instagram == 'true' && '1' || '0' }}
-      SAFAR_SKIP_EMAIL: ${{ github.event.inputs.skip_email == 'true' && '1' || '0' }}
-      # IG config mirrors the original working script: one account at a time,
-      # short linear retries, skip blocked accounts quickly, pause deliberately
-      # between accounts. No sharding, no proxy rotation, no 3-minute backoffs
-      # — those only made the pipeline look stuck.
+      SAFAR_SKIP_INSTAGRAM: ${{ github.event.inputs.skip_scrape == 'true' && '1' || '0' }}
       SAFAR_INSTAGRAM_SHARDS: "1"
-      # Pagination sleep inside a single account (--sleep-seconds arg).
       SAFAR_INSTAGRAM_SLEEP_SECONDS: "6"
       SAFAR_INSTAGRAM_SHARD_STAGGER_SECONDS: "0"
-      # Idle gap between accounts — this is the "slow like before" lever.
       IG_ACCOUNT_SLEEP_SECONDS: "30"
-      # Old-style fast-fail: 4 retries with a 20s cap so a single blocked account
-      # can't monopolize the whole pipeline.
       IG_REQUEST_RETRIES: "4"
       IG_BACKOFF_BASE_S: "1.5"
       IG_BACKOFF_CAP_S: "20"
-      # Route IG through a single Webshare proxy. GHA public IPs are pre-flagged
-      # by Instagram; the previous direct-connection run got web_profile_info 429s
-      # on every account. One stable residential-ish proxy + old-style light retry
-      # is the closest we can get to "works like it did from a home Mac".
       SAFAR_INSTAGRAM_FORCE_PROXY: "1"
-      # Filled in repo root by "Prepare Instagram proxy file" (Webshare secret or Proxifly CDN).
       SAFAR_INSTAGRAM_PROXY_FILE: "instagram_proxies.txt"
-      # Unbuffered Python stdout so the GHA live log shows scraper progress in real time
-      # (otherwise the 4KB block buffer can hide 30s+ of progress at once).
       PYTHONUNBUFFERED: "1"
-      # Gmail creds for ingest_masjid_emails.py
-      GMAIL_USER: ${{ secrets.GMAIL_USER }}
-      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-      # Supabase event catalog sync (sync_supabase_events.py).
+      SAFAR_INSTAGRAM_USERNAMES: ${{ github.event.inputs.ig_usernames }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
@@ -99,10 +66,6 @@ jobs:
           fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Many scripts hardcode Path("/Users/shaheersaud/Safar"). Rather than rewrite
-      # all 15 of them, we symlink the repo into that legacy path inside the runner.
-      # This is ephemeral (the VM is destroyed after the job) and lets the scripts
-      # run unmodified.
       - name: Symlink legacy /Users/shaheersaud/Safar path
         run: |
           sudo mkdir -p /Users/shaheersaud
@@ -124,7 +87,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          # Scrapers beyond the API surface:
           pip install playwright==1.58.0 pillow==12.1.1
 
       - name: Install Playwright browser (Chromium only)
@@ -137,9 +99,10 @@ jobs:
           path: |
             events_by_masjid
             instagram
-          key: safar-caches-${{ github.run_id }}
+          key: safar-ig-caches-${{ github.run_id }}
           restore-keys: |
             safar-caches-
+            safar-ig-caches-
 
       - name: Prepare Instagram proxy file (Webshare or Proxifly CDN)
         env:
@@ -150,13 +113,13 @@ jobs:
             printf '%s\n' "$WEBSHARE_PROXIES" > "$OUT"
             echo "proxy lines (Webshare): $(grep -c . "$OUT" || true)"
           else
-            echo "::warning::WEBSHARE_PROXIES empty — fetching Proxifly public HTTP proxy list into $OUT (same CDN as proxifly.dev docs)."
+            echo "::warning::WEBSHARE_PROXIES empty — fetching Proxifly public HTTP proxy list into $OUT."
             python proxifly_fetch.py --out "$OUT" --max 50
           fi
 
-      - name: Run Safar daily pipeline
+      - name: Run Instagram-only pipeline
         run: |
-          python safar_daily_pipeline.py
+          python safar_instagram_pipeline.py
 
       - name: Verify Supabase sync summary exists
         run: |
@@ -184,11 +147,11 @@ jobs:
           echo "--- seed ---"
           ls -l safar-mobile/assets/seed-events.json safar-mobile/assets/seed-meta.json || true
 
-      - name: Upload pipeline report + IG cache diff as artifact
+      - name: Upload pipeline report as artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pipeline-report-${{ github.run_id }}
+          name: instagram-pipeline-report-${{ github.run_id }}
           path: |
             events_by_masjid/_reports/
           retention-days: 14
@@ -199,10 +162,6 @@ jobs:
           git config user.name  "safar-bot"
           git config user.email "safar-bot@users.noreply.github.com"
 
-          # Only stage the files the pipeline is expected to update. Never stage
-          # the proxy file we wrote above (instagram_proxies.txt is in .gitignore
-          # via a line we add in this same commit if it's missing — but even
-          # without that it won't match the explicit `git add` set below).
           git add \
             target_masjids_events.json \
             target_masjids_future_events.json \
@@ -215,11 +174,7 @@ jobs:
             exit 0
           fi
 
-          git commit -m "chore(data): refresh events $(date -u +%Y-%m-%d) [skip ci]"
-          # Use the default token; `permissions: contents: write` above lets us push to main.
-          # Retry-with-rebase: if someone else pushed during the ~25-min scrape
-          # window, pull their work, replay our commit on top, and push again.
-          # We do this instead of `--force` so we never clobber real work.
+          git commit -m "chore(data): Instagram pipeline refresh $(date -u +%Y-%m-%d) [skip ci]"
           for attempt in 1 2 3 4 5; do
             if git push origin HEAD:main; then
               echo "Pushed on attempt $attempt"
