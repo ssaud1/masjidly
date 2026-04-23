@@ -254,7 +254,7 @@ const WELCOME_FLOW_DONE_KEY = "masjidly_welcome_flow_done_v1";
 const GUIDED_TOUR_DONE_KEY = "masjidly_guided_tour_done_v5";
 // Bump on every EAS update so the badge on the welcome screen reflects what's
 // actually running on device. v2 = post-"always-welcome" build + Explore perf.
-const APP_BUILD_VERSION = "v74";
+const APP_BUILD_VERSION = "v75";
 
 // Static hosted URLs referenced from several places (Settings, About,
 // PrivacyInfo).  Mirrored from `app.json > expo.extra.urls` so the app
@@ -5680,7 +5680,7 @@ function AppInner() {
                   >
                     <Image source={WELCOME_LOGO} style={styles.welcomeLogoBase} resizeMode="contain" />
                   </View>
-                  <Text style={[styles.welcomeBetaBadge, isNeo && styles.welcomeBetaBadgeNeo, isEmerald && styles.welcomeBetaBadgeEmerald]}>{`BETA · ${APP_BUILD_VERSION}`}</Text>
+                  <Text style={[styles.welcomeBetaBadge, isNeo && styles.welcomeBetaBadgeNeo, isEmerald && styles.welcomeBetaBadgeEmerald]}>{`Version ${APP_BUILD_VERSION}`}</Text>
           <Text style={[styles.welcomeTitle, isMinera && styles.welcomeTitleMinera, isEmerald && styles.welcomeTitleEmerald, isNeo && styles.welcomeTitleNeo]}>Local masjid events, beautifully organized</Text>
           <Text style={[styles.welcomeSub, isMinera && styles.welcomeSubMinera, isEmerald && styles.welcomeSubEmerald, isNeo && styles.welcomeSubNeo]}>
             Discover upcoming programs, classes, and community nights from nearby masjids in one place.
