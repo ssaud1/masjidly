@@ -713,7 +713,7 @@
     "rsvp_link": "",
     "image_urls": [],
     "raw_text": "Bayonne Muslims | Masjid and Community Center in Bayonne, NJ About Education As-Sirat Quran Academy Little Khalifas Academy Summer Camp Interact News Volunteer Social Media Notice to Parents Feedback Contact Us Donate SCHOOL Bayonne Muslims Prayer Times Salah Adhan Iqama Fajr 04:45 AM 05:05 AM Dhuhr 12:55 PM 01:30 PM Asr 04:43 PM 04:58 PM Magraib 07:44 PM 07:49 PM Isha 09:06 PM 09:21 PM Jummah 1 12:45PM 1:15PM Jummah 2 1:45PM 2:15PM Announcements Eid Al-Fitr Announcements Eid al-Fitr will be on Friday, March 20, 2026. 1. The community Eid al-Fitr prayer will be held at Stephen R Gregg Park this year. The prayer will be held next to Baseball Field 4 at 8:45 AM. Directions: https://maps.app.goo.gl/c5uCKUUvs4ufMvG58 There will NOT be any Eid prayers at 16th Street Park this year. 2. For anyone that can't attend the community prayer at the park, there will be an early Eid prayer held at the masjid (109 E 24th St) at 7:30 AM. 3. For this Friday, March 20th 2026, there will only be a single Jummah Khutbah at 1 PM. The masjid will return to the regular schedule of two Jummah Khutbahs next week. 19 Mar 2026 10:40 AM Jummah Times Jummah Prayer 1: 12:45PM Jummah Prayer 2: 1:45PM 12 Mar 2026 06:41 PM Welcoming Ramadan 2026 In accordance with AMJA and Bayonne Muslims global moon sighting policy, the moon was sighted and therefore InshaAllah the first day of Ramadan will be Wednesday, February 18th inshaAllah. We will pray taraweah tonight, Tuesday night. Taraweah/Isha at the masjid will start 7:30pm inshaAllah. Download the BayonneMuslims app for all prayer timings. Please come early and follow all masjid guidelines regarding parking and other safety precautions. Message from Abdul Hammed, president of Bayonne Muslims below: I would like to extend a warm and heartfelt welcome to al",
-    "confidence": 0.7,
+    "confidence": 0.85,
     "speaker": "",
     "poster_ocr_text": ""
   },
@@ -872,6 +872,32 @@
     ],
     "raw_text": "Instagram",
     "confidence": 0.9,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "iceb",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/iceb.nj/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-04-24",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "Islamic Center of East Brunswick",
+    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
+    "city": "East Brunswick",
+    "state": "NJ",
+    "zip": "08816",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "Islamic Center of East Brunswick",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
     "speaker": "",
     "poster_ocr_text": ""
   },
@@ -1058,32 +1084,6 @@
     "poster_ocr_text": ""
   },
   {
-    "source": "nbic",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/nbic_pics/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-04-24",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "New Brunswick Islamic Center",
-    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
-    "city": "North Brunswick",
-    "state": "NJ",
-    "zip": "08902",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "New Brunswick Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
     "source": "waarith",
     "source_type": "instagram_recurring",
     "source_url": "https://www.instagram.com/masjidwaarithuddeen/",
@@ -1100,6 +1100,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Masjid Waarith ud Deen",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "nbic",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/nbic_pics/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-04-24",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "New Brunswick Islamic Center",
+    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
+    "city": "North Brunswick",
+    "state": "NJ",
+    "zip": "08902",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "New Brunswick Islamic Center",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -1256,32 +1282,6 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Jam-e-Masjid Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
-    "source": "iceb",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/iceb.nj/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-04-24",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "Islamic Center of East Brunswick",
-    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
-    "city": "East Brunswick",
-    "state": "NJ",
-    "zip": "08816",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -2383,7 +2383,7 @@
     "rsvp_link": "",
     "image_urls": [],
     "raw_text": "Bayonne Muslims | Masjid and Community Center in Bayonne, NJ About Education As-Sirat Quran Academy Little Khalifas Academy Summer Camp Interact News Volunteer Social Media Notice to Parents Feedback Contact Us Donate SCHOOL Bayonne Muslims Prayer Times Salah Adhan Iqama Fajr 04:45 AM 05:05 AM Dhuhr 12:55 PM 01:30 PM Asr 04:43 PM 04:58 PM Magraib 07:44 PM 07:49 PM Isha 09:06 PM 09:21 PM Jummah 1 12:45PM 1:15PM Jummah 2 1:45PM 2:15PM Announcements Eid Al-Fitr Announcements Eid al-Fitr will be on Friday, March 20, 2026. 1. The community Eid al-Fitr prayer will be held at Stephen R Gregg Park this year. The prayer will be held next to Baseball Field 4 at 8:45 AM. Directions: https://maps.app.goo.gl/c5uCKUUvs4ufMvG58 There will NOT be any Eid prayers at 16th Street Park this year. 2. For anyone that can't attend the community prayer at the park, there will be an early Eid prayer held at the masjid (109 E 24th St) at 7:30 AM. 3. For this Friday, March 20th 2026, there will only be a single Jummah Khutbah at 1 PM. The masjid will return to the regular schedule of two Jummah Khutbahs next week. 19 Mar 2026 10:40 AM Jummah Times Jummah Prayer 1: 12:45PM Jummah Prayer 2: 1:45PM 12 Mar 2026 06:41 PM Welcoming Ramadan 2026 In accordance with AMJA and Bayonne Muslims global moon sighting policy, the moon was sighted and therefore InshaAllah the first day of Ramadan will be Wednesday, February 18th inshaAllah. We will pray taraweah tonight, Tuesday night. Taraweah/Isha at the masjid will start 7:30pm inshaAllah. Download the BayonneMuslims app for all prayer timings. Please come early and follow all masjid guidelines regarding parking and other safety precautions. Message from Abdul Hammed, president of Bayonne Muslims below: I would like to extend a warm and heartfelt welcome to al",
-    "confidence": 0.7,
+    "confidence": 0.85,
     "speaker": "",
     "poster_ocr_text": ""
   },
@@ -2476,6 +2476,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Hudson Islamic Center",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "iceb",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/iceb.nj/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-05-01",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "Islamic Center of East Brunswick",
+    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
+    "city": "East Brunswick",
+    "state": "NJ",
+    "zip": "08816",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -2668,32 +2694,6 @@
     "poster_ocr_text": ""
   },
   {
-    "source": "nbic",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/nbic_pics/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-05-01",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "New Brunswick Islamic Center",
-    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
-    "city": "North Brunswick",
-    "state": "NJ",
-    "zip": "08902",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "New Brunswick Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
     "source": "waarith",
     "source_type": "instagram_recurring",
     "source_url": "https://www.instagram.com/masjidwaarithuddeen/",
@@ -2710,6 +2710,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Masjid Waarith ud Deen",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "nbic",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/nbic_pics/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-05-01",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "New Brunswick Islamic Center",
+    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
+    "city": "North Brunswick",
+    "state": "NJ",
+    "zip": "08902",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "New Brunswick Islamic Center",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -2866,32 +2892,6 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Jam-e-Masjid Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
-    "source": "iceb",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/iceb.nj/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-05-01",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "Islamic Center of East Brunswick",
-    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
-    "city": "East Brunswick",
-    "state": "NJ",
-    "zip": "08816",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -4008,7 +4008,7 @@
     "rsvp_link": "",
     "image_urls": [],
     "raw_text": "Bayonne Muslims | Masjid and Community Center in Bayonne, NJ About Education As-Sirat Quran Academy Little Khalifas Academy Summer Camp Interact News Volunteer Social Media Notice to Parents Feedback Contact Us Donate SCHOOL Bayonne Muslims Prayer Times Salah Adhan Iqama Fajr 04:45 AM 05:05 AM Dhuhr 12:55 PM 01:30 PM Asr 04:43 PM 04:58 PM Magraib 07:44 PM 07:49 PM Isha 09:06 PM 09:21 PM Jummah 1 12:45PM 1:15PM Jummah 2 1:45PM 2:15PM Announcements Eid Al-Fitr Announcements Eid al-Fitr will be on Friday, March 20, 2026. 1. The community Eid al-Fitr prayer will be held at Stephen R Gregg Park this year. The prayer will be held next to Baseball Field 4 at 8:45 AM. Directions: https://maps.app.goo.gl/c5uCKUUvs4ufMvG58 There will NOT be any Eid prayers at 16th Street Park this year. 2. For anyone that can't attend the community prayer at the park, there will be an early Eid prayer held at the masjid (109 E 24th St) at 7:30 AM. 3. For this Friday, March 20th 2026, there will only be a single Jummah Khutbah at 1 PM. The masjid will return to the regular schedule of two Jummah Khutbahs next week. 19 Mar 2026 10:40 AM Jummah Times Jummah Prayer 1: 12:45PM Jummah Prayer 2: 1:45PM 12 Mar 2026 06:41 PM Welcoming Ramadan 2026 In accordance with AMJA and Bayonne Muslims global moon sighting policy, the moon was sighted and therefore InshaAllah the first day of Ramadan will be Wednesday, February 18th inshaAllah. We will pray taraweah tonight, Tuesday night. Taraweah/Isha at the masjid will start 7:30pm inshaAllah. Download the BayonneMuslims app for all prayer timings. Please come early and follow all masjid guidelines regarding parking and other safety precautions. Message from Abdul Hammed, president of Bayonne Muslims below: I would like to extend a warm and heartfelt welcome to al",
-    "confidence": 0.7,
+    "confidence": 0.85,
     "speaker": "",
     "poster_ocr_text": ""
   },
@@ -4078,6 +4078,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Hudson Islamic Center",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "iceb",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/iceb.nj/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-05-08",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "Islamic Center of East Brunswick",
+    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
+    "city": "East Brunswick",
+    "state": "NJ",
+    "zip": "08816",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -4270,32 +4296,6 @@
     "poster_ocr_text": ""
   },
   {
-    "source": "nbic",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/nbic_pics/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-05-08",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "New Brunswick Islamic Center",
-    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
-    "city": "North Brunswick",
-    "state": "NJ",
-    "zip": "08902",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "New Brunswick Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
     "source": "waarith",
     "source_type": "instagram_recurring",
     "source_url": "https://www.instagram.com/masjidwaarithuddeen/",
@@ -4312,6 +4312,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Masjid Waarith ud Deen",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "nbic",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/nbic_pics/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-05-08",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "New Brunswick Islamic Center",
+    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
+    "city": "North Brunswick",
+    "state": "NJ",
+    "zip": "08902",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "New Brunswick Islamic Center",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -4468,32 +4494,6 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Jam-e-Masjid Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
-    "source": "iceb",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/iceb.nj/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-05-08",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "Islamic Center of East Brunswick",
-    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
-    "city": "East Brunswick",
-    "state": "NJ",
-    "zip": "08816",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -5472,7 +5472,7 @@
     "rsvp_link": "",
     "image_urls": [],
     "raw_text": "Bayonne Muslims | Masjid and Community Center in Bayonne, NJ About Education As-Sirat Quran Academy Little Khalifas Academy Summer Camp Interact News Volunteer Social Media Notice to Parents Feedback Contact Us Donate SCHOOL Bayonne Muslims Prayer Times Salah Adhan Iqama Fajr 04:45 AM 05:05 AM Dhuhr 12:55 PM 01:30 PM Asr 04:43 PM 04:58 PM Magraib 07:44 PM 07:49 PM Isha 09:06 PM 09:21 PM Jummah 1 12:45PM 1:15PM Jummah 2 1:45PM 2:15PM Announcements Eid Al-Fitr Announcements Eid al-Fitr will be on Friday, March 20, 2026. 1. The community Eid al-Fitr prayer will be held at Stephen R Gregg Park this year. The prayer will be held next to Baseball Field 4 at 8:45 AM. Directions: https://maps.app.goo.gl/c5uCKUUvs4ufMvG58 There will NOT be any Eid prayers at 16th Street Park this year. 2. For anyone that can't attend the community prayer at the park, there will be an early Eid prayer held at the masjid (109 E 24th St) at 7:30 AM. 3. For this Friday, March 20th 2026, there will only be a single Jummah Khutbah at 1 PM. The masjid will return to the regular schedule of two Jummah Khutbahs next week. 19 Mar 2026 10:40 AM Jummah Times Jummah Prayer 1: 12:45PM Jummah Prayer 2: 1:45PM 12 Mar 2026 06:41 PM Welcoming Ramadan 2026 In accordance with AMJA and Bayonne Muslims global moon sighting policy, the moon was sighted and therefore InshaAllah the first day of Ramadan will be Wednesday, February 18th inshaAllah. We will pray taraweah tonight, Tuesday night. Taraweah/Isha at the masjid will start 7:30pm inshaAllah. Download the BayonneMuslims app for all prayer timings. Please come early and follow all masjid guidelines regarding parking and other safety precautions. Message from Abdul Hammed, president of Bayonne Muslims below: I would like to extend a warm and heartfelt welcome to al",
-    "confidence": 0.7,
+    "confidence": 0.85,
     "speaker": "",
     "poster_ocr_text": ""
   },
@@ -5591,6 +5591,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Hudson Islamic Center",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "iceb",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/iceb.nj/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-05-15",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "Islamic Center of East Brunswick",
+    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
+    "city": "East Brunswick",
+    "state": "NJ",
+    "zip": "08816",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -5783,32 +5809,6 @@
     "poster_ocr_text": ""
   },
   {
-    "source": "nbic",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/nbic_pics/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-05-15",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "New Brunswick Islamic Center",
-    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
-    "city": "North Brunswick",
-    "state": "NJ",
-    "zip": "08902",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "New Brunswick Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
     "source": "waarith",
     "source_type": "instagram_recurring",
     "source_url": "https://www.instagram.com/masjidwaarithuddeen/",
@@ -5825,6 +5825,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Masjid Waarith ud Deen",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "nbic",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/nbic_pics/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-05-15",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "New Brunswick Islamic Center",
+    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
+    "city": "North Brunswick",
+    "state": "NJ",
+    "zip": "08902",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "New Brunswick Islamic Center",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -5981,32 +6007,6 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Jam-e-Masjid Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
-    "source": "iceb",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/iceb.nj/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-05-15",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "Islamic Center of East Brunswick",
-    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
-    "city": "East Brunswick",
-    "state": "NJ",
-    "zip": "08816",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -6191,7 +6191,7 @@
     "rsvp_link": "",
     "image_urls": [],
     "raw_text": "Mommy & Me! - Islamic Center of East Brunswick info@icebnj.org (732) 698-8744 Sunrise At: 6:07 AM Sunset At: 7:45 PM About ICEB Purpose & Mission Management ICEB Administration ICEB Shura Delegates Committees Civic Action Committee ICEB Women’s Committee Imam Corner Imam Job Description Membership Membership Application (2026) ICEB ICEB Membership Status Check Constitution and by-laws Construction Updates Services Funeral Matrimonial Sadaqa Zakat Zakat Ul-fitr Salaat Timings Weekend School Sunday School Sunday School Information Sunday School Administration Events Event Request Form Community Hall Rental Contact Volunteer Recruitment Form Donate Donate About ICEB Purpose & Mission Management ICEB Administration ICEB Shura Delegates Committees Civic Action Committee ICEB Women’s Committee Imam Corner Imam Job Description Membership Membership Application (2026) ICEB ICEB Membership Status Check Constitution and by-laws Construction Updates Services Funeral Matrimonial Sadaqa Zakat Zakat Ul-fitr Salaat Timings Weekend School Sunday School Sunday School Information Sunday School Administration Events Event Request Form Community Hall Rental Contact Volunteer Recruitment Form Donate info@icebnj.org (732) 698-8744 About ICEB Purpose & Mission Management ICEB Administration ICEB Shura Delegates Committees Civic Action Committee ICEB Women’s Committee Imam Corner Imam Job Description Membership Membership Application (2026) ICEB ICEB Membership Status Check Constitution and by-laws Construction Updates Services Funeral Matrimonial Sadaqa Zakat Zakat Ul-fitr Salaat Timings Weekend School Sunday School Sunday School Information Sunday School Administration Events Event Request Form Community Hall Rental Contact Volunteer Recruitment Form Donate Event Details Home Mommy & Me! Mom",
-    "confidence": 0.89,
+    "confidence": 1.0,
     "speaker": "",
     "poster_ocr_text": ""
   },
@@ -6838,7 +6838,7 @@
     "rsvp_link": "",
     "image_urls": [],
     "raw_text": "Bayonne Muslims | Masjid and Community Center in Bayonne, NJ About Education As-Sirat Quran Academy Little Khalifas Academy Summer Camp Interact News Volunteer Social Media Notice to Parents Feedback Contact Us Donate SCHOOL Bayonne Muslims Prayer Times Salah Adhan Iqama Fajr 04:45 AM 05:05 AM Dhuhr 12:55 PM 01:30 PM Asr 04:43 PM 04:58 PM Magraib 07:44 PM 07:49 PM Isha 09:06 PM 09:21 PM Jummah 1 12:45PM 1:15PM Jummah 2 1:45PM 2:15PM Announcements Eid Al-Fitr Announcements Eid al-Fitr will be on Friday, March 20, 2026. 1. The community Eid al-Fitr prayer will be held at Stephen R Gregg Park this year. The prayer will be held next to Baseball Field 4 at 8:45 AM. Directions: https://maps.app.goo.gl/c5uCKUUvs4ufMvG58 There will NOT be any Eid prayers at 16th Street Park this year. 2. For anyone that can't attend the community prayer at the park, there will be an early Eid prayer held at the masjid (109 E 24th St) at 7:30 AM. 3. For this Friday, March 20th 2026, there will only be a single Jummah Khutbah at 1 PM. The masjid will return to the regular schedule of two Jummah Khutbahs next week. 19 Mar 2026 10:40 AM Jummah Times Jummah Prayer 1: 12:45PM Jummah Prayer 2: 1:45PM 12 Mar 2026 06:41 PM Welcoming Ramadan 2026 In accordance with AMJA and Bayonne Muslims global moon sighting policy, the moon was sighted and therefore InshaAllah the first day of Ramadan will be Wednesday, February 18th inshaAllah. We will pray taraweah tonight, Tuesday night. Taraweah/Isha at the masjid will start 7:30pm inshaAllah. Download the BayonneMuslims app for all prayer timings. Please come early and follow all masjid guidelines regarding parking and other safety precautions. Message from Abdul Hammed, president of Bayonne Muslims below: I would like to extend a warm and heartfelt welcome to al",
-    "confidence": 0.7,
+    "confidence": 0.85,
     "speaker": "",
     "poster_ocr_text": ""
   },
@@ -6959,6 +6959,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Hudson Islamic Center",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "iceb",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/iceb.nj/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-05-22",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "Islamic Center of East Brunswick",
+    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
+    "city": "East Brunswick",
+    "state": "NJ",
+    "zip": "08816",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -7151,32 +7177,6 @@
     "poster_ocr_text": ""
   },
   {
-    "source": "nbic",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/nbic_pics/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-05-22",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "New Brunswick Islamic Center",
-    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
-    "city": "North Brunswick",
-    "state": "NJ",
-    "zip": "08902",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "New Brunswick Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
     "source": "waarith",
     "source_type": "instagram_recurring",
     "source_url": "https://www.instagram.com/masjidwaarithuddeen/",
@@ -7193,6 +7193,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Masjid Waarith ud Deen",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "nbic",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/nbic_pics/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-05-22",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "New Brunswick Islamic Center",
+    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
+    "city": "North Brunswick",
+    "state": "NJ",
+    "zip": "08902",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "New Brunswick Islamic Center",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -7349,32 +7375,6 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Jam-e-Masjid Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
-    "source": "iceb",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/iceb.nj/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-05-22",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "Islamic Center of East Brunswick",
-    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
-    "city": "East Brunswick",
-    "state": "NJ",
-    "zip": "08816",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -8289,7 +8289,7 @@
     "rsvp_link": "",
     "image_urls": [],
     "raw_text": "Bayonne Muslims | Masjid and Community Center in Bayonne, NJ About Education As-Sirat Quran Academy Little Khalifas Academy Summer Camp Interact News Volunteer Social Media Notice to Parents Feedback Contact Us Donate SCHOOL Bayonne Muslims Prayer Times Salah Adhan Iqama Fajr 04:45 AM 05:05 AM Dhuhr 12:55 PM 01:30 PM Asr 04:43 PM 04:58 PM Magraib 07:44 PM 07:49 PM Isha 09:06 PM 09:21 PM Jummah 1 12:45PM 1:15PM Jummah 2 1:45PM 2:15PM Announcements Eid Al-Fitr Announcements Eid al-Fitr will be on Friday, March 20, 2026. 1. The community Eid al-Fitr prayer will be held at Stephen R Gregg Park this year. The prayer will be held next to Baseball Field 4 at 8:45 AM. Directions: https://maps.app.goo.gl/c5uCKUUvs4ufMvG58 There will NOT be any Eid prayers at 16th Street Park this year. 2. For anyone that can't attend the community prayer at the park, there will be an early Eid prayer held at the masjid (109 E 24th St) at 7:30 AM. 3. For this Friday, March 20th 2026, there will only be a single Jummah Khutbah at 1 PM. The masjid will return to the regular schedule of two Jummah Khutbahs next week. 19 Mar 2026 10:40 AM Jummah Times Jummah Prayer 1: 12:45PM Jummah Prayer 2: 1:45PM 12 Mar 2026 06:41 PM Welcoming Ramadan 2026 In accordance with AMJA and Bayonne Muslims global moon sighting policy, the moon was sighted and therefore InshaAllah the first day of Ramadan will be Wednesday, February 18th inshaAllah. We will pray taraweah tonight, Tuesday night. Taraweah/Isha at the masjid will start 7:30pm inshaAllah. Download the BayonneMuslims app for all prayer timings. Please come early and follow all masjid guidelines regarding parking and other safety precautions. Message from Abdul Hammed, president of Bayonne Muslims below: I would like to extend a warm and heartfelt welcome to al",
-    "confidence": 0.7,
+    "confidence": 0.85,
     "speaker": "",
     "poster_ocr_text": ""
   },
@@ -8410,6 +8410,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Hudson Islamic Center",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "iceb",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/iceb.nj/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-05-29",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "Islamic Center of East Brunswick",
+    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
+    "city": "East Brunswick",
+    "state": "NJ",
+    "zip": "08816",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -8602,32 +8628,6 @@
     "poster_ocr_text": ""
   },
   {
-    "source": "nbic",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/nbic_pics/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-05-29",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "New Brunswick Islamic Center",
-    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
-    "city": "North Brunswick",
-    "state": "NJ",
-    "zip": "08902",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "New Brunswick Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
     "source": "waarith",
     "source_type": "instagram_recurring",
     "source_url": "https://www.instagram.com/masjidwaarithuddeen/",
@@ -8644,6 +8644,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Masjid Waarith ud Deen",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "nbic",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/nbic_pics/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-05-29",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "New Brunswick Islamic Center",
+    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
+    "city": "North Brunswick",
+    "state": "NJ",
+    "zip": "08902",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "New Brunswick Islamic Center",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -8800,32 +8826,6 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Jam-e-Masjid Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
-    "source": "iceb",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/iceb.nj/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-05-29",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "Islamic Center of East Brunswick",
-    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
-    "city": "East Brunswick",
-    "state": "NJ",
-    "zip": "08816",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -9634,7 +9634,7 @@
     "rsvp_link": "",
     "image_urls": [],
     "raw_text": "Bayonne Muslims | Masjid and Community Center in Bayonne, NJ About Education As-Sirat Quran Academy Little Khalifas Academy Summer Camp Interact News Volunteer Social Media Notice to Parents Feedback Contact Us Donate SCHOOL Bayonne Muslims Prayer Times Salah Adhan Iqama Fajr 04:45 AM 05:05 AM Dhuhr 12:55 PM 01:30 PM Asr 04:43 PM 04:58 PM Magraib 07:44 PM 07:49 PM Isha 09:06 PM 09:21 PM Jummah 1 12:45PM 1:15PM Jummah 2 1:45PM 2:15PM Announcements Eid Al-Fitr Announcements Eid al-Fitr will be on Friday, March 20, 2026. 1. The community Eid al-Fitr prayer will be held at Stephen R Gregg Park this year. The prayer will be held next to Baseball Field 4 at 8:45 AM. Directions: https://maps.app.goo.gl/c5uCKUUvs4ufMvG58 There will NOT be any Eid prayers at 16th Street Park this year. 2. For anyone that can't attend the community prayer at the park, there will be an early Eid prayer held at the masjid (109 E 24th St) at 7:30 AM. 3. For this Friday, March 20th 2026, there will only be a single Jummah Khutbah at 1 PM. The masjid will return to the regular schedule of two Jummah Khutbahs next week. 19 Mar 2026 10:40 AM Jummah Times Jummah Prayer 1: 12:45PM Jummah Prayer 2: 1:45PM 12 Mar 2026 06:41 PM Welcoming Ramadan 2026 In accordance with AMJA and Bayonne Muslims global moon sighting policy, the moon was sighted and therefore InshaAllah the first day of Ramadan will be Wednesday, February 18th inshaAllah. We will pray taraweah tonight, Tuesday night. Taraweah/Isha at the masjid will start 7:30pm inshaAllah. Download the BayonneMuslims app for all prayer timings. Please come early and follow all masjid guidelines regarding parking and other safety precautions. Message from Abdul Hammed, president of Bayonne Muslims below: I would like to extend a warm and heartfelt welcome to al",
-    "confidence": 0.7,
+    "confidence": 0.85,
     "speaker": "",
     "poster_ocr_text": ""
   },
@@ -9778,6 +9778,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Hudson Islamic Center",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "iceb",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/iceb.nj/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-06-05",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "Islamic Center of East Brunswick",
+    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
+    "city": "East Brunswick",
+    "state": "NJ",
+    "zip": "08816",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -9970,32 +9996,6 @@
     "poster_ocr_text": ""
   },
   {
-    "source": "nbic",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/nbic_pics/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-06-05",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "New Brunswick Islamic Center",
-    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
-    "city": "North Brunswick",
-    "state": "NJ",
-    "zip": "08902",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "New Brunswick Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
     "source": "waarith",
     "source_type": "instagram_recurring",
     "source_url": "https://www.instagram.com/masjidwaarithuddeen/",
@@ -10012,6 +10012,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Masjid Waarith ud Deen",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "nbic",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/nbic_pics/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-06-05",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "New Brunswick Islamic Center",
+    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
+    "city": "North Brunswick",
+    "state": "NJ",
+    "zip": "08902",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "New Brunswick Islamic Center",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -10168,32 +10194,6 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Jam-e-Masjid Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
-    "source": "iceb",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/iceb.nj/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-06-05",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "Islamic Center of East Brunswick",
-    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
-    "city": "East Brunswick",
-    "state": "NJ",
-    "zip": "08816",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -10975,7 +10975,7 @@
     "rsvp_link": "",
     "image_urls": [],
     "raw_text": "Bayonne Muslims | Masjid and Community Center in Bayonne, NJ About Education As-Sirat Quran Academy Little Khalifas Academy Summer Camp Interact News Volunteer Social Media Notice to Parents Feedback Contact Us Donate SCHOOL Bayonne Muslims Prayer Times Salah Adhan Iqama Fajr 04:45 AM 05:05 AM Dhuhr 12:55 PM 01:30 PM Asr 04:43 PM 04:58 PM Magraib 07:44 PM 07:49 PM Isha 09:06 PM 09:21 PM Jummah 1 12:45PM 1:15PM Jummah 2 1:45PM 2:15PM Announcements Eid Al-Fitr Announcements Eid al-Fitr will be on Friday, March 20, 2026. 1. The community Eid al-Fitr prayer will be held at Stephen R Gregg Park this year. The prayer will be held next to Baseball Field 4 at 8:45 AM. Directions: https://maps.app.goo.gl/c5uCKUUvs4ufMvG58 There will NOT be any Eid prayers at 16th Street Park this year. 2. For anyone that can't attend the community prayer at the park, there will be an early Eid prayer held at the masjid (109 E 24th St) at 7:30 AM. 3. For this Friday, March 20th 2026, there will only be a single Jummah Khutbah at 1 PM. The masjid will return to the regular schedule of two Jummah Khutbahs next week. 19 Mar 2026 10:40 AM Jummah Times Jummah Prayer 1: 12:45PM Jummah Prayer 2: 1:45PM 12 Mar 2026 06:41 PM Welcoming Ramadan 2026 In accordance with AMJA and Bayonne Muslims global moon sighting policy, the moon was sighted and therefore InshaAllah the first day of Ramadan will be Wednesday, February 18th inshaAllah. We will pray taraweah tonight, Tuesday night. Taraweah/Isha at the masjid will start 7:30pm inshaAllah. Download the BayonneMuslims app for all prayer timings. Please come early and follow all masjid guidelines regarding parking and other safety precautions. Message from Abdul Hammed, president of Bayonne Muslims below: I would like to extend a warm and heartfelt welcome to al",
-    "confidence": 0.7,
+    "confidence": 0.85,
     "speaker": "",
     "poster_ocr_text": ""
   },
@@ -11096,6 +11096,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Hudson Islamic Center",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "iceb",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/iceb.nj/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-06-12",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "Islamic Center of East Brunswick",
+    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
+    "city": "East Brunswick",
+    "state": "NJ",
+    "zip": "08816",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -11288,32 +11314,6 @@
     "poster_ocr_text": ""
   },
   {
-    "source": "nbic",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/nbic_pics/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-06-12",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "New Brunswick Islamic Center",
-    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
-    "city": "North Brunswick",
-    "state": "NJ",
-    "zip": "08902",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "New Brunswick Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
     "source": "waarith",
     "source_type": "instagram_recurring",
     "source_url": "https://www.instagram.com/masjidwaarithuddeen/",
@@ -11330,6 +11330,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Masjid Waarith ud Deen",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "nbic",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/nbic_pics/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-06-12",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "New Brunswick Islamic Center",
+    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
+    "city": "North Brunswick",
+    "state": "NJ",
+    "zip": "08902",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "New Brunswick Islamic Center",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -11486,32 +11512,6 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Jam-e-Masjid Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
-    "source": "iceb",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/iceb.nj/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-06-12",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "Islamic Center of East Brunswick",
-    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
-    "city": "East Brunswick",
-    "state": "NJ",
-    "zip": "08816",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -12267,7 +12267,7 @@
     "rsvp_link": "",
     "image_urls": [],
     "raw_text": "Bayonne Muslims | Masjid and Community Center in Bayonne, NJ About Education As-Sirat Quran Academy Little Khalifas Academy Summer Camp Interact News Volunteer Social Media Notice to Parents Feedback Contact Us Donate SCHOOL Bayonne Muslims Prayer Times Salah Adhan Iqama Fajr 04:45 AM 05:05 AM Dhuhr 12:55 PM 01:30 PM Asr 04:43 PM 04:58 PM Magraib 07:44 PM 07:49 PM Isha 09:06 PM 09:21 PM Jummah 1 12:45PM 1:15PM Jummah 2 1:45PM 2:15PM Announcements Eid Al-Fitr Announcements Eid al-Fitr will be on Friday, March 20, 2026. 1. The community Eid al-Fitr prayer will be held at Stephen R Gregg Park this year. The prayer will be held next to Baseball Field 4 at 8:45 AM. Directions: https://maps.app.goo.gl/c5uCKUUvs4ufMvG58 There will NOT be any Eid prayers at 16th Street Park this year. 2. For anyone that can't attend the community prayer at the park, there will be an early Eid prayer held at the masjid (109 E 24th St) at 7:30 AM. 3. For this Friday, March 20th 2026, there will only be a single Jummah Khutbah at 1 PM. The masjid will return to the regular schedule of two Jummah Khutbahs next week. 19 Mar 2026 10:40 AM Jummah Times Jummah Prayer 1: 12:45PM Jummah Prayer 2: 1:45PM 12 Mar 2026 06:41 PM Welcoming Ramadan 2026 In accordance with AMJA and Bayonne Muslims global moon sighting policy, the moon was sighted and therefore InshaAllah the first day of Ramadan will be Wednesday, February 18th inshaAllah. We will pray taraweah tonight, Tuesday night. Taraweah/Isha at the masjid will start 7:30pm inshaAllah. Download the BayonneMuslims app for all prayer timings. Please come early and follow all masjid guidelines regarding parking and other safety precautions. Message from Abdul Hammed, president of Bayonne Muslims below: I would like to extend a warm and heartfelt welcome to al",
-    "confidence": 0.7,
+    "confidence": 0.85,
     "speaker": "",
     "poster_ocr_text": ""
   },
@@ -12410,6 +12410,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Hudson Islamic Center",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "iceb",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/iceb.nj/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-06-19",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "Islamic Center of East Brunswick",
+    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
+    "city": "East Brunswick",
+    "state": "NJ",
+    "zip": "08816",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -12602,32 +12628,6 @@
     "poster_ocr_text": ""
   },
   {
-    "source": "nbic",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/nbic_pics/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-06-19",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "New Brunswick Islamic Center",
-    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
-    "city": "North Brunswick",
-    "state": "NJ",
-    "zip": "08902",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "New Brunswick Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
     "source": "waarith",
     "source_type": "instagram_recurring",
     "source_url": "https://www.instagram.com/masjidwaarithuddeen/",
@@ -12644,6 +12644,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Masjid Waarith ud Deen",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "nbic",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/nbic_pics/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-06-19",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "New Brunswick Islamic Center",
+    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
+    "city": "North Brunswick",
+    "state": "NJ",
+    "zip": "08902",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "New Brunswick Islamic Center",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -12800,32 +12826,6 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Jam-e-Masjid Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
-    "source": "iceb",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/iceb.nj/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-06-19",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "Islamic Center of East Brunswick",
-    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
-    "city": "East Brunswick",
-    "state": "NJ",
-    "zip": "08816",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -13410,7 +13410,7 @@
     "rsvp_link": "",
     "image_urls": [],
     "raw_text": "Bayonne Muslims | Masjid and Community Center in Bayonne, NJ About Education As-Sirat Quran Academy Little Khalifas Academy Summer Camp Interact News Volunteer Social Media Notice to Parents Feedback Contact Us Donate SCHOOL Bayonne Muslims Prayer Times Salah Adhan Iqama Fajr 04:45 AM 05:05 AM Dhuhr 12:55 PM 01:30 PM Asr 04:43 PM 04:58 PM Magraib 07:44 PM 07:49 PM Isha 09:06 PM 09:21 PM Jummah 1 12:45PM 1:15PM Jummah 2 1:45PM 2:15PM Announcements Eid Al-Fitr Announcements Eid al-Fitr will be on Friday, March 20, 2026. 1. The community Eid al-Fitr prayer will be held at Stephen R Gregg Park this year. The prayer will be held next to Baseball Field 4 at 8:45 AM. Directions: https://maps.app.goo.gl/c5uCKUUvs4ufMvG58 There will NOT be any Eid prayers at 16th Street Park this year. 2. For anyone that can't attend the community prayer at the park, there will be an early Eid prayer held at the masjid (109 E 24th St) at 7:30 AM. 3. For this Friday, March 20th 2026, there will only be a single Jummah Khutbah at 1 PM. The masjid will return to the regular schedule of two Jummah Khutbahs next week. 19 Mar 2026 10:40 AM Jummah Times Jummah Prayer 1: 12:45PM Jummah Prayer 2: 1:45PM 12 Mar 2026 06:41 PM Welcoming Ramadan 2026 In accordance with AMJA and Bayonne Muslims global moon sighting policy, the moon was sighted and therefore InshaAllah the first day of Ramadan will be Wednesday, February 18th inshaAllah. We will pray taraweah tonight, Tuesday night. Taraweah/Isha at the masjid will start 7:30pm inshaAllah. Download the BayonneMuslims app for all prayer timings. Please come early and follow all masjid guidelines regarding parking and other safety precautions. Message from Abdul Hammed, president of Bayonne Muslims below: I would like to extend a warm and heartfelt welcome to al",
-    "confidence": 0.7,
+    "confidence": 0.85,
     "speaker": "",
     "poster_ocr_text": ""
   },
@@ -13480,6 +13480,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Hudson Islamic Center",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "iceb",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/iceb.nj/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-06-26",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "Islamic Center of East Brunswick",
+    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
+    "city": "East Brunswick",
+    "state": "NJ",
+    "zip": "08816",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -13672,32 +13698,6 @@
     "poster_ocr_text": ""
   },
   {
-    "source": "nbic",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/nbic_pics/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-06-26",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "New Brunswick Islamic Center",
-    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
-    "city": "North Brunswick",
-    "state": "NJ",
-    "zip": "08902",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "New Brunswick Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
     "source": "waarith",
     "source_type": "instagram_recurring",
     "source_url": "https://www.instagram.com/masjidwaarithuddeen/",
@@ -13714,6 +13714,32 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Masjid Waarith ud Deen",
+    "rsvp_link": "",
+    "image_urls": [
+      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
+    ],
+    "raw_text": "Instagram",
+    "confidence": 0.75,
+    "speaker": "",
+    "poster_ocr_text": ""
+  },
+  {
+    "source": "nbic",
+    "source_type": "instagram_recurring",
+    "source_url": "https://www.instagram.com/nbic_pics/",
+    "title": "Jumu'ah Prayer & Khutbah",
+    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
+    "date": "2026-06-26",
+    "start_time": "After Dhuhr",
+    "end_time": "",
+    "location_name": "New Brunswick Islamic Center",
+    "address": "1330 Livingston Ave Unit 4, North Brunswick, NJ 08902",
+    "city": "North Brunswick",
+    "state": "NJ",
+    "zip": "08902",
+    "category": "jummah",
+    "audience": "general",
+    "organizer": "New Brunswick Islamic Center",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -13870,32 +13896,6 @@
     "category": "jummah",
     "audience": "general",
     "organizer": "Jam-e-Masjid Islamic Center",
-    "rsvp_link": "",
-    "image_urls": [
-      "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
-    ],
-    "raw_text": "Instagram",
-    "confidence": 0.75,
-    "speaker": "",
-    "poster_ocr_text": ""
-  },
-  {
-    "source": "iceb",
-    "source_type": "instagram_recurring",
-    "source_url": "https://www.instagram.com/iceb.nj/",
-    "title": "Jumu'ah Prayer & Khutbah",
-    "description": "Create an account or log in to Instagram - Share what you're into with the people who get you.",
-    "date": "2026-06-26",
-    "start_time": "After Dhuhr",
-    "end_time": "",
-    "location_name": "Islamic Center of East Brunswick",
-    "address": "402 New Brunswick Ave, East Brunswick, NJ 08816",
-    "city": "East Brunswick",
-    "state": "NJ",
-    "zip": "08816",
-    "category": "jummah",
-    "audience": "general",
-    "organizer": "Islamic Center of East Brunswick",
     "rsvp_link": "",
     "image_urls": [
       "https://static.cdninstagram.com/rsrc.php/v4/yD/r/R0fBIMurK8v.png"
@@ -14480,7 +14480,7 @@
     "rsvp_link": "",
     "image_urls": [],
     "raw_text": "Bayonne Muslims | Masjid and Community Center in Bayonne, NJ About Education As-Sirat Quran Academy Little Khalifas Academy Summer Camp Interact News Volunteer Social Media Notice to Parents Feedback Contact Us Donate SCHOOL Bayonne Muslims Prayer Times Salah Adhan Iqama Fajr 04:45 AM 05:05 AM Dhuhr 12:55 PM 01:30 PM Asr 04:43 PM 04:58 PM Magraib 07:44 PM 07:49 PM Isha 09:06 PM 09:21 PM Jummah 1 12:45PM 1:15PM Jummah 2 1:45PM 2:15PM Announcements Eid Al-Fitr Announcements Eid al-Fitr will be on Friday, March 20, 2026. 1. The community Eid al-Fitr prayer will be held at Stephen R Gregg Park this year. The prayer will be held next to Baseball Field 4 at 8:45 AM. Directions: https://maps.app.goo.gl/c5uCKUUvs4ufMvG58 There will NOT be any Eid prayers at 16th Street Park this year. 2. For anyone that can't attend the community prayer at the park, there will be an early Eid prayer held at the masjid (109 E 24th St) at 7:30 AM. 3. For this Friday, March 20th 2026, there will only be a single Jummah Khutbah at 1 PM. The masjid will return to the regular schedule of two Jummah Khutbahs next week. 19 Mar 2026 10:40 AM Jummah Times Jummah Prayer 1: 12:45PM Jummah Prayer 2: 1:45PM 12 Mar 2026 06:41 PM Welcoming Ramadan 2026 In accordance with AMJA and Bayonne Muslims global moon sighting policy, the moon was sighted and therefore InshaAllah the first day of Ramadan will be Wednesday, February 18th inshaAllah. We will pray taraweah tonight, Tuesday night. Taraweah/Isha at the masjid will start 7:30pm inshaAllah. Download the BayonneMuslims app for all prayer timings. Please come early and follow all masjid guidelines regarding parking and other safety precautions. Message from Abdul Hammed, president of Bayonne Muslims below: I would like to extend a warm and heartfelt welcome to al",
-    "confidence": 0.7,
+    "confidence": 0.85,
     "speaker": "",
     "poster_ocr_text": ""
   },
@@ -15030,7 +15030,7 @@
     "rsvp_link": "",
     "image_urls": [],
     "raw_text": "Bayonne Muslims | Masjid and Community Center in Bayonne, NJ About Education As-Sirat Quran Academy Little Khalifas Academy Summer Camp Interact News Volunteer Social Media Notice to Parents Feedback Contact Us Donate SCHOOL Bayonne Muslims Prayer Times Salah Adhan Iqama Fajr 04:45 AM 05:05 AM Dhuhr 12:55 PM 01:30 PM Asr 04:43 PM 04:58 PM Magraib 07:44 PM 07:49 PM Isha 09:06 PM 09:21 PM Jummah 1 12:45PM 1:15PM Jummah 2 1:45PM 2:15PM Announcements Eid Al-Fitr Announcements Eid al-Fitr will be on Friday, March 20, 2026. 1. The community Eid al-Fitr prayer will be held at Stephen R Gregg Park this year. The prayer will be held next to Baseball Field 4 at 8:45 AM. Directions: https://maps.app.goo.gl/c5uCKUUvs4ufMvG58 There will NOT be any Eid prayers at 16th Street Park this year. 2. For anyone that can't attend the community prayer at the park, there will be an early Eid prayer held at the masjid (109 E 24th St) at 7:30 AM. 3. For this Friday, March 20th 2026, there will only be a single Jummah Khutbah at 1 PM. The masjid will return to the regular schedule of two Jummah Khutbahs next week. 19 Mar 2026 10:40 AM Jummah Times Jummah Prayer 1: 12:45PM Jummah Prayer 2: 1:45PM 12 Mar 2026 06:41 PM Welcoming Ramadan 2026 In accordance with AMJA and Bayonne Muslims global moon sighting policy, the moon was sighted and therefore InshaAllah the first day of Ramadan will be Wednesday, February 18th inshaAllah. We will pray taraweah tonight, Tuesday night. Taraweah/Isha at the masjid will start 7:30pm inshaAllah. Download the BayonneMuslims app for all prayer timings. Please come early and follow all masjid guidelines regarding parking and other safety precautions. Message from Abdul Hammed, president of Bayonne Muslims below: I would like to extend a warm and heartfelt welcome to al",
-    "confidence": 0.7,
+    "confidence": 0.85,
     "speaker": "",
     "poster_ocr_text": ""
   },
