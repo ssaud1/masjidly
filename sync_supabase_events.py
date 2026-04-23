@@ -22,6 +22,16 @@ def clean(s: str) -> str:
     return " ".join((s or "").split()).strip()
 
 
+def normalize_supabase_url(raw: str) -> str:
+    """Accept either full URL or bare host/ref and return https URL."""
+    val = clean(raw)
+    if not val:
+        return ""
+    if val.startswith("http://") or val.startswith("https://"):
+        return val.rstrip("/")
+    return f"https://{val.lstrip('/')}".rstrip("/")
+
+
 def normalize_title(s: str) -> str:
     t = clean(s).lower()
     t = re.sub(r"[’'`\"]", "", t)
@@ -165,7 +175,7 @@ def cleanup_stale(base_url: str, headers: Dict[str, str], batch_id: str) -> None
 
 def main() -> None:
     # Support both standard env names and user's existing lowercase names.
-    supabase_url = clean(
+    supabase_url = normalize_supabase_url(
         os.getenv("SUPABASE_URL", "")
         or os.getenv("supabaseurl", "")
     )
@@ -176,10 +186,12 @@ def main() -> None:
     )
     # If user accidentally stored URL in supabasekey, accept it.
     if not supabase_url and clean(os.getenv("supabasekey", "")).startswith("http"):
-        supabase_url = clean(os.getenv("supabasekey", ""))
+        supabase_url = normalize_supabase_url(os.getenv("supabasekey", ""))
     if not supabase_url:
-        supabase_url = infer_supabase_url_from_jwt(os.getenv("servicerole", "")) or infer_supabase_url_from_jwt(
+        supabase_url = normalize_supabase_url(
+            infer_supabase_url_from_jwt(os.getenv("servicerole", "")) or infer_supabase_url_from_jwt(
             os.getenv("supabasekey", "")
+            )
         )
     if not supabase_url or not service_key:
         print("supabase_sync=skipped missing Supabase URL or service role key")
