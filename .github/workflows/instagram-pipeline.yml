@@ -57,7 +57,7 @@ jobs:
       PYTHONUNBUFFERED: "1"
       SAFAR_INSTAGRAM_USERNAMES: ${{ github.event.inputs.ig_usernames }}
       SUPABASE_URL: https://xkpbpwusseaphdhaelbr.supabase.co
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
 
     steps:
       - name: Checkout repo

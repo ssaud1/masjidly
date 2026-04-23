@@ -91,7 +91,7 @@ jobs:
       # Supabase event catalog sync (sync_supabase_events.py).
       # Project URL is public-safe; keep service role in secrets.
       SUPABASE_URL: https://xkpbpwusseaphdhaelbr.supabase.co
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
 
     steps:
       - name: Checkout repo
