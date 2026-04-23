@@ -56,7 +56,7 @@ jobs:
       SAFAR_INSTAGRAM_PROXY_FILE: "instagram_proxies.txt"
       PYTHONUNBUFFERED: "1"
       SAFAR_INSTAGRAM_USERNAMES: ${{ github.event.inputs.ig_usernames }}
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_URL: https://xkpbpwusseaphdhaelbr.supabase.co
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
     steps:

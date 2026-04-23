@@ -89,7 +89,8 @@ jobs:
       GMAIL_USER: ${{ secrets.GMAIL_USER }}
       GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
       # Supabase event catalog sync (sync_supabase_events.py).
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      # Project URL is public-safe; keep service role in secrets.
+      SUPABASE_URL: https://xkpbpwusseaphdhaelbr.supabase.co
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
     steps:
