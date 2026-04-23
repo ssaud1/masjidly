@@ -254,7 +254,7 @@ const WELCOME_FLOW_DONE_KEY = "masjidly_welcome_flow_done_v1";
 const GUIDED_TOUR_DONE_KEY = "masjidly_guided_tour_done_v5";
 // Bump on every EAS update so the badge on the welcome screen reflects what's
 // actually running on device. v2 = post-"always-welcome" build + Explore perf.
-const APP_BUILD_VERSION = "v71";
+const APP_BUILD_VERSION = "v74";
 
 // Static hosted URLs referenced from several places (Settings, About,
 // PrivacyInfo).  Mirrored from `app.json > expo.extra.urls` so the app
@@ -3044,6 +3044,32 @@ function AppInner() {
       justCompletedOnboardingRef.current = true;
       setEntryScreen("launch");
     }
+  };
+
+  const confirmSkipAccountSetup = () => {
+    Alert.alert(
+      "Continue without an account?",
+      "No problem — you can keep using Masjid.ly as a guest now. Account creation is optional (recommended for syncing your saves and follows), and you can do it later in Settings → Account.",
+      [
+        { text: "Keep setup", style: "cancel" },
+        {
+          text: "Skip for now",
+          style: "destructive",
+          onPress: () => {
+            hapticTap("selection");
+            if (personalization.privacy_policy_accepted_version !== PRIVACY_POLICY_VERSION) {
+              setOnboardingError("Please accept the Privacy Policy once, then tap Skip for now.");
+              if (entryScreen === "welcome" && setupSubStep < 2) {
+                setupStepDirRef.current = 1;
+                setSetupSubStep(2);
+              }
+              return;
+            }
+            void skipOnboarding();
+          },
+        },
+      ],
+    );
   };
 
   const toggleInterest = (interest: string) => {
@@ -5976,6 +6002,14 @@ function AppInner() {
                         ? "Quick read + one tap to agree. You can review it anytime from Settings."
                         : "A quick review before we take you into the app."}
                 </Text>
+                {setupSubStep === 0 ? (
+                  <View style={styles.captureOptionalAccountNote}>
+                    <Text style={styles.captureOptionalAccountNoteTitle}>Account setup is optional</Text>
+                    <Text style={styles.captureOptionalAccountNoteText}>
+                      Recommended for syncing your saves/follows across devices. You can skip now and create one later in Settings → Account.
+                    </Text>
+                  </View>
+                ) : null}
 
                 <Animated.View
                   style={{
@@ -6256,6 +6290,17 @@ function AppInner() {
                 {onboardingError ? <Text style={styles.captureErrorText}>{onboardingError}</Text> : null}
 
                 <View style={styles.setupSubStepBtnRow}>
+                  <Pressable
+                    unstable_pressDelay={0}
+                    style={[
+                      styles.welcomePrimaryBtn,
+                      styles.welcomePrimaryBtnOnHero,
+                      styles.setupSubStepSkipBtn,
+                    ]}
+                    onPress={confirmSkipAccountSetup}
+                  >
+                    <Text style={[styles.welcomePrimaryBtnText, styles.setupSubStepSkipBtnText]}>Skip for now</Text>
+                  </Pressable>
                   {setupSubStep > 0 ? (
                     <Pressable
                       unstable_pressDelay={0}
@@ -6471,6 +6516,12 @@ function AppInner() {
             This isn't a dating app — we just want to personalize your experience.
             Nothing's sold to anyone; I (the person who made this app) can't afford a lawsuit anyway.
           </Text>
+          <View style={styles.captureOptionalAccountNote}>
+            <Text style={styles.captureOptionalAccountNoteTitle}>Account setup is optional</Text>
+            <Text style={styles.captureOptionalAccountNoteText}>
+              Recommended for syncing your saves/follows across devices. You can skip now and create one later in Settings → Account.
+            </Text>
+          </View>
           <View style={styles.captureFieldGroup}>
             <Text style={[styles.captureLabel, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>Name</Text>
             <TextInput
@@ -6533,22 +6584,35 @@ function AppInner() {
 
           {onboardingError ? <Text style={styles.captureErrorText}>{onboardingError}</Text> : null}
 
-          <Pressable {...PRESSABLE_INSTANT}
-            style={[
-              styles.welcomePrimaryBtn,
-              styles.welcomePrimaryBtnOnHero,
-              isEmerald && styles.welcomePrimaryBtnEmerald,
-              isMidnight && styles.welcomePrimaryBtnMidnight,
-              isNeo && styles.welcomePrimaryBtnNeo,
-              isVitaria && styles.welcomePrimaryBtnVitaria,
-              isInferno && styles.welcomePrimaryBtnInferno,
-            ]}
-            onPress={saveOnboarding}
-          >
-            <Text style={[styles.welcomePrimaryBtnText, styles.welcomePrimaryBtnTextMinera, isEmerald && styles.welcomePrimaryBtnTextEmerald, isNeo && styles.welcomePrimaryBtnTextNeo, isInferno && styles.welcomePrimaryBtnTextInferno]}>
-              Finish Setup
-            </Text>
-          </Pressable>
+          <View style={styles.setupSubStepBtnRow}>
+            <Pressable
+              unstable_pressDelay={0}
+              style={[
+                styles.welcomePrimaryBtn,
+                styles.welcomePrimaryBtnOnHero,
+                styles.setupSubStepSkipBtn,
+              ]}
+              onPress={confirmSkipAccountSetup}
+            >
+              <Text style={[styles.welcomePrimaryBtnText, styles.setupSubStepSkipBtnText]}>Skip for now</Text>
+            </Pressable>
+            <Pressable {...PRESSABLE_INSTANT}
+              style={[
+                styles.welcomePrimaryBtn,
+                styles.welcomePrimaryBtnOnHero,
+                isEmerald && styles.welcomePrimaryBtnEmerald,
+                isMidnight && styles.welcomePrimaryBtnMidnight,
+                isNeo && styles.welcomePrimaryBtnNeo,
+                isVitaria && styles.welcomePrimaryBtnVitaria,
+                isInferno && styles.welcomePrimaryBtnInferno,
+              ]}
+              onPress={saveOnboarding}
+            >
+              <Text style={[styles.welcomePrimaryBtnText, styles.welcomePrimaryBtnTextMinera, isEmerald && styles.welcomePrimaryBtnTextEmerald, isNeo && styles.welcomePrimaryBtnTextNeo, isInferno && styles.welcomePrimaryBtnTextInferno]}>
+                Finish Setup
+              </Text>
+            </Pressable>
+          </View>
         </Animated.View>
       </ScrollView>
     </SafeAreaView>
@@ -9936,32 +10000,7 @@ function AppInner() {
           </View>
         </View>
 
-        {/* Sadaqah — keep prominent */}
-        <View style={styles.sadaqahCard}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 6 }}>
-            <View style={styles.sadaqahIcon}>
-              <Mi name="favorite_fill1" size={20} color="#fff" />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.sadaqahTitle}>Sadaqah Jar</Text>
-              <Text style={styles.sadaqahSub}>Keep Masjid.ly free for the ummah</Text>
-            </View>
-          </View>
-          <Text style={styles.sadaqahBody}>
-            Built and maintained by one brother. If Masjid.ly helped you find a halaqah or your next masjid —
-            drop a tip. JazakAllahu khayran.
-          </Text>
-          <Pressable {...PRESSABLE_INSTANT}
-            style={styles.sadaqahBtn}
-            onPress={() => { Linking.openURL("https://ko-fi.com/shaheer23407"); hapticTap("success"); }}
-          >
-            <Text style={styles.sadaqahBtnText}>Support with a tip →</Text>
-          </Pressable>
-        </View>
-
-        {/* Share Masjid.ly — win merch. Mirrors the Sadaqah card's visual
-            weight so it sits right under the hero and doesn't get lost
-            deep in the settings list. */}
+        {/* Share Masjid.ly — keep near top so it doesn't get lost. */}
         <View style={styles.shareCard}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 6 }}>
             <View style={styles.shareCardIcon}>
@@ -15219,11 +15258,45 @@ const styles = StyleSheet.create({
     color: "#ffdfc9",
     fontWeight: "900",
   },
+  captureOptionalAccountNote: {
+    marginTop: 10,
+    marginBottom: 2,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.22)",
+    gap: 2,
+  },
+  captureOptionalAccountNoteTitle: {
+    color: "#ffffff",
+    fontSize: 13,
+    fontWeight: "900",
+    letterSpacing: 0.2,
+  },
+  captureOptionalAccountNoteText: {
+    color: "#ffe7d7",
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "600",
+  },
   setupSubStepBtnRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
     marginTop: 12,
+  },
+  setupSubStepSkipBtn: {
+    flex: 1,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.3)",
+  },
+  setupSubStepSkipBtnText: {
+    color: "#fff4ea",
+    fontWeight: "800",
+    fontSize: 15,
   },
   setupSubStepBackBtn: {
     flex: 1,
