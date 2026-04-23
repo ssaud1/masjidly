@@ -256,13 +256,14 @@ def run_instagram_scrape(base_cmd: List[str], run_env: Dict[str, str]) -> None:
         shards = n
     if shards <= 1:
         cmd = base_cmd + ["--usernames"] + names
+        supports_proxy_file = scraper_supports_flag("--proxy-file")
         # Match the original working scraper: direct connection by default.
         # Only route through a Webshare proxy if the operator explicitly opts in
         # via SAFAR_INSTAGRAM_FORCE_PROXY=1 (useful as a fallback when the raw
         # runner IP gets flagged by Instagram).
         force_proxy = os.getenv("SAFAR_INSTAGRAM_FORCE_PROXY", "0").strip() == "1"
         if proxy_lines and force_proxy:
-            if len(proxy_lines) >= 2:
+            if len(proxy_lines) >= 2 and supports_proxy_file:
                 pool_path = ROOT / "_instagram_proxy_pool.txt"
                 pool_path.write_text("\n".join(proxy_lines) + "\n", encoding="utf-8")
                 cmd.extend(["--proxy-file", str(pool_path)])
