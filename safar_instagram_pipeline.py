@@ -59,12 +59,19 @@ def main() -> None:
         insta_cmd = [sdp.PY, "scrape_nj_masjid_instagram.py"]
         ig_sleep = os.getenv("SAFAR_INSTAGRAM_SLEEP_SECONDS", "").strip()
         ig_skip_recent = os.getenv("SAFAR_INSTAGRAM_SKIP_RECENT_HOURS", "").strip()
+        supports_max_pages = sdp.scraper_supports_flag("--max-pages")
         if fast_mode:
             sleep = ig_sleep or "1.4"
-            insta_cmd.extend(["--days", "60", "--post-count", "30", "--max-pages", "36", "--atomic-scrape", "--sleep-seconds", sleep])
+            insta_cmd.extend(["--days", "60", "--post-count", "30"])
+            if supports_max_pages:
+                insta_cmd.extend(["--max-pages", "36"])
+            insta_cmd.extend(["--atomic-scrape", "--sleep-seconds", sleep])
         else:
             sleep = ig_sleep or "3.0"
-            insta_cmd.extend(["--days", "365", "--post-count", "40", "--max-pages", "96", "--atomic-scrape", "--sleep-seconds", sleep])
+            insta_cmd.extend(["--days", "365", "--post-count", "40"])
+            if supports_max_pages:
+                insta_cmd.extend(["--max-pages", "96"])
+            insta_cmd.extend(["--atomic-scrape", "--sleep-seconds", sleep])
         if ig_skip_recent:
             insta_cmd.extend(["--skip-recent-hours", ig_skip_recent])
         sdp.run_instagram_scrape(insta_cmd, run_env)

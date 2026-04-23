@@ -42,13 +42,14 @@ def clean(s: str) -> str:
     return re.sub(r"\s+", " ", s or "").strip()
 
 
-def fetch_text(url: str, timeout: int = 30) -> Optional[str]:
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=timeout)
-        if r.status_code == 200:
-            return r.text
-    except requests.RequestException:
-        return None
+def fetch_text(url: str, timeout: int = 30, attempts: int = 3) -> Optional[str]:
+    for _ in range(max(1, attempts)):
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=timeout)
+            if r.status_code == 200:
+                return r.text
+        except requests.RequestException:
+            continue
     return None
 
 
@@ -260,6 +261,9 @@ def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     html = fetch_text(BASE_EVENTS_URL) or ""
     if not html:
+        if OUT_JSON.exists():
+            print("failed_to_fetch_events_page; keeping previous alfalah_events.json snapshot")
+            return
         raise SystemExit("failed_to_fetch_events_page")
 
     today = date.today()

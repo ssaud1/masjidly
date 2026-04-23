@@ -19,6 +19,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -28,7 +29,7 @@ import uuid
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from scrape_nj_masjid_instagram import DEFAULT_USERNAMES as IG_DEFAULT_USERNAMES, SOURCE_MAP as IG_SOURCE_MAP, normalize_proxy_line
 
@@ -48,6 +49,7 @@ INDEX_FILE = EVENTS_DIR / "_index.json"
 REPORT_DIR = EVENTS_DIR / "_reports"
 SEED_DIR = ROOT / "safar-mobile" / "assets"
 PIPELINE_STEPS: List[Dict] = []
+_SCRAPER_FLAG_SUPPORT_CACHE: Dict[str, bool] = {}
 
 
 def _ts() -> str:
@@ -75,6 +77,27 @@ def run(cmd: List[str], extra_env: Dict[str, str] | None = None) -> None:
     PIPELINE_STEPS.append(
         {"argv": cmd, "ok": True, "duration_s": dur}
     )
+
+
+def scraper_supports_flag(flag: str) -> bool:
+    """Detect scraper CLI flags across mixed script versions."""
+    if flag in _SCRAPER_FLAG_SUPPORT_CACHE:
+        return _SCRAPER_FLAG_SUPPORT_CACHE[flag]
+    try:
+        probe = subprocess.run(
+            [PY, "scrape_nj_masjid_instagram.py", "--help"],
+            cwd=str(ROOT),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        text = (probe.stdout or "") + "\n" + (probe.stderr or "")
+        supported = flag in text
+    except Exception:
+        supported = False
+    _SCRAPER_FLAG_SUPPORT_CACHE[flag] = supported
+    return supported
 
 
 def run_parallel(cmds: List[List[str]], max_workers: int = 4, extra_env: Dict[str, str] | None = None) -> None:
@@ -147,6 +170,32 @@ def _log_cmd_redact_proxy(cmd: List[str]) -> str:
     return " ".join(parts)
 
 
+def _maybe_refresh_proxifly_proxy_file() -> None:
+    """
+    If SAFAR_PROXIFLY_REFRESH is truthy, download Proxifly CDN proxies into
+    SAFAR_INSTAGRAM_PROXY_FILE (default proxifly_proxies.txt) before the scraper runs.
+    """
+    flag = os.getenv("SAFAR_PROXIFLY_REFRESH", "").strip().lower()
+    if flag not in {"1", "true", "yes"}:
+        return
+    out_raw = os.getenv("SAFAR_INSTAGRAM_PROXY_FILE", "proxifly_proxies.txt").strip() or "proxifly_proxies.txt"
+    out = Path(out_raw)
+    if not out.is_absolute():
+        out = ROOT / out
+    try:
+        max_lines = int(os.getenv("SAFAR_PROXIFLY_MAX", "40").strip() or "40")
+    except ValueError:
+        max_lines = 40
+    list_url = os.getenv("SAFAR_PROXIFLY_LIST_URL", "").strip() or None
+    try:
+        import proxifly_fetch as _pf
+
+        n = _pf.refresh_proxifly_proxy_file(out, list_url, max_lines)
+        print(f"[proxifly] refreshed {n} proxy line(s) -> {out}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] Proxifly refresh failed (continuing without refresh): {exc}", flush=True)
+
+
 def load_instagram_proxy_lines() -> List[str]:
     """
     One proxy URL per line (http://..., https://..., socks5://...).
@@ -178,16 +227,31 @@ def run_instagram_scrape(base_cmd: List[str], run_env: Dict[str, str]) -> None:
     shard can bind to a different IP (parallel requests from one IP increase ban risk).
     """
     t_ig = time.perf_counter()
+    _maybe_refresh_proxifly_proxy_file()
     proxy_lines = load_instagram_proxy_lines()
     try:
         shards = max(1, int(os.getenv("SAFAR_INSTAGRAM_SHARDS", "1").strip() or "1"))
     except ValueError:
         shards = 1
-    names = list(IG_DEFAULT_USERNAMES)
+    raw_names = os.getenv("SAFAR_INSTAGRAM_USERNAMES", "").strip()
+    if raw_names:
+        names = [x.strip() for x in raw_names.split(",") if x.strip()]
+        if not names:
+            names = list(IG_DEFAULT_USERNAMES)
+    else:
+        names = list(IG_DEFAULT_USERNAMES)
     n = len(names)
-    if shards > 1 and not proxy_lines:
+    allow_single_ip_shards = os.getenv("SAFAR_INSTAGRAM_SHARDS_NO_PROXY", "0").strip() == "1"
+    if shards > 1 and not proxy_lines and not allow_single_ip_shards:
         print("[warn] SAFAR_INSTAGRAM_SHARDS>1 without SAFAR_INSTAGRAM_PROXY_FILE can overload one IP; forcing shards=1.")
+        print("[hint] Set SAFAR_INSTAGRAM_SHARDS_NO_PROXY=1 only when you explicitly want faster single-IP sharding.")
         shards = 1
+    elif shards > 1 and not proxy_lines and allow_single_ip_shards:
+        print(
+            "[warn] Running Instagram shards on a single IP (SAFAR_INSTAGRAM_SHARDS_NO_PROXY=1). "
+            "This is faster but may increase temporary throttling.",
+            flush=True,
+        )
     if shards > n:
         shards = n
     if shards <= 1:
@@ -198,11 +262,21 @@ def run_instagram_scrape(base_cmd: List[str], run_env: Dict[str, str]) -> None:
         # runner IP gets flagged by Instagram).
         force_proxy = os.getenv("SAFAR_INSTAGRAM_FORCE_PROXY", "0").strip() == "1"
         if proxy_lines and force_proxy:
-            cmd.extend(["--proxy", proxy_lines[0]])
-            print(
-                f"[run] IG serial mode via forced proxy {_log_cmd_redact_proxy([proxy_lines[0]])}",
-                flush=True,
-            )
+            if len(proxy_lines) >= 2:
+                pool_path = ROOT / "_instagram_proxy_pool.txt"
+                pool_path.write_text("\n".join(proxy_lines) + "\n", encoding="utf-8")
+                cmd.extend(["--proxy-file", str(pool_path)])
+                print(
+                    f"[run] IG serial mode via proxy pool ({len(proxy_lines)} lines) "
+                    f"file={pool_path.name} (rotates on HTTP 401/403)",
+                    flush=True,
+                )
+            else:
+                cmd.extend(["--proxy", proxy_lines[0]])
+                print(
+                    f"[run] IG serial mode via forced proxy {_log_cmd_redact_proxy([proxy_lines[0]])}",
+                    flush=True,
+                )
         else:
             print(
                 "[run] IG serial mode, direct connection (no proxy; matches original "
@@ -250,8 +324,9 @@ def run_instagram_scrape(base_cmd: List[str], run_env: Dict[str, str]) -> None:
             )
             time.sleep(delay)
         cmd = base_cmd + ["--usernames"] + sub
-        px = proxy_lines[shard_idx % len(proxy_lines)]
-        cmd.extend(["--proxy", px])
+        if proxy_lines:
+            px = proxy_lines[shard_idx % len(proxy_lines)]
+            cmd.extend(["--proxy", px])
         print(
             f"[run.instagram.parallel] shard={shard_idx} START accounts={len(sub)} "
             f"cmd={_log_cmd_redact_proxy(cmd)}",
@@ -447,6 +522,133 @@ def _apply_seed_weekday_overrides(events: list) -> None:
         print(f"[seed] applied {fixed} weekday-override shifts")
 
 
+_SEED_EVENT_KEYWORD_RE = re.compile(
+    r"\b("
+    r"tafsir|tafseer|seerah|sirah|hadith|quran|qur'an|tajweed|halaqa|dars|khatira|khutbah|"
+    r"lecture|talk|workshop|seminar|series|program|class|course|night|retreat|conference|fundraiser"
+    r")\b",
+    flags=re.I,
+)
+_SEED_GENERIC_BAD_PHRASE_RE = re.compile(
+    r"\b("
+    r"we hope to see you|see you all there|insha'?allah|will you attend|official rsvp|"
+    r"add to my device calendar|be the first from your circle|bring a friend|"
+    r"\d+\s+likes?,?\s*\d+\s+comments?"
+    r")\b",
+    flags=re.I,
+)
+
+
+def _clean_seed_title_text(raw: str) -> str:
+    s = re.sub(r"\s+", " ", raw or "").strip()
+    return s.strip("\"'` ")
+
+
+def _is_caption_style_title(raw: str) -> bool:
+    s = _clean_seed_title_text(raw).lower()
+    if not s:
+        return True
+    words = len(s.split())
+    has_event_keyword = bool(_SEED_EVENT_KEYWORD_RE.search(s))
+    has_speaker_context = bool(re.search(r"\b(with|by)\s+(sh\.?|shaykh|sheikh|imam|ustadh|dr\.?)\b", s))
+    if s.startswith("/") or s.startswith("\\"):
+        return True
+    if _SEED_GENERIC_BAD_PHRASE_RE.search(s):
+        return True
+    if re.search(r"\b(register|rsvp|follow|link in bio|swipe|tickets?|www\.|https?://|#\w+)\b", s):
+        if words <= 16 or len(s) > 80:
+            return True
+    if len(s) > 95:
+        return True
+    if len(s) > 72 and re.search(r"\b(join us|details|who\?|when\?|where\?)\b", s):
+        if has_event_keyword and has_speaker_context:
+            return False
+        return True
+    return False
+
+
+def _score_seed_title_candidate(raw: str) -> int:
+    s = _clean_seed_title_text(raw)
+    low = s.lower()
+    if not s:
+        return -999
+    if len(s) < 8 or len(s) > 110:
+        return -999
+    if _is_caption_style_title(s):
+        return -999
+    words = len(s.split())
+    score = 0
+    if _SEED_EVENT_KEYWORD_RE.search(s):
+        score += 8
+    if re.search(r"\b(with|by)\s+(sh\.?|shaykh|sheikh|imam|ustadh|dr\.?)\b", s, flags=re.I):
+        score += 5
+    if 3 <= words <= 14:
+        score += 2
+    if words > 20:
+        score -= 4
+    if re.search(r"\bpresents?\b", low) and ":" not in s and words <= 7:
+        score -= 4
+    if re.search(r"\b(mon|tue|wed|thu|fri|sat|sun)\b", low) and re.search(r"\b\d{1,2}:\d{2}\s*(am|pm)\b", low):
+        score -= 3
+    return score
+
+
+def _derive_seed_title_from_event(event: Dict[str, Any]) -> str:
+    title = _clean_seed_title_text(str(event.get("title", "")))
+    desc = _clean_seed_title_text(str(event.get("description", "")))
+    raw_text = _clean_seed_title_text(str(event.get("raw_text", "")))
+    ocr_text = _clean_seed_title_text(str(event.get("poster_ocr_text", "")))
+    blob = "\n".join([desc, raw_text, ocr_text]).strip()
+    if not blob:
+        return title
+
+    candidates: List[str] = []
+    featured = re.search(
+        r"\b(tafsi(?:r|er)\s+series\s+with\s+(?:sh\.?|shaykh|sheikh|imam|ustadh|dr\.?)\s*[^,.!?]{2,70})",
+        blob,
+        flags=re.I,
+    )
+    if featured:
+        candidates.append(_clean_seed_title_text(featured.group(1)))
+
+    for line in re.split(r"[\n.!?]+", blob):
+        s = _clean_seed_title_text(line)
+        if s:
+            candidates.append(s)
+
+    # If a line looks like "X presents: Y", prefer Y.
+    for line in list(candidates):
+        m = re.search(r"\bpresents?\s*:\s*(.+)$", line, flags=re.I)
+        if m:
+            candidates.append(_clean_seed_title_text(m.group(1)))
+
+    best = title
+    best_score = _score_seed_title_candidate(title)
+    for cand in candidates:
+        sc = _score_seed_title_candidate(cand)
+        if sc > best_score:
+            best_score = sc
+            best = cand
+    return best
+
+
+def _normalize_seed_event_titles(events: List[Dict[str, Any]]) -> None:
+    """Fix weak/caption-style titles before writing mobile seed JSON."""
+    changed = 0
+    for e in events:
+        old = _clean_seed_title_text(str(e.get("title", "")))
+        if not old:
+            continue
+        if not _is_caption_style_title(old):
+            continue
+        new_title = _derive_seed_title_from_event(e)
+        if new_title and new_title != old and not _is_caption_style_title(new_title):
+            e["title"] = new_title
+            changed += 1
+    if changed:
+        print(f"[seed] normalized {changed} caption-style title(s)")
+
+
 def write_mobile_seed() -> None:
     """Dump a compact seed of future events + meta into the mobile bundle so the
     app shows real data on first launch / airplane mode, before any network call.
@@ -467,6 +669,7 @@ def write_mobile_seed() -> None:
         return
 
     _apply_seed_weekday_overrides(future)
+    _normalize_seed_event_titles(future)
 
     sources: List[str] = sorted({(e.get("source") or "").strip() for e in future if e.get("source")})
     dates = [e.get("date") for e in future if e.get("date")]
@@ -550,13 +753,23 @@ def main() -> None:
         insta_cmd = [PY, "scrape_nj_masjid_instagram.py"]
         # Slower requests reduce Instagram rate limits; tune with SAFAR_INSTAGRAM_SLEEP_SECONDS.
         ig_sleep = os.getenv("SAFAR_INSTAGRAM_SLEEP_SECONDS", "").strip()
+        ig_skip_recent = os.getenv("SAFAR_INSTAGRAM_SKIP_RECENT_HOURS", "").strip()
+        supports_max_pages = scraper_supports_flag("--max-pages")
         if fast_mode:
-            sleep = ig_sleep or "2.2"
-            insta_cmd.extend(["--days", "60", "--post-count", "30", "--atomic-scrape", "--sleep-seconds", sleep])
+            sleep = ig_sleep or "1.4"
+            insta_cmd.extend(["--days", "60", "--post-count", "30"])
+            if supports_max_pages:
+                insta_cmd.extend(["--max-pages", "36"])
+            insta_cmd.extend(["--atomic-scrape", "--sleep-seconds", sleep])
         else:
-            sleep = ig_sleep or "3.5"
+            sleep = ig_sleep or "3.0"
             # Download → local OCR → single merge per masjid (atomic JSON writes; dedupes by instagram_shortcode).
-            insta_cmd.extend(["--days", "365", "--post-count", "40", "--atomic-scrape", "--sleep-seconds", sleep])
+            insta_cmd.extend(["--days", "365", "--post-count", "40"])
+            if supports_max_pages:
+                insta_cmd.extend(["--max-pages", "96"])
+            insta_cmd.extend(["--atomic-scrape", "--sleep-seconds", sleep])
+        if ig_skip_recent:
+            insta_cmd.extend(["--skip-recent-hours", ig_skip_recent])
         run_instagram_scrape(insta_cmd, run_env)
     run([PY, "enrich_all_masjids.py"], extra_env=run_env)
     # Guarantee weekly Jumu'ah for every masjid — even when scrapers + IG fail — by
@@ -568,6 +781,17 @@ def main() -> None:
     run([PY, "build_event_dashboard.py"], extra_env=run_env)
     run([PY, "generate_source_health_dashboard.py"], extra_env=run_env)
     run([PY, "sync_supabase_events.py"], extra_env=run_env)
+
+    # Refresh the YouTube archive for every clean speaker and backfill
+    # baseline amenity rows on Railway.  Only on the full nightly run —
+    # the fast runs shouldn't spend minutes scraping YouTube.  This is a
+    # best-effort step: if Railway is down or the secret isn't set we
+    # log-and-continue instead of failing the whole pipeline.
+    if not fast_mode and os.getenv("SAFAR_CRON_SECRET"):
+        try:
+            run([PY, "refresh_speaker_content.py"], extra_env=run_env)
+        except subprocess.CalledProcessError as exc:
+            print(f"[warn] refresh_speaker_content.py failed: {exc} (continuing)")
 
     sync_db(DB_ALL, TARGET_ALL)
     sync_db(DB_FUTURE, TARGET_FUTURE)
