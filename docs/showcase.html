@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Masjid.ly App Showcase</title>
+  <meta
+    name="description"
+    content="A visual tour of Masjid.ly app features: home feed, map, discovery, calendar plans, settings, and onboarding."
+  />
+  <link rel="stylesheet" href="./assets/styles.css" />
+  <style>
+    .showcase-wrap {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 36px 20px 72px;
+    }
+
+    .showcase-hero {
+      margin: 8px 0 24px;
+      text-align: center;
+    }
+
+    .showcase-hero h1 {
+      font-size: 38px;
+      line-height: 1.1;
+      margin: 0 0 10px;
+    }
+
+    .showcase-hero p {
+      max-width: 740px;
+      margin: 0 auto;
+      font-size: 17px;
+    }
+
+    .showcase-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+    }
+
+    .shot {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 2px 18px rgba(27, 26, 24, 0.05);
+    }
+
+    .shot a {
+      display: block;
+      text-decoration: none;
+    }
+
+    .shot img {
+      width: 100%;
+      height: auto;
+      display: block;
+      background: #f2efe7;
+    }
+
+    .shot-body {
+      padding: 12px 14px 14px;
+    }
+
+    .shot-body h3 {
+      margin: 0 0 4px;
+      font-size: 16px;
+      line-height: 1.3;
+    }
+
+    .shot-body p {
+      margin: 0;
+      font-size: 14px;
+      color: var(--ink-soft);
+    }
+
+    @media (max-width: 560px) {
+      .showcase-hero h1 {
+        font-size: 31px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner" style="max-width: 1120px;">
+      <a class="brand" href="./index.html"><span class="brand-dot"></span> Masjid.ly</a>
+      <div class="nav-links">
+        <a href="./showcase.html">Showcase</a>
+        <a href="./privacy.html">Privacy</a>
+        <a href="./support.html">Support</a>
+        <a href="./terms.html">Terms</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="showcase-wrap">
+    <section class="showcase-hero">
+      <span class="badge">App Screens</span>
+      <h1>Masjid.ly Feature Showcase</h1>
+      <p>
+        A quick tour of core flows: onboarding, personalized home feed, local map,
+        discovery, calendar plans, and settings. Tap any screenshot to view full size.
+      </p>
+    </section>
+
+    <section class="showcase-grid" aria-label="Masjid.ly screenshot gallery">
+      <article class="shot">
+        <a href="../store-screenshots-1284x2778/simulator_screenshot_3085679A-941C-4EAB-BFCD-D316B57E2FD6-8cfe66ac-b878-42e9-b4ba-08531499ec7b.png" target="_blank" rel="noopener">
+          <img loading="lazy" src="../store-screenshots-1284x2778/simulator_screenshot_3085679A-941C-4EAB-BFCD-D316B57E2FD6-8cfe66ac-b878-42e9-b4ba-08531499ec7b.png" alt="Masjid.ly welcome screen" />
+        </a>
+        <div class="shot-body">
+          <h3>Welcome Screen</h3>
+          <p>Brand-first intro with a simple onboarding entry point.</p>
+        </div>
+      </article>
+
+      <article class="shot">
+        <a href="../store-screenshots-1284x2778/simulator_screenshot_7B7327C7-E910-4624-AA2D-A3227B09C37E-d326532f-71a4-412d-8871-ee30f3ac06d1.png" target="_blank" rel="noopener">
+          <img loading="lazy" src="../store-screenshots-1284x2778/simulator_screenshot_7B7327C7-E910-4624-AA2D-A3227B09C37E-d326532f-71a4-412d-8871-ee30f3ac06d1.png" alt="Masjid.ly home feed" />
+        </a>
+        <div class="shot-body">
+          <h3>Home Feed</h3>
+          <p>Personalized event feed with quick actions and weekly planning.</p>
+        </div>
+      </article>
+
+      <article class="shot">
+        <a href="../store-screenshots-1284x2778/simulator_screenshot_398EF4BA-2741-4639-9E6A-F5E908150EDD-fa288155-cd5b-44a6-aac4-488fcdfd3a2d.png" target="_blank" rel="noopener">
+          <img loading="lazy" src="../store-screenshots-1284x2778/simulator_screenshot_398EF4BA-2741-4639-9E6A-F5E908150EDD-fa288155-cd5b-44a6-aac4-488fcdfd3a2d.png" alt="Masjid.ly map tab with nearby masjids" />
+        </a>
+        <div class="shot-body">
+          <h3>Map + Nearby Masjids</h3>
+          <p>Location-aware map clusters and topic/audience filters.</p>
+        </div>
+      </article>
+
+      <article class="shot">
+        <a href="../store-screenshots-1284x2778/simulator_screenshot_A79A317E-7419-4A51-B440-22B800558ABB-97fcb1cf-ebe9-4bef-a243-5ca75eb71ccf.png" target="_blank" rel="noopener">
+          <img loading="lazy" src="../store-screenshots-1284x2778/simulator_screenshot_A79A317E-7419-4A51-B440-22B800558ABB-97fcb1cf-ebe9-4bef-a243-5ca75eb71ccf.png" alt="Masjid.ly discover tab" />
+        </a>
+        <div class="shot-body">
+          <h3>Discover</h3>
+          <p>Follow scholars, browse collections, and uncover new events.</p>
+        </div>
+      </article>
+
+      <article class="shot">
+        <a href="../store-screenshots-1284x2778/simulator_screenshot_48762844-F6EC-475B-AAE4-CFF7E845E779-41d25813-fca9-4821-94cc-56f3006a123c.png" target="_blank" rel="noopener">
+          <img loading="lazy" src="../store-screenshots-1284x2778/simulator_screenshot_48762844-F6EC-475B-AAE4-CFF7E845E779-41d25813-fca9-4821-94cc-56f3006a123c.png" alt="Masjid.ly calendar tab and AI learning plans" />
+        </a>
+        <div class="shot-body">
+          <h3>Calendar + AI Learning Plans</h3>
+          <p>Date view plus curated multi-stop learning tracks.</p>
+        </div>
+      </article>
+
+      <article class="shot">
+        <a href="../store-screenshots-1284x2778/simulator_screenshot_5CC4D928-0137-46A6-AED1-D1819BFB3034-4cacfe72-5b52-49ee-8fe0-8306239a6302.png" target="_blank" rel="noopener">
+          <img loading="lazy" src="../store-screenshots-1284x2778/simulator_screenshot_5CC4D928-0137-46A6-AED1-D1819BFB3034-4cacfe72-5b52-49ee-8fe0-8306239a6302.png" alt="Masjid.ly learning plan details" />
+        </a>
+        <div class="shot-body">
+          <h3>Plan Detail</h3>
+          <p>Step-by-step sequence with event cards and RSVP shortcuts.</p>
+        </div>
+      </article>
+
+      <article class="shot">
+        <a href="../store-screenshots-1284x2778/simulator_screenshot_256C8A1F-CA7B-4E9F-8B09-5C05C68469FD-2de79a84-540d-4778-8bfd-c45648faa0d1.png" target="_blank" rel="noopener">
+          <img loading="lazy" src="../store-screenshots-1284x2778/simulator_screenshot_256C8A1F-CA7B-4E9F-8B09-5C05C68469FD-2de79a84-540d-4778-8bfd-c45648faa0d1.png" alt="Masjid.ly settings and profile area" />
+        </a>
+        <div class="shot-body">
+          <h3>Settings + Community</h3>
+          <p>Profile, referral sharing, and supporter tools in one place.</p>
+        </div>
+      </article>
+
+      <article class="shot">
+        <a href="../store-screenshots-1284x2778/simulator_screenshot_1BD5A8EB-F5DB-420F-8E83-E1C9E909769F-6c9fb33d-69f8-4956-9a0f-6b8f35a1032a.png" target="_blank" rel="noopener">
+          <img loading="lazy" src="../store-screenshots-1284x2778/simulator_screenshot_1BD5A8EB-F5DB-420F-8E83-E1C9E909769F-6c9fb33d-69f8-4956-9a0f-6b8f35a1032a.png" alt="Masjid.ly additional screenshot" />
+        </a>
+        <div class="shot-body">
+          <h3>More Product Views</h3>
+          <p>Additional app screens to showcase depth across flows.</p>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <footer style="max-width: 1120px;">
+    &copy; <span id="y"></span> Masjid.ly · Screenshot gallery for product/demo sharing.
+    <script>document.getElementById('y').textContent = new Date().getFullYear();</script>
+  </footer>
+</body>
+</html>
