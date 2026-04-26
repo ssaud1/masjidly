@@ -268,7 +268,7 @@ const WELCOME_FLOW_DONE_KEY = "masjidly_welcome_flow_done_v1";
 const GUIDED_TOUR_DONE_KEY = "masjidly_guided_tour_done_v5";
 // Bump on every EAS update so the badge on the welcome screen reflects what's
 // actually running on device. v2 = post-"always-welcome" build + Explore perf.
-const APP_BUILD_VERSION = "v77";
+const APP_BUILD_VERSION = "v78";
 
 // Static hosted URLs referenced from several places (Settings, About,
 // PrivacyInfo).  Mirrored from `app.json > expo.extra.urls` so the app
@@ -291,6 +291,10 @@ const FOLLOWED_SCHOLARS_KEY = "masjidly_followed_scholars_v1";
 const MUTED_FEED_SOURCES_KEY = "masjidly_muted_feed_sources_v1";
 const RSVP_STATUSES_KEY = "masjidly_rsvp_statuses_v1";
 const RSVP_NOTIFICATION_IDS_KEY = "masjidly_rsvp_notification_ids_v1";
+const PRAYER_NOTIFICATION_IDS_KEY = "masjidly_prayer_notification_ids_v1";
+const NOTIFICATION_CAP_COUNTER_KEY = "masjidly_notification_cap_counter_v1";
+const TONIGHT_DIGEST_NOTIFICATION_KEY = "masjidly_tonight_digest_id_v1";
+const PAST_EVENT_HIDE_GRACE_HOURS = 3;
 const FILTER_PRESETS_KEY = "masjidly_filter_presets_v1";
 const FEEDBACK_RESPONSES_KEY = "masjidly_feedback_responses_v1";
 const STREAK_TRACKER_KEY = "masjidly_streak_tracker_v1";
@@ -542,8 +546,13 @@ type ProfilePayload = {
   expo_push_token?: string;
   notifications?: {
     new_event_followed: boolean;
+    followed_speakers: boolean;
     tonight_after_maghrib: boolean;
+    prayer_reminders: boolean;
     rsvp_reminders: boolean;
+    quiet_hours_start: string;
+    quiet_hours_end: string;
+    daily_notification_cap: number;
   };
 };
 
@@ -1299,12 +1308,62 @@ function parseEventClockMinutes(raw: unknown): number | null {
   return hour * 60 + min;
 }
 
+type LocalNotificationPrefs = {
+  quiet_hours_start?: string;
+  quiet_hours_end?: string;
+  daily_notification_cap?: number;
+};
+
+function parseClockMinutes(raw: string | undefined): number | null {
+  const s = String(raw || "").trim().toLowerCase();
+  const m = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm) || hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+  return hh * 60 + mm;
+}
+
+function isWithinQuietHours(at: Date, quietStart: string, quietEnd: string): boolean {
+  const start = parseClockMinutes(quietStart);
+  const end = parseClockMinutes(quietEnd);
+  if (start == null || end == null) return false;
+  const now = at.getHours() * 60 + at.getMinutes();
+  if (start === end) return false;
+  if (start < end) return now >= start && now < end;
+  return now >= start || now < end;
+}
+
+async function consumeNotificationCap(
+  triggerAt: Date,
+  prefs: LocalNotificationPrefs | undefined,
+  priority: "high" | "low",
+): Promise<boolean> {
+  const quietStart = prefs?.quiet_hours_start || "22:30";
+  const quietEnd = prefs?.quiet_hours_end || "06:30";
+  if (isWithinQuietHours(triggerAt, quietStart, quietEnd)) return false;
+  const cap = Math.max(1, Math.min(25, Number(prefs?.daily_notification_cap ?? 6)));
+  const dateKey = `${triggerAt.getFullYear()}-${String(triggerAt.getMonth() + 1).padStart(2, "0")}-${String(triggerAt.getDate()).padStart(2, "0")}`;
+  try {
+    const raw = await SecureStore.getItemAsync(NOTIFICATION_CAP_COUNTER_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const used = Number(parsed[dateKey] || 0);
+    const maxAllowed = priority === "high" ? cap + 2 : cap;
+    if (used >= maxAllowed) return false;
+    parsed[dateKey] = used + 1;
+    await SecureStore.setItemAsync(NOTIFICATION_CAP_COUNTER_KEY, JSON.stringify(parsed));
+    return true;
+  } catch {
+    return true;
+  }
+}
+
 // Local notification scheduling for RSVP'd events. We fire two reminders:
 //   1. 9:00am on the day-of ("Today: <title> at <masjid>, starts at 6:45pm")
 //   2. ~2 hours before the event starts ("Starting soon: ...")
 // Ids are persisted per-event-key so we can cancel them when the user
 // un-RSVPs. Best-effort: never throws into the UI.
-async function scheduleEventReminders(e: any): Promise<void> {
+async function scheduleEventReminders(e: any, prefs?: LocalNotificationPrefs): Promise<void> {
   const key = (e?.event_uid && String(e.event_uid)) ||
     `${e?.source || ""}|${e?.date || ""}|${e?.start_time || ""}|${e?.title || ""}`;
   try {
@@ -1327,6 +1386,8 @@ async function scheduleEventReminders(e: any): Promise<void> {
   const dayOf = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 9, 0, 0, 0);
   if (dayOf.getTime() > now + 60_000) {
     try {
+      const allow = await consumeNotificationCap(dayOf, prefs, "low");
+      if (!allow) throw new Error("suppressed");
       const id = await Notifications.scheduleNotificationAsync({
         content: {
           title: `Today: ${title}`,
@@ -1341,6 +1402,8 @@ async function scheduleEventReminders(e: any): Promise<void> {
   const twoHoursBefore = new Date(start.getTime() - 2 * 60 * 60 * 1000);
   if (twoHoursBefore.getTime() > now + 60_000) {
     try {
+      const allow = await consumeNotificationCap(twoHoursBefore, prefs, "high");
+      if (!allow) throw new Error("suppressed");
       const id = await Notifications.scheduleNotificationAsync({
         content: {
           title: `Starting soon: ${title}`,
@@ -1391,6 +1454,20 @@ function isEventPastNow(e: any): boolean {
   const startMin = parseEventClockMinutes(e?.start_time);
   if (startMin != null) return nowMin > startMin + 60; // assume 1h duration
   return false;
+}
+
+function isPastEventBeyondGrace(e: any, graceHours: number = PAST_EVENT_HIDE_GRACE_HOURS): boolean {
+  if (!isEventPastNow(e)) return false;
+  const start = eventStartDate(e);
+  if (!start) return true;
+  const endMin = parseEventClockMinutes(e?.end_time);
+  const startMin = parseEventClockMinutes(e?.start_time);
+  const fallbackStart = startMin != null ? startMin : start.getHours() * 60 + start.getMinutes();
+  const effectiveEndMin = endMin != null ? endMin : fallbackStart + 60;
+  const end = new Date(start);
+  end.setHours(Math.floor(effectiveEndMin / 60), effectiveEndMin % 60, 0, 0);
+  const graceMs = Math.max(1, graceHours) * 60 * 60 * 1000;
+  return Date.now() - end.getTime() > graceMs;
 }
 
 function isEventLiveNow(e: any): boolean {
@@ -2290,8 +2367,13 @@ function AppInner() {
     onboarding_done: false,
     notifications: {
       new_event_followed: true,
+      followed_speakers: true,
       tonight_after_maghrib: true,
+      prayer_reminders: true,
       rsvp_reminders: true,
+      quiet_hours_start: "22:30",
+      quiet_hours_end: "06:30",
+      daily_notification_cap: 6,
     },
   });
   const [pushToken, setPushToken] = useState("");
@@ -2377,11 +2459,107 @@ function AppInner() {
           const key = e.event_uid ? String(e.event_uid) : `${e.source || ""}|${e.date || ""}|${e.start_time || ""}|${e.title || ""}`;
           if (!rsvpStatuses[key]) continue;
           if (scheduled[key]) continue;
-          try { await scheduleEventReminders(e); } catch { /* non-fatal */ }
+          try { await scheduleEventReminders(e, profileDraft.notifications); } catch { /* non-fatal */ }
         }
       } catch { /* non-fatal */ }
     })();
   }, [events, rsvpStatuses, profileDraft.notifications?.rsvp_reminders]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        if (profileDraft.notifications?.prayer_reminders === false) {
+          const raw = await SecureStore.getItemAsync(PRAYER_NOTIFICATION_IDS_KEY);
+          const ids: string[] = raw ? JSON.parse(raw) : [];
+          for (const id of ids) {
+            try { await Notifications.cancelScheduledNotificationAsync(id); } catch { /* non-fatal */ }
+          }
+          await SecureStore.deleteItemAsync(PRAYER_NOTIFICATION_IDS_KEY);
+          return;
+        }
+        if (!followedMasjids.length) return;
+        const res = await fetch(`${API_BASE_URL}/api/prayer-times`);
+        if (!res.ok) return;
+        const payload = await res.json();
+        const rows = Array.isArray(payload?.sources) ? payload.sources : [];
+        const followedSet = new Set(followedMasjids.map((s) => normalizeText(s).toLowerCase()));
+        const now = new Date();
+        const scheduledIds: string[] = [];
+        for (const row of rows) {
+          if (cancelled) return;
+          const src = normalizeText(row?.source).toLowerCase();
+          if (!followedSet.has(src)) continue;
+          const prayers = row?.prayers || {};
+          for (const prayerName of ["maghrib", "isha"]) {
+            const mm = parseClockMinutes(prayers?.[prayerName]);
+            if (mm == null) continue;
+            const trigger = new Date(now);
+            trigger.setHours(Math.floor(mm / 60), mm % 60, 0, 0);
+            trigger.setMinutes(trigger.getMinutes() - 15);
+            if (trigger.getTime() <= Date.now() + 90_000) continue;
+            const allow = await consumeNotificationCap(trigger, profileDraft.notifications, "high");
+            if (!allow) continue;
+            try {
+              const id = await Notifications.scheduleNotificationAsync({
+                content: {
+                  title: `${formatSourceLabel(src)} · ${prayerName[0].toUpperCase() + prayerName.slice(1)} soon`,
+                  body: `Prayer time around ${formatClock12(prayers?.[prayerName] || "")}.`,
+                  data: { source: src, kind: "prayer_reminder", prayer: prayerName },
+                },
+                trigger: trigger as any,
+              });
+              scheduledIds.push(id);
+            } catch {
+              // non-fatal
+            }
+          }
+        }
+        if (!cancelled) await SecureStore.setItemAsync(PRAYER_NOTIFICATION_IDS_KEY, JSON.stringify(scheduledIds));
+      } catch {
+        // non-fatal
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [followedMasjids, profileDraft.notifications]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const prevId = await SecureStore.getItemAsync(TONIGHT_DIGEST_NOTIFICATION_KEY);
+        if (prevId) {
+          try { await Notifications.cancelScheduledNotificationAsync(prevId); } catch { /* non-fatal */ }
+          await SecureStore.deleteItemAsync(TONIGHT_DIGEST_NOTIFICATION_KEY);
+        }
+        if (profileDraft.notifications?.tonight_after_maghrib === false) return;
+        const now = new Date();
+        const trigger = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 19, 30, 0, 0);
+        if (trigger.getTime() <= Date.now() + 90_000) return;
+        const allow = await consumeNotificationCap(trigger, profileDraft.notifications, "low");
+        if (!allow) return;
+        const tonightCount = events.filter((e) => {
+          if ((e.date || "") !== todayIso()) return false;
+          if (!followedMasjids.length) return true;
+          return followedMasjids.some((src) => normalizeText(src).toLowerCase() === normalizeText(e.source).toLowerCase());
+        }).length;
+        const id = await Notifications.scheduleNotificationAsync({
+          content: {
+            title: "Tonight after Maghrib",
+            body: tonightCount > 0 ? `${tonightCount} program${tonightCount === 1 ? "" : "s"} near you.` : "See what's happening near your masjids tonight.",
+            data: { kind: "tonight_digest" },
+          },
+          trigger: trigger as any,
+        });
+        if (!cancelled) await SecureStore.setItemAsync(TONIGHT_DIGEST_NOTIFICATION_KEY, id);
+      } catch {
+        // non-fatal
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [events, followedMasjids, profileDraft.notifications]);
   const [feedbackResponses, setFeedbackResponses] = useState<Record<string, "helpful" | "off" | "attended">>({});
   const [showModerationQueue, setShowModerationQueue] = useState(false);
   const [moderationReports, setModerationReports] = useState<any[]>([]);
@@ -2389,9 +2567,13 @@ function AppInner() {
   const [reportIssueType, setReportIssueType] = useState("time");
   const [reportDetails, setReportDetails] = useState("");
   const [showReportSection, setShowReportSection] = useState(false);
+  /** Technical trust breakdown + quick-fix actions (hidden by default). */
+  const [showEventDataChecks, setShowEventDataChecks] = useState(false);
+  /** Event detail: full-screen poster viewer */
+  const [posterFullscreenUri, setPosterFullscreenUri] = useState<string | null>(null);
   const [showFullDescription, setShowFullDescription] = useState(false);
   const [showOriginalDescription, setShowOriginalDescription] = useState(false);
-  const [cacheWarmStatus, setCacheWarmStatus] = useState<"syncing" | "warming" | "ready">("syncing");
+  const [cacheWarmStatus, setCacheWarmStatus] = useState<"warming" | "ready">("warming");
   const [reflectionState, setReflectionState] = useState<{ event?: EventItem; rating: number; text: string } | null>(null);
   const [eventSeries, setEventSeries] = useState<EventSeries[]>([]);
   const [speakers, setSpeakers] = useState<Speaker[]>([]);
@@ -2548,6 +2730,31 @@ function AppInner() {
   const [prayerTimesBySource, setPrayerTimesBySource] = useState<
     Record<string, { date: string; fajr: string; dhuhr: string; asr: string; maghrib: string; isha: string }>
   >({});
+  const [prayerApiBySource, setPrayerApiBySource] = useState<
+    Record<
+      string,
+      {
+        source_url: string;
+        last_updated_label: string;
+        source_type: string;
+        is_stale: boolean;
+        stale_reason: string;
+        prayers: Record<string, string>;
+        iqama: Record<string, string>;
+        jumuah: Array<{ time: string; language?: string; parking_notes?: string; women_section?: string; minutes_until?: number }>;
+      }
+    >
+  >({});
+  const [masjidProfileViewTab, setMasjidProfileViewTab] = useState<"events" | "prayer">("events");
+  const [jumuahFinderRows, setJumuahFinderRows] = useState<any[]>([]);
+  const [showJumuahFinder, setShowJumuahFinder] = useState(false);
+  const [jumuahFilters, setJumuahFilters] = useState<{ language: string; start: string; end: string; radius: number; parking: boolean }>({
+    language: "",
+    start: "12:00",
+    end: "14:30",
+    radius: 25,
+    parking: false,
+  });
   const [streakCount, setStreakCount] = useState(0);
   const [streakMonth, setStreakMonth] = useState(todayIso().slice(0, 7));
   const [goalCount] = useState(2);
@@ -2663,8 +2870,8 @@ function AppInner() {
   // Keeps step-1 interest taps snappy by deferring the expensive
   // app-wide personalization re-rank until the user taps "Next".
   const [setupInterestsDraft, setSetupInterestsDraft] = useState<string[] | null>(null);
-  // Clean loading overlay shown while onboarding is being persisted.
-  const [onboardingSaving, setOnboardingSaving] = useState(false);
+  /** Prevents double-submit on Finish Setup; no blocking overlay — we jump straight to launch. */
+  const finishSetupInFlightRef = useRef(false);
   // Run a quick slide+fade enter animation whenever the onboarding sub-step
   // or feed-setup wizard step changes. The direction refs are updated in the
   // Back/Next handlers so the new content slides in from the correct side.
@@ -3368,8 +3575,13 @@ function AppInner() {
         expo_push_token: p.expo_push_token || "",
         notifications: {
           new_event_followed: !!p.notifications?.new_event_followed,
+          followed_speakers: p.notifications?.followed_speakers !== false,
           tonight_after_maghrib: !!p.notifications?.tonight_after_maghrib,
+          prayer_reminders: p.notifications?.prayer_reminders !== false,
           rsvp_reminders: !!p.notifications?.rsvp_reminders,
+          quiet_hours_start: normalizeText(p.notifications?.quiet_hours_start || "22:30") || "22:30",
+          quiet_hours_end: normalizeText(p.notifications?.quiet_hours_end || "06:30") || "06:30",
+          daily_notification_cap: Math.max(1, Math.min(25, Number(p.notifications?.daily_notification_cap || 6))),
         },
       });
       if (favorites.length) setSelectedSources(new Set(favorites));
@@ -3397,7 +3609,7 @@ function AppInner() {
   };
 
   const saveOnboarding = async () => {
-    if (onboardingSaving) return;
+    if (finishSetupInFlightRef.current) return;
     try {
       setOnboardingError("");
       const cleanedName = normalizeText(personalization.name);
@@ -3429,7 +3641,7 @@ function AppInner() {
       const finalInterests = Array.from(
         new Set((setupInterestsDraft ?? personalization.interests).map((x) => normalizeText(x)).filter(Boolean))
       );
-      setOnboardingSaving(true);
+      finishSetupInFlightRef.current = true;
       const nextPersonalization: PersonalizationPrefs = {
         ...personalization,
         name: cleanedName,
@@ -3448,6 +3660,8 @@ function AppInner() {
       justCompletedOnboardingRef.current = true;
       setSetupInterestsDraft(null);
       setEntryScreen("launch");
+      // Refresh feed while the launch celebration plays (profile/radius/sources may have changed).
+      void loadEvents({ force: true });
 
       // Persist in background; do not block the visual transition.
       void Promise.all([
@@ -3480,9 +3694,8 @@ function AppInner() {
         }),
       }).catch(() => {});
     } catch (e) {
+      finishSetupInFlightRef.current = false;
       setOnboardingError((e as Error).message || "Could not save onboarding.");
-    } finally {
-      setOnboardingSaving(false);
     }
   };
 
@@ -3504,6 +3717,7 @@ function AppInner() {
       // first entry so the jump to Home doesn't feel abrupt.
       justCompletedOnboardingRef.current = true;
       setEntryScreen("launch");
+      void loadEvents({ force: true });
       // Persist in background; skip flow should feel immediate.
       void Promise.all([
         SecureStore.setItemAsync(PERSONALIZATION_KEY, JSON.stringify(nextPersonalization)),
@@ -3512,6 +3726,7 @@ function AppInner() {
     } catch {
       justCompletedOnboardingRef.current = true;
       setEntryScreen("launch");
+      void loadEvents({ force: true });
     }
   };
 
@@ -3961,6 +4176,9 @@ function AppInner() {
     if (entryScreen !== "app") return;
     setCacheWarmStatus("warming");
     let cancelled = false;
+    const warmFallbackTimer = setTimeout(() => {
+      if (!cancelled) setCacheWarmStatus("ready");
+    }, 8000);
     const run = async () => {
       const nowIso = todayIso();
       const isSoon = (ev: EventItem): boolean => {
@@ -4000,6 +4218,7 @@ function AppInner() {
     void run();
     return () => {
       cancelled = true;
+      clearTimeout(warmFallbackTimer);
     };
   }, [entryScreen, events, speakers, meta?.sources, canRenderPoster, followedMasjids]);
 
@@ -4607,6 +4826,7 @@ function AppInner() {
     const filtered = events.filter((e) => {
       if (isProgramNotEvent(e)) return false;
       if (isJumuahEvent(e)) return false;
+      if (isPastEventBeyondGrace(e)) return false;
       if (audienceFilter !== "all" && inferAudience(e) !== audienceFilter) return false;
       if (quickFilters.length && !quickFilters.every((f) => matchesQuickFilter(e, f))) return false;
       return true;
@@ -5171,8 +5391,13 @@ function AppInner() {
               onboarding_done: profileDraft.onboarding_done,
               notifications: profileDraft.notifications || {
                 new_event_followed: true,
+                followed_speakers: true,
                 tonight_after_maghrib: true,
+                prayer_reminders: true,
                 rsvp_reminders: true,
+                quiet_hours_start: "22:30",
+                quiet_hours_end: "06:30",
+                daily_notification_cap: 6,
               },
             }),
           });
@@ -5616,7 +5841,7 @@ function AppInner() {
     try {
       if (willActivate) {
         if (profileDraft.notifications?.rsvp_reminders !== false) {
-          await scheduleEventReminders(e);
+          await scheduleEventReminders(e, profileDraft.notifications);
         }
       } else {
         await cancelEventReminders(key);
@@ -5628,15 +5853,26 @@ function AppInner() {
 
   const updateNotificationPreference = async (
     key: keyof NonNullable<ProfilePayload["notifications"]>,
-    value: boolean,
+    value: boolean | string | number,
   ) => {
     hapticTap("selection");
     const nextNotifications = {
       new_event_followed: profileDraft.notifications?.new_event_followed ?? true,
+      followed_speakers: profileDraft.notifications?.followed_speakers ?? true,
       tonight_after_maghrib: profileDraft.notifications?.tonight_after_maghrib ?? true,
+      prayer_reminders: profileDraft.notifications?.prayer_reminders ?? true,
       rsvp_reminders: profileDraft.notifications?.rsvp_reminders ?? true,
+      quiet_hours_start: profileDraft.notifications?.quiet_hours_start || "22:30",
+      quiet_hours_end: profileDraft.notifications?.quiet_hours_end || "06:30",
+      daily_notification_cap: profileDraft.notifications?.daily_notification_cap || 6,
       [key]: value,
     };
+    if (typeof nextNotifications.daily_notification_cap !== "number") {
+      nextNotifications.daily_notification_cap = Number(nextNotifications.daily_notification_cap || 6);
+    }
+    nextNotifications.daily_notification_cap = Math.max(1, Math.min(25, Number(nextNotifications.daily_notification_cap || 6)));
+    nextNotifications.quiet_hours_start = normalizeText(String(nextNotifications.quiet_hours_start || "22:30")) || "22:30";
+    nextNotifications.quiet_hours_end = normalizeText(String(nextNotifications.quiet_hours_end || "06:30")) || "06:30";
     const nextDraft = { ...profileDraft, notifications: nextNotifications };
     setProfileDraft(nextDraft);
     try {
@@ -5672,6 +5908,7 @@ function AppInner() {
 
   const closeEventDetails = useCallback(() => {
     hapticTap("selection");
+    setPosterFullscreenUri(null);
     setSelectedEvent(null);
   }, []);
 
@@ -5847,6 +6084,51 @@ function AppInner() {
     try {
       if (!source) return;
       const key = (source || "").toString();
+      try {
+        const resApi = await fetch(`${API_BASE_URL}/api/prayer-times/${encodeURIComponent(key)}`);
+        if (resApi.ok) {
+          const payload = await resApi.json();
+          const row = payload?.source;
+          if (row && typeof row === "object") {
+            const prayers = row.prayers || {};
+            setPrayerApiBySource((prev) => ({
+              ...prev,
+              [key]: {
+                source_url: row.source_url || "",
+                last_updated_label: row.last_updated_label || "",
+                source_type: row.source_type || "website_scrape",
+                is_stale: !!row.is_stale,
+                stale_reason: row.stale_reason || "",
+                prayers: {
+                  fajr: normalizeText(prayers.fajr || ""),
+                  dhuhr: normalizeText(prayers.dhuhr || ""),
+                  asr: normalizeText(prayers.asr || ""),
+                  maghrib: normalizeText(prayers.maghrib || ""),
+                  isha: normalizeText(prayers.isha || ""),
+                },
+                iqama: row.iqama || {},
+                jumuah: Array.isArray(row.jumuah) ? row.jumuah : [],
+              },
+            }));
+            if (prayers.fajr || prayers.dhuhr || prayers.asr || prayers.maghrib || prayers.isha) {
+              setPrayerTimesBySource((prev) => ({
+                ...prev,
+                [key]: {
+                  date: todayIso(),
+                  fajr: normalizeText(prayers.fajr || ""),
+                  dhuhr: normalizeText(prayers.dhuhr || ""),
+                  asr: normalizeText(prayers.asr || ""),
+                  maghrib: normalizeText(prayers.maghrib || ""),
+                  isha: normalizeText(prayers.isha || ""),
+                },
+              }));
+              return;
+            }
+          }
+        }
+      } catch {
+        // non-fatal: fall through to aladhan fallback
+      }
       const coord = MASJID_COORDS[key] || MASJID_COORDS[key.toLowerCase()];
       if (!coord) return;
       const today = new Date();
@@ -5855,8 +6137,8 @@ function AppInner() {
       const yyyy = today.getFullYear();
       // Don't refetch if we already have today's times cached.
       const cached = prayerTimesBySource[key];
-      const todayIso = `${yyyy}-${mm}-${dd}`;
-      if (cached && cached.date === todayIso) return;
+      const todayDateIso = `${yyyy}-${mm}-${dd}`;
+      if (cached && cached.date === todayDateIso) return;
       const url = `https://api.aladhan.com/v1/timings/${dd}-${mm}-${yyyy}?latitude=${coord.latitude}&longitude=${coord.longitude}&method=2`;
       const res = await fetch(url);
       if (!res.ok) return;
@@ -5868,7 +6150,7 @@ function AppInner() {
       setPrayerTimesBySource((prev) => ({
         ...prev,
         [key]: {
-          date: todayIso,
+          date: todayDateIso,
           fajr: clean(t.Fajr),
           dhuhr: clean(t.Dhuhr),
           asr: clean(t.Asr),
@@ -5883,6 +6165,47 @@ function AppInner() {
     // stable and avoid unnecessary refetches.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const refreshJumuahFinder = useCallback(async () => {
+    try {
+      const params = new URLSearchParams();
+      if (profileDraft.home_lat != null) params.set("lat", String(profileDraft.home_lat));
+      if (profileDraft.home_lon != null) params.set("lon", String(profileDraft.home_lon));
+      params.set("radius", String(jumuahFilters.radius || 25));
+      if (jumuahFilters.language) params.set("language", jumuahFilters.language);
+      if (jumuahFilters.start) params.set("start", jumuahFilters.start);
+      if (jumuahFilters.end) params.set("end", jumuahFilters.end);
+      if (jumuahFilters.parking) params.set("parking", "1");
+      const res = await fetch(`${API_BASE_URL}/api/jumuah/finder?${params.toString()}`);
+      if (!res.ok) return;
+      const payload = await res.json();
+      setJumuahFinderRows(Array.isArray(payload?.results) ? payload.results : []);
+    } catch {
+      // non-fatal
+    }
+  }, [jumuahFilters.end, jumuahFilters.language, jumuahFilters.parking, jumuahFilters.radius, jumuahFilters.start, profileDraft.home_lat, profileDraft.home_lon]);
+
+  const submitPrayerTimeReport = useCallback(
+    async (source: string, prayer: string, details: string) => {
+      try {
+        await apiJson("/api/prayer-times/report", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source,
+            prayer,
+            issue: "wrong_time",
+            details: normalizeText(details) || "Reported from mobile app",
+            source_url: prayerApiBySource[source]?.source_url || "",
+          }),
+        });
+        Alert.alert("Report sent", "Thanks - we'll review this prayer time.");
+      } catch {
+        Alert.alert("Couldn't send report", "Please try again in a moment.");
+      }
+    },
+    [prayerApiBySource],
+  );
 
   // #31 Passport
   const loadPassport = useCallback(async () => {
@@ -5945,10 +6268,17 @@ function AppInner() {
 
   useEffect(() => {
     if (selectedMasjidProfile) {
+      setMasjidProfileViewTab("events");
       loadIqamaFor(selectedMasjidProfile);
       loadPrayerTimesFor(selectedMasjidProfile);
     }
   }, [selectedMasjidProfile, loadIqamaFor, loadPrayerTimesFor]);
+
+  useEffect(() => {
+    if (tab === "discover") {
+      void refreshJumuahFinder();
+    }
+  }, [refreshJumuahFinder, tab]);
 
   // Add a single event to the device calendar. We route through a Google
   // Calendar template URL because it works cross-platform (iOS opens the
@@ -6099,6 +6429,7 @@ function AppInner() {
   useEffect(() => {
     if (!selectedEvent) {
       setShowReportSection(false);
+      setShowEventDataChecks(false);
       setShowFullDescription(false);
       setShowOriginalDescription(false);
       setReportDetails("");
@@ -7083,7 +7414,6 @@ function AppInner() {
                   ) : null}
                   <Pressable
                     unstable_pressDelay={0}
-                    disabled={onboardingSaving}
                     style={[
                       styles.welcomePrimaryBtn,
                       styles.welcomePrimaryBtnOnHero,
@@ -7094,10 +7424,9 @@ function AppInner() {
                       isNeo && styles.welcomePrimaryBtnNeo,
                       isVitaria && styles.welcomePrimaryBtnVitaria,
                       isInferno && styles.welcomePrimaryBtnInferno,
-                      onboardingSaving && { opacity: 0.6 },
                     ]}
                     onPress={() => {
-                      if (onboardingSaving) return;
+                      if (finishSetupInFlightRef.current) return;
                       setOnboardingError("");
                       // Per-step gating so users can't skip past required
                       // fields. Validation mirrors saveOnboarding() but
@@ -7178,16 +7507,6 @@ function AppInner() {
                   />
                 ))}
           </View>
-          {onboardingSaving ? (
-            <View style={styles.loadingMasjidlyOverlay}>
-              <View style={[styles.loadingMasjidlyCard, isDarkTheme && styles.loadingMasjidlyCardDark]}>
-                <ActivityIndicator size="large" color={isDarkTheme ? "#8aa7ff" : "#ff7a3c"} />
-                <Text style={[styles.loadingMasjidlyTitle, isDarkTheme && styles.loadingMasjidlyTitleDark]}>
-                  Loading Masjidly...
-                </Text>
-              </View>
-            </View>
-          ) : null}
         </View>
       </SafeAreaView>
     );
@@ -7920,7 +8239,7 @@ function AppInner() {
             {nextEventText} · {new Set(homeFeedEvents.map((e) => e.source)).size} masjids
           </Text>
           <Text style={[styles.homeHeroStatus, isNeo && { color: "#5a5a5a" }]}>
-            {cacheWarmStatus === "ready" ? "Feed ready" : cacheWarmStatus === "warming" ? "Warming media cache..." : "Syncing latest..."}
+            {cacheWarmStatus === "ready" ? "Feed ready" : "Refreshing latest..."}
           </Text>
           <Pressable {...PRESSABLE_INSTANT} style={styles.homeHeroCta} onPress={() => switchTab("explore")}>
             <Text style={styles.homeHeroCtaText}>Plan your week  →</Text>
@@ -10351,6 +10670,31 @@ function AppInner() {
         </LinearGradient>
 
         {(() => {
+          const nextClosest = jumuahFinderRows
+            .flatMap((row) => (Array.isArray(row.jumuah) ? row.jumuah.map((slot: any) => ({ row, slot })) : []))
+            .filter((x) => typeof x.slot?.minutes_until === "number" && x.slot.minutes_until >= -20)
+            .sort((a, b) => Number(a.slot.minutes_until) - Number(b.slot.minutes_until))[0];
+          return (
+            <View style={[styles.hospitalListCard, { marginHorizontal: 12, marginBottom: 10 }]}>
+              <Text style={[styles.hospitalListTitle, isDarkTheme && styles.hospitalListTitleDark]}>Jumu'ah finder</Text>
+              <Text style={[styles.hospitalListMeta, isDarkTheme && styles.hospitalListMetaDark]}>
+                {nextClosest
+                  ? `${formatSourceLabel(nextClosest.row.source)} · starts in ${Math.max(0, Number(nextClosest.slot.minutes_until))} min`
+                  : "Find Friday khutbah by language, time, distance, and parking."}
+              </Text>
+              <View style={[styles.modalActionsRow, { marginTop: 8 }]}>
+                <Pressable {...PRESSABLE_INSTANT} style={styles.roundGhostBtn} onPress={() => setShowJumuahFinder(true)}>
+                  <Text style={styles.roundGhostText}>Open finder</Text>
+                </Pressable>
+                <Pressable {...PRESSABLE_INSTANT} style={styles.roundGhostBtn} onPress={() => void refreshJumuahFinder()}>
+                  <Text style={styles.roundGhostText}>Refresh</Text>
+                </Pressable>
+              </View>
+            </View>
+          );
+        })()}
+
+        {(() => {
           const weekEnd = plusDaysIso(7);
           const upcomingFollowed = followedScholars
             .flatMap((slug) => {
@@ -11018,6 +11362,28 @@ function AppInner() {
             }
           />
           <SettingsRow
+            icon="school"
+            label="New talks from followed speakers"
+            value={profileDraft.notifications?.followed_speakers === false ? "Off" : "On"}
+            onPress={() =>
+              updateNotificationPreference(
+                "followed_speakers",
+                profileDraft.notifications?.followed_speakers === false,
+              )
+            }
+          />
+          <SettingsRow
+            icon="mosque"
+            label="Prayer reminders"
+            value={profileDraft.notifications?.prayer_reminders === false ? "Off" : "On — 15 min before Maghrib/Isha"}
+            onPress={() =>
+              updateNotificationPreference(
+                "prayer_reminders",
+                profileDraft.notifications?.prayer_reminders === false,
+              )
+            }
+          />
+          <SettingsRow
             icon="notifications"
             label="Push notifications"
             value={pushToken ? "On — you'll get reminders & new-event nudges" : "Off — tap to enable"}
@@ -11033,6 +11399,34 @@ function AppInner() {
                 profileDraft.notifications?.rsvp_reminders === false,
               )
             }
+          />
+          <SettingsRow
+            icon="dark_mode"
+            label="Quiet hours"
+            value={`${profileDraft.notifications?.quiet_hours_start || "22:30"} - ${profileDraft.notifications?.quiet_hours_end || "06:30"}`}
+            onPress={() => {
+              const curStart = profileDraft.notifications?.quiet_hours_start || "22:30";
+              const curEnd = profileDraft.notifications?.quiet_hours_end || "06:30";
+              const presets = [
+                ["22:30", "06:30"],
+                ["23:00", "06:00"],
+                ["00:00", "07:00"],
+              ] as const;
+              const idx = Math.max(0, presets.findIndex((p) => p[0] === curStart && p[1] === curEnd));
+              const next = presets[(idx + 1) % presets.length];
+              void updateNotificationPreference("quiet_hours_start", next[0]);
+              void updateNotificationPreference("quiet_hours_end", next[1]);
+            }}
+          />
+          <SettingsRow
+            icon="notifications"
+            label="Daily notification cap"
+            value={`${profileDraft.notifications?.daily_notification_cap || 6} per day`}
+            onPress={() => {
+              const cur = Number(profileDraft.notifications?.daily_notification_cap || 6);
+              const next = cur >= 10 ? 4 : cur + 2;
+              void updateNotificationPreference("daily_notification_cap", next);
+            }}
           />
           <SettingsRow
             icon="favorite"
@@ -11970,7 +12364,20 @@ function AppInner() {
                   ) : (
                     <View style={[StyleSheet.absoluteFillObject, { backgroundColor: brandColor }]} />
                   )}
+                  {poster && canRenderPoster(poster) ? (
+                    <Pressable
+                      {...PRESSABLE_INSTANT}
+                      style={StyleSheet.absoluteFillObject}
+                      onPress={() => {
+                        hapticTap("selection");
+                        setPosterFullscreenUri(poster);
+                      }}
+                      accessibilityRole="button"
+                      accessibilityLabel="View full poster"
+                    />
+                  ) : null}
                   <LinearGradient
+                    pointerEvents="none"
                     colors={["rgba(0,0,0,0.45)", "rgba(0,0,0,0)", "rgba(0,0,0,0.85)"]}
                     locations={[0, 0.35, 1]}
                     style={StyleSheet.absoluteFillObject}
@@ -12423,49 +12830,63 @@ function AppInner() {
                       {detectSourceConflict(ev)}
                     </Text>
                   ) : null}
-                  <View style={styles.eventTrustBreakdownRow}>
-                    {getTrustSignalBreakdown(ev).map((sig) => (
-                      <View
-                        key={`trust-signal-${sig.key}`}
-                        style={[
-                          styles.eventTrustBreakdownChip,
-                          sig.ok ? styles.eventTrustBreakdownChipOk : styles.eventTrustBreakdownChipWarn,
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.eventTrustBreakdownChipText,
-                            sig.ok ? styles.eventTrustBreakdownChipTextOk : styles.eventTrustBreakdownChipTextWarn,
-                          ]}
-                        >
-                          {sig.ok ? "✓ " : "⚠ "} {sig.label}
-                        </Text>
+                  <Pressable
+                    {...PRESSABLE_INSTANT}
+                    style={[styles.eventReportToggle, { marginTop: 4 }]}
+                    onPress={() => setShowEventDataChecks((v) => !v)}
+                    hitSlop={6}
+                  >
+                    <Text style={[styles.eventReportToggleText, isDarkTheme && { color: "#9db0db" }]}>
+                      {showEventDataChecks ? "Hide listing quality & quick fixes" : "Listing quality & quick fixes"}
+                    </Text>
+                  </Pressable>
+                  {showEventDataChecks ? (
+                    <View style={{ marginTop: 6 }}>
+                      <View style={styles.eventTrustBreakdownRow}>
+                        {getTrustSignalBreakdown(ev).map((sig) => (
+                          <View
+                            key={`trust-signal-${sig.key}`}
+                            style={[
+                              styles.eventTrustBreakdownChip,
+                              sig.ok ? styles.eventTrustBreakdownChipOk : styles.eventTrustBreakdownChipWarn,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.eventTrustBreakdownChipText,
+                                sig.ok ? styles.eventTrustBreakdownChipTextOk : styles.eventTrustBreakdownChipTextWarn,
+                              ]}
+                            >
+                              {sig.ok ? "✓ " : "⚠ "} {sig.label}
+                            </Text>
+                          </View>
+                        ))}
                       </View>
-                    ))}
-                  </View>
-                  <Text style={[styles.eventTrustNote, isDarkTheme && { color: "#bcc6df" }]}>
-                    Trust pass: {getTrustPassChips(ev, { debug: __DEV__ }).join(" · ")}
-                  </Text>
-                  <View style={styles.eventTrustActions}>
-                    {(["title", "speaker", "poster", "duplicate"] as const).map((kind) => (
-                      <Pressable
-                        {...PRESSABLE_INSTANT}
-                        key={`quick-fix-${kind}`}
-                        style={[styles.eventTrustChip, { backgroundColor: "rgba(78,108,180,0.12)" }]}
-                        onPress={() => submitQuickCorrection(ev, kind)}
-                      >
-                        <Text style={[styles.eventTrustChipText, { color: "#2d4f88" }]}>
-                          {kind === "title"
-                            ? "Fix title"
-                            : kind === "speaker"
-                            ? "Fix speaker"
-                            : kind === "poster"
-                            ? "Fix poster"
-                            : "Mark duplicate"}
-                        </Text>
-                      </Pressable>
-                    ))}
-                  </View>
+                      <Text style={[styles.eventTrustNote, isDarkTheme && { color: "#bcc6df" }]}>
+                        Trust pass: {getTrustPassChips(ev, { debug: __DEV__ }).join(" · ")}
+                      </Text>
+                      <View style={styles.eventTrustActions}>
+                        {(["title", "speaker", "poster", "duplicate"] as const).map((kind) => (
+                          <Pressable
+                            {...PRESSABLE_INSTANT}
+                            key={`quick-fix-${kind}`}
+                            style={[styles.eventTrustChip, { backgroundColor: "rgba(78,108,180,0.12)" }]}
+                            onPress={() => submitQuickCorrection(ev, kind)}
+                          >
+                            <Text style={[styles.eventTrustChipText, { color: "#2d4f88" }]}>
+                              {kind === "title"
+                                ? "Fix title"
+                                : kind === "speaker"
+                                ? "Fix speaker"
+                                : kind === "poster"
+                                ? "Fix poster"
+                                : "Mark duplicate"}
+                            </Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                    </View>
+                  ) : null}
                   <View style={styles.eventTrustActions}>
                     <Pressable {...PRESSABLE_INSTANT}
                       style={[styles.eventTrustChip, feedbackState === "helpful" && styles.eventTrustChipActive]}
@@ -12577,6 +12998,51 @@ function AppInner() {
             </View>
           );
         })() : null}
+      </Modal>
+      <Modal
+        visible={!!posterFullscreenUri}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setPosterFullscreenUri(null)}
+      >
+        <View style={styles.posterFullscreenRoot}>
+          <Pressable
+            {...PRESSABLE_INSTANT}
+            style={StyleSheet.absoluteFillObject}
+            onPress={() => setPosterFullscreenUri(null)}
+            accessibilityRole="button"
+            accessibilityLabel="Close poster"
+          />
+          <View
+            style={[StyleSheet.absoluteFillObject, styles.posterFullscreenCenter]}
+            pointerEvents="box-none"
+          >
+            {posterFullscreenUri ? (
+              <LoadableNetworkImage
+                uri={posterFullscreenUri}
+                style={{
+                  width: Math.max(1, screenWidth - 24),
+                  height: Math.max(1, windowHeight - 24),
+                }}
+                resizeMode="contain"
+                onError={() => {
+                  setPosterFullscreenUri(null);
+                }}
+              />
+            ) : null}
+          </View>
+          <Pressable
+            {...PRESSABLE_INSTANT}
+            style={[styles.posterFullscreenClose, { top: insets.top + 10 }]}
+            onPress={() => setPosterFullscreenUri(null)}
+            hitSlop={14}
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+          >
+            <Mi name="close" size={22} color="#fffdf8" />
+          </Pressable>
+        </View>
       </Modal>
       <Modal
         visible={!!selectedCalendarModalDate}
@@ -12830,105 +13296,190 @@ function AppInner() {
                 <Text style={[styles.modalActionBtnText, { color: "#1f7a42" }]}>+ Passport stamp</Text>
               </Pressable>
             </View>
+            <View style={{ flexDirection: "row", gap: 8, marginBottom: 10 }}>
+              <Pressable
+                {...PRESSABLE_INSTANT}
+                style={{
+                  paddingHorizontal: 14,
+                  paddingVertical: 8,
+                  borderRadius: 16,
+                  backgroundColor: masjidProfileViewTab === "events" ? "#2f67f5" : "#eef2ff",
+                }}
+                onPress={() => setMasjidProfileViewTab("events")}
+              >
+                <Text style={{ color: masjidProfileViewTab === "events" ? "#fff" : "#405072", fontWeight: "700" }}>Events</Text>
+              </Pressable>
+              <Pressable
+                {...PRESSABLE_INSTANT}
+                style={{
+                  paddingHorizontal: 14,
+                  paddingVertical: 8,
+                  borderRadius: 16,
+                  backgroundColor: masjidProfileViewTab === "prayer" ? "#2f67f5" : "#eef2ff",
+                }}
+                onPress={() => setMasjidProfileViewTab("prayer")}
+              >
+                <Text style={{ color: masjidProfileViewTab === "prayer" ? "#fff" : "#405072", fontWeight: "700" }}>Prayer</Text>
+              </Pressable>
+            </View>
 
-            {(() => {
-              // #22 Masjid amenities card — shows the in-masjid facilities
-              // an admin has filled in (basketball court, library, women's
-              // section, etc). Absent sources render nothing instead of a
-              // disappointing "unknown" list.
-              const am = masjidAmenities[(selectedMasjidProfile || "").toLowerCase()];
-              if (!am) return null;
-              const entries = Object.entries(am.amenities || {}).filter(([, v]) => {
-                if (typeof v === "boolean") return v;
-                if (typeof v === "number") return v > 0;
-                if (typeof v === "string") return v && v !== "none";
-                return false;
-              });
-              if (!entries.length && !am.description) return null;
-              const labelize = (k: string) =>
-                k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-              const renderValue = (k: string, v: any) => {
-                if (typeof v === "boolean") return null;
-                if (typeof v === "number") return ` · ${v}`;
-                if (typeof v === "string") return ` · ${v}`;
-                return null;
-              };
-              return (
-                <View style={styles.amenitiesCard}>
-                  <Text style={styles.amenitiesTitle}>Masjid amenities</Text>
-                  {am.description ? (
-                    <Text style={styles.amenitiesBody}>{am.description}</Text>
-                  ) : null}
-                  {entries.length ? (
-                    <View style={styles.amenitiesGrid}>
-                      {entries.map(([k, v]) => (
-                        <View key={`am-${k}`} style={styles.amenitiesChip}>
-                          <Text style={styles.amenitiesChipCheck}>✓</Text>
-                          <Text style={styles.amenitiesChipText}>
-                            {labelize(k)}
-                            {renderValue(k, v) || ""}
-                          </Text>
-                        </View>
-                      ))}
-                    </View>
-                  ) : null}
-                  {am.website || am.phone ? (
-                    <View style={styles.amenitiesContactRow}>
-                      {am.website ? (
-                        <Pressable {...PRESSABLE_INSTANT} onPress={() => Linking.openURL(am.website)}>
-                          <Text style={styles.amenitiesContactLink}>Website</Text>
-                        </Pressable>
-                      ) : null}
-                      {am.phone ? (
-                        <Pressable {...PRESSABLE_INSTANT} onPress={() => Linking.openURL(`tel:${am.phone.replace(/[^+0-9]/g, "")}`)}>
-                          <Text style={styles.amenitiesContactLink}>{am.phone}</Text>
-                        </Pressable>
-                      ) : null}
-                    </View>
-                  ) : null}
-                </View>
-              );
-            })()}
-
-            {(() => {
+            {masjidProfileViewTab === "prayer" ? (() => {
               const iq = iqamaBySource[selectedMasjidProfile] || {};
               const prayers = ["fajr", "dhuhr", "asr", "maghrib", "isha"] as const;
               const anyIqama = prayers.some((p) => iq[p]?.iqama);
               const jumuah = iq["jumuah"]?.jumuah_times || [];
               const calc = prayerTimesBySource[selectedMasjidProfile];
+              const apiPrayer = prayerApiBySource[selectedMasjidProfile];
               const usingFallback = !anyIqama && !!calc;
               if (!anyIqama && !calc && !jumuah.length) return null;
               return (
-                <View style={styles.iqamaCard}>
-                  <Text style={styles.iqamaTitle}>
-                    {anyIqama ? "Iqama times" : "Prayer times today"}
-                  </Text>
-                  {usingFallback ? (
-                    <Text style={styles.iqamaSub}>
-                      Calculated adhan times (ISNA) — iqama is typically 10–20 min later.
+                <>
+                  {apiPrayer?.is_stale ? (
+                    <View style={[styles.hospitalListCard, { borderColor: "#f5b53d", borderWidth: 1, marginBottom: 10 }]}>
+                      <Text style={[styles.hospitalListTitle, { color: "#9b5b00" }]}>Prayer data may be outdated</Text>
+                      <Text style={styles.hospitalListMeta}>
+                        {apiPrayer.last_updated_label || "unknown update time"} {apiPrayer.stale_reason ? `· ${apiPrayer.stale_reason}` : ""}
+                      </Text>
+                    </View>
+                  ) : null}
+                  <View style={styles.iqamaCard}>
+                    <Text style={styles.iqamaTitle}>
+                      {anyIqama ? "Iqama times" : "Prayer times today"}
                     </Text>
-                  ) : null}
-                  <View style={styles.iqamaRow}>
-                    {prayers.map((p) => (
-                      <View key={p} style={styles.iqamaCell}>
-                        <Text style={styles.iqamaPrayer}>{p[0].toUpperCase() + p.slice(1)}</Text>
-                        <Text style={styles.iqamaTime}>
-                          {iq[p]?.iqama
-                            ? iq[p].iqama
-                            : calc
-                            ? (calc as any)[p] || "—"
-                            : "—"}
-                        </Text>
-                      </View>
-                    ))}
+                    {usingFallback ? (
+                      <Text style={styles.iqamaSub}>
+                        Calculated adhan times (ISNA) — iqama is typically 10–20 min later.
+                      </Text>
+                    ) : null}
+                    {apiPrayer?.last_updated_label ? (
+                      <Text style={styles.iqamaSub}>
+                        Updated {apiPrayer.last_updated_label} · {apiPrayer.source_type || "website_scrape"}
+                      </Text>
+                    ) : null}
+                    <View style={styles.iqamaRow}>
+                      {prayers.map((p) => (
+                        <View key={p} style={styles.iqamaCell}>
+                          <Text style={styles.iqamaPrayer}>{p[0].toUpperCase() + p.slice(1)}</Text>
+                          <Text style={styles.iqamaTime}>
+                            {iq[p]?.iqama
+                              ? iq[p].iqama
+                              : apiPrayer?.prayers?.[p]
+                              ? apiPrayer.prayers[p]
+                              : calc
+                              ? (calc as any)[p] || "—"
+                              : "—"}
+                          </Text>
+                          <Pressable
+                            {...PRESSABLE_INSTANT}
+                            onPress={() => submitPrayerTimeReport(selectedMasjidProfile, p, `Reported from ${formatSourceLabel(selectedMasjidProfile)}`)}
+                          >
+                            <Text style={[styles.hospitalListMeta, { color: "#4d75c4", marginTop: 4 }]}>Report wrong time</Text>
+                          </Pressable>
+                        </View>
+                      ))}
+                    </View>
+                    {jumuah.length ? (
+                      <Text style={styles.iqamaJumuah}>Jumu'ah: {jumuah.join("  ·  ")}</Text>
+                    ) : null}
+                    {apiPrayer?.source_url ? (
+                      <Pressable {...PRESSABLE_INSTANT} onPress={() => Linking.openURL(apiPrayer.source_url)}>
+                        <Text style={[styles.hospitalListMeta, { color: "#4d75c4", marginTop: 8 }]}>Open source schedule</Text>
+                      </Pressable>
+                    ) : null}
                   </View>
-                  {jumuah.length ? (
-                    <Text style={styles.iqamaJumuah}>Jumu'ah: {jumuah.join("  ·  ")}</Text>
-                  ) : null}
-                </View>
+                </>
               );
-            })()}
-            {masjidProfileEvents.slice(0, 15).map((e, idx) => renderEventListCard(e, `masjid-profile-${idx}`))}
+            })() : (
+              <>
+                {(() => {
+                  const am = masjidAmenities[(selectedMasjidProfile || "").toLowerCase()];
+                  if (!am) return null;
+                  const entries = Object.entries(am.amenities || {}).filter(([, v]) => {
+                    if (typeof v === "boolean") return v;
+                    if (typeof v === "number") return v > 0;
+                    if (typeof v === "string") return v && v !== "none";
+                    return false;
+                  });
+                  if (!entries.length && !am.description) return null;
+                  const labelize = (k: string) => k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+                  return (
+                    <View style={styles.amenitiesCard}>
+                      <Text style={styles.amenitiesTitle}>Masjid amenities</Text>
+                      {am.description ? <Text style={styles.amenitiesBody}>{am.description}</Text> : null}
+                      {entries.length ? (
+                        <View style={styles.amenitiesGrid}>
+                          {entries.map(([k, v]) => (
+                            <View key={`am-${k}`} style={styles.amenitiesChip}>
+                              <Text style={styles.amenitiesChipCheck}>✓</Text>
+                              <Text style={styles.amenitiesChipText}>{labelize(k)}{typeof v === "number" ? ` · ${v}` : typeof v === "string" ? ` · ${v}` : ""}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      ) : null}
+                    </View>
+                  );
+                })()}
+                {masjidProfileEvents.slice(0, 15).map((e, idx) => renderEventListCard(e, `masjid-profile-${idx}`))}
+              </>
+            )}
+          </ScrollView>
+        </View>
+      </Modal>
+      <Modal
+        visible={showJumuahFinder}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        statusBarTranslucent={false}
+        onRequestClose={() => setShowJumuahFinder(false)}
+      >
+        <View style={[styles.modalContainer, { flex: 1, paddingTop: modalChromeTopPad }]}>
+          <View style={styles.modalTop}>
+            <Text style={styles.modalTitle}>Jumu'ah finder</Text>
+            <Pressable {...PRESSABLE_INSTANT} style={styles.modalCloseBtn} hitSlop={12} onPress={() => setShowJumuahFinder(false)}>
+              <Text style={styles.modalCloseText}>Close</Text>
+            </Pressable>
+          </View>
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={[styles.modalBody, { paddingBottom: insets.bottom + 32 }]}>
+            <View style={styles.modalActionsRow}>
+              <Pressable {...PRESSABLE_INSTANT} style={styles.roundGhostBtn} onPress={() => setJumuahFilters((p) => ({ ...p, language: p.language ? "" : "english" }))}>
+                <Text style={styles.roundGhostText}>{jumuahFilters.language ? `Lang: ${jumuahFilters.language}` : "Language: any"}</Text>
+              </Pressable>
+              <Pressable {...PRESSABLE_INSTANT} style={styles.roundGhostBtn} onPress={() => setJumuahFilters((p) => ({ ...p, parking: !p.parking }))}>
+                <Text style={styles.roundGhostText}>{jumuahFilters.parking ? "Parking: required" : "Parking: any"}</Text>
+              </Pressable>
+              <Pressable {...PRESSABLE_INSTANT} style={styles.roundGhostBtn} onPress={() => setJumuahFilters((p) => ({ ...p, radius: p.radius >= 50 ? 15 : p.radius + 10 }))}>
+                <Text style={styles.roundGhostText}>Radius: {jumuahFilters.radius}mi</Text>
+              </Pressable>
+            </View>
+            <Pressable {...PRESSABLE_INSTANT} style={[styles.roundGhostBtn, { alignSelf: "flex-start", marginBottom: 10 }]} onPress={() => void refreshJumuahFinder()}>
+              <Text style={styles.roundGhostText}>Apply filters</Text>
+            </Pressable>
+            {jumuahFinderRows.length === 0 ? (
+              <View style={styles.hospitalListCard}>
+                <Text style={styles.hospitalListMeta}>No Jumu'ah matches yet. Try widening radius/time.</Text>
+              </View>
+            ) : null}
+            {jumuahFinderRows.map((row, idx) => (
+              <View key={`jumuah-${row.source || idx}`} style={styles.hospitalListCard}>
+                <Text style={styles.hospitalListTitle}>{formatSourceLabel(row.source)}</Text>
+                <Text style={styles.hospitalListMeta}>
+                  {typeof row.distance_miles === "number" ? `${row.distance_miles} mi away` : "Distance unknown"} · Updated {row.last_updated_label || "unknown"}
+                </Text>
+                {(row.jumuah || []).map((slot: any, jdx: number) => (
+                  <Text key={`slot-${jdx}`} style={styles.hospitalListMeta}>
+                    {slot.time || "TBD"}{slot.language ? ` · ${slot.language}` : ""}{typeof slot.minutes_until === "number" ? ` · in ${Math.max(0, slot.minutes_until)}m` : ""}
+                  </Text>
+                ))}
+                <View style={styles.modalActionsRow}>
+                  <Pressable {...PRESSABLE_INSTANT} style={styles.roundGhostBtn} onPress={() => setSelectedMasjidProfile(row.source)}>
+                    <Text style={styles.roundGhostText}>Open masjid</Text>
+                  </Pressable>
+                  <Pressable {...PRESSABLE_INSTANT} style={styles.roundGhostBtn} onPress={() => row.source_url && Linking.openURL(row.source_url)}>
+                    <Text style={styles.roundGhostText}>Source</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ))}
           </ScrollView>
         </View>
       </Modal>
@@ -18417,6 +18968,24 @@ const styles = StyleSheet.create({
   modalDescription: { marginTop: 12, color: "#1f3558", fontSize: 16, lineHeight: 24 },
   modalDescriptionDark: { color: "#d9e4ff" },
   modalDescriptionNeo: { color: "#393939" },
+
+  posterFullscreenRoot: { flex: 1, backgroundColor: "rgba(0,0,0,0.94)" },
+  posterFullscreenCenter: {
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 12,
+  },
+  posterFullscreenClose: {
+    position: "absolute",
+    right: 16,
+    zIndex: 4,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
 
   eventModalContainer: { flex: 1, backgroundColor: "#f6f8fc" },
   eventModalContainerDark: { backgroundColor: "#0b1220" },

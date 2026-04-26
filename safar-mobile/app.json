@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Safar",
+    "name": "Masjid.ly",
     "slug": "safar-mobile",
     "scheme": "masjidly",
     "version": "1.0.1",
@@ -20,10 +20,10 @@
         "applinks:masjidly.app"
       ],
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "Safar uses your location to show nearby masjids and sort events by distance.",
+        "NSLocationWhenInUseUsageDescription": "Masjid.ly uses your location to show nearby masjids and sort events by distance.",
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "13",
+      "buildNumber": "36",
       "privacyManifests": {
         "NSPrivacyAccessedAPITypes": [
           {
@@ -131,7 +131,7 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Safar uses your location to show nearby masjids and sort events by distance."
+          "locationAlwaysAndWhenInUsePermission": "Masjid.ly uses your location to show nearby masjids and sort events by distance."
         }
       ]
     ],
