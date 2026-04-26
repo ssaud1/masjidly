@@ -23,7 +23,7 @@
         "NSLocationWhenInUseUsageDescription": "Masjid.ly uses your location to show nearby masjids and sort events by distance.",
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "36",
+      "buildNumber": "38",
       "privacyManifests": {
         "NSPrivacyAccessedAPITypes": [
           {
