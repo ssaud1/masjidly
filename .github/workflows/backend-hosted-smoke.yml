@@ -1,0 +1,51 @@
+name: Hosted backend smoke
+
+on:
+  schedule:
+    - cron: "30 17 * * *"
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      API_BASE: https://masjidly-api-production.up.railway.app
+    steps:
+      - name: Check API meta endpoint
+        run: |
+          curl -fsS "$API_BASE/api/meta" -o meta.json
+          python - <<'PY'
+          import json
+          d = json.load(open("meta.json"))
+          assert isinstance(d.get("sources"), list), "meta.sources missing"
+          assert d.get("event_count", 0) >= 1, "meta.event_count empty"
+          print("meta ok", "event_count=", d.get("event_count"), "sources=", len(d.get("sources") or []))
+          PY
+
+      - name: Check speaker directory endpoint (AI normalize mode)
+        run: |
+          curl -fsS "$API_BASE/api/speakers?speaker_normalize=ai" -o speakers.json
+          python - <<'PY'
+          import json
+          d = json.load(open("speakers.json"))
+          speakers = d.get("speakers") or []
+          assert isinstance(speakers, list), "speakers payload invalid"
+          assert len(speakers) >= 1, "no speakers returned"
+          first = speakers[0]
+          assert isinstance(first.get("name", ""), str) and first.get("name", "").strip(), "speaker name missing"
+          print("speakers ok", "count=", d.get("count"), "first=", first.get("name"))
+          PY
+
+      - name: Check events endpoint has data
+        run: |
+          curl -fsS "$API_BASE/api/events?limit=50" -o events.json
+          python - <<'PY'
+          import json
+          d = json.load(open("events.json"))
+          events = d.get("events") or []
+          assert isinstance(events, list), "events payload invalid"
+          assert len(events) >= 1, "no events returned"
+          print("events ok", "count=", len(events))
+          PY
+

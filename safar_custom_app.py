@@ -36,6 +36,26 @@ HOST = os.getenv("APP_HOST", "0.0.0.0")
 # (gunicorn may run from a different working directory on the host).
 PROJECT_ROOT = Path(__file__).resolve().parent
 
+
+def _dotenv_get(*keys: str) -> str:
+    env_path = PROJECT_ROOT / ".env"
+    if not env_path.exists():
+        return ""
+    try:
+        mapping: Dict[str, str] = {}
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            k, v = s.split("=", 1)
+            mapping[k.strip()] = v.strip().strip('"').strip("'")
+        for k in keys:
+            if _env_clean(mapping.get(k, "")):
+                return _env_clean(mapping.get(k, ""))
+    except Exception:
+        return ""
+    return ""
+
 # Allow DB_PATH to be overridden via env so Railway can mount a persistent
 # volume (e.g. DB_PATH=/data/masjidly_app.db) without code changes.
 DB_PATH = Path(os.getenv("DB_PATH") or (PROJECT_ROOT / "masjidly_app.db"))
@@ -57,6 +77,14 @@ SUPABASE_SERVICE_ROLE_KEY = _env_clean(
     or os.getenv("supabasekey", "")
 )
 SUPABASE_EVENTS_TABLE = _env_clean(os.getenv("SUPABASE_EVENTS_TABLE", "events")) or "events"
+OPENAI_API_KEY = _env_clean(os.getenv("OPENAI_API_KEY", "") or os.getenv("SAFAR_OPENAI_API_KEY", ""))
+if not OPENAI_API_KEY:
+    OPENAI_API_KEY = _dotenv_get("OPENAI_API_KEY", "SAFAR_OPENAI_API_KEY")
+OPENAI_MODEL = _env_clean(os.getenv("SAFAR_EVENT_LLM_MODEL", "gpt-4o-mini")) or "gpt-4o-mini"
+AI_SPEAKER_NORMALIZE_ENABLED = (
+    _env_clean(os.getenv("SAFAR_AI_SPEAKER_NORMALIZE", "1")).lower() not in {"0", "false", "no"}
+    and bool(OPENAI_API_KEY)
+)
 try:
     SUPABASE_FETCH_TIMEOUT_S = max(3.0, float(os.getenv("SUPABASE_FETCH_TIMEOUT_S", "8") or "8"))
 except ValueError:
@@ -682,7 +710,24 @@ SPEAKER_JUNK_WORDS = {
     "programs",
     "events",
     "media",
+    "as",
+    "he",
+    "she",
+    "they",
+    "tells",
+    "tell",
+    "while",
+    "after",
+    "before",
+    "us",
 }
+SPEAKER_ALIAS_MAP: Dict[str, str] = {
+    "shaykh ismael hamdi": "Shaykh Ismail Hamdi",
+    "shaykh ismail hamdi": "Shaykh Ismail Hamdi",
+    "sheikh ismail hamdi": "Shaykh Ismail Hamdi",
+    "sh ismail hamdi": "Shaykh Ismail Hamdi",
+}
+_SPEAKER_AI_CACHE: Dict[str, str] = {}
 
 
 def _speaker_is_clean(name: str) -> bool:
@@ -716,6 +761,12 @@ _SPEAKER_STOP_PHRASES = (
     " discussing ",
     " register ",
     " rsvp ",
+    " as ",
+    " who ",
+    " that ",
+    " while ",
+    " after ",
+    " before ",
 )
 
 
@@ -742,6 +793,113 @@ def _normalize_speaker_field(raw: str) -> str:
     if not _speaker_is_clean(s):
         return ""
     return s
+
+
+def _speaker_slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", clean(name).lower()).strip("-")
+
+
+def _apply_speaker_alias(name: str) -> str:
+    key = clean(name).lower().replace(".", "")
+    return SPEAKER_ALIAS_MAP.get(key, name)
+
+
+def _heuristic_speaker_candidate(raw: str) -> str:
+    direct = _normalize_speaker_field(raw)
+    if direct:
+        return _apply_speaker_alias(direct)
+    trunc = _truncate_speaker_blurb(str(raw or ""))
+    if not trunc:
+        return ""
+    # Keep only a plausible person-like prefix.
+    tokens = trunc.split()
+    if len(tokens) > 5:
+        tokens = tokens[:5]
+    guess = " ".join(tokens).strip()
+    if not guess:
+        return ""
+    # Require at least one title token or two words.
+    low = guess.lower()
+    if not re.search(r"\b(imam|shaykh|sheikh|ustadh|dr\.?|qari)\b", low) and len(guess.split()) < 2:
+        return ""
+    guess = _apply_speaker_alias(guess)
+    return guess if _speaker_is_clean(guess) else ""
+
+
+def _ai_speaker_candidate(raw: str) -> str:
+    text = clean(raw)
+    if not text or not AI_SPEAKER_NORMALIZE_ENABLED:
+        return ""
+    if text in _SPEAKER_AI_CACHE:
+        return _SPEAKER_AI_CACHE[text]
+    prompt = (
+        "Extract ONLY the speaker's person name from noisy event text. "
+        "Return strict JSON: {\"speaker_name\":\"...\"}. "
+        "Rules: remove all non-name words, keep honorifics (Imam/Shaykh/Ustadh/Dr), "
+        "max 5 words, empty string if unknown."
+    )
+    try:
+        resp = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": OPENAI_MODEL,
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": text[:800]},
+                ],
+            },
+            timeout=12,
+        )
+        if resp.status_code != 200:
+            _SPEAKER_AI_CACHE[text] = ""
+            return ""
+        payload = resp.json()
+        content = (
+            payload.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
+        obj = json.loads(content) if content else {}
+        name = clean(obj.get("speaker_name", "")) if isinstance(obj, dict) else ""
+        name = _truncate_speaker_blurb(name)
+        name = _apply_speaker_alias(name)
+        if not _speaker_is_clean(name):
+            name = ""
+        _SPEAKER_AI_CACHE[text] = name
+        return name
+    except Exception:
+        _SPEAKER_AI_CACHE[text] = ""
+        return ""
+
+
+def _speaker_for_directory(raw: str, use_ai: bool = False) -> str:
+    heur = _heuristic_speaker_candidate(raw)
+    if heur and not use_ai:
+        return heur
+    raw_clean = clean(raw)
+    noisy = bool(
+        re.search(
+            r"\b(will be|speaking|join us|register|rsvp|assalamu|community|committee|today'?s class)\b",
+            raw_clean.lower(),
+        )
+    ) or len(raw_clean.split()) > 5
+    if use_ai and (not heur or noisy):
+        ai = _ai_speaker_candidate(raw_clean)
+        if ai:
+            return ai
+    if use_ai and noisy:
+        # For AI mode, drop obvious trailing junk if model couldn't help.
+        heur = _truncate_speaker_blurb(heur)
+        heur = _apply_speaker_alias(heur)
+        if heur and not _speaker_is_clean(heur):
+            heur = ""
+    return heur
 
 
 def _normalize_events_rows(raw: List[Dict], weekday_rules: Optional[List[Dict]] = None) -> List[Dict]:
@@ -776,6 +934,9 @@ def _normalize_events_rows(raw: List[Dict], weekday_rules: Optional[List[Dict]] 
             "merged_source_types": merged_types,
             "title": title,
             "description": clean(e.get("description", "")),
+            "description_original": clean(e.get("description_original", "")),
+            "description_ai_generated": bool(e.get("description_ai_generated", False)),
+            "description_ai_model": clean(e.get("description_ai_model", "")),
             "date": clean(e.get("date", "")),
             "parsed_date": d.isoformat() if d else "",
             "start_time": clean(e.get("start_time", "")),
@@ -789,10 +950,17 @@ def _normalize_events_rows(raw: List[Dict], weekday_rules: Optional[List[Dict]] 
             "rsvp_link": clean(e.get("rsvp_link", "")),
             "source_url": source_url,
             "image_urls": normalize_image_urls(e.get("image_urls", [])),
+            "raw_text": clean(e.get("raw_text", "")),
+            "poster_ocr_text": clean(e.get("poster_ocr_text", "")),
+            "topic_tag": clean(e.get("topic_tag", "")),
             "confidence": float(e.get("confidence", 0) or 0.0),
             "deep_link": deep_link_for(event_uid),
             "map_link": f"https://maps.google.com/?q={address.replace(' ', '+')}" if address else "",
         }
+        if not normalized_event["description_original"]:
+            normalized_event["description_original"] = (
+                normalized_event["raw_text"] or normalized_event["poster_ocr_text"] or normalized_event["description"]
+            )
         _apply_weekday_override(normalized_event, rules)
         events.append(normalized_event)
     events.sort(key=lambda x: (x["parsed_date"] or "9999-12-31", x["start_time"] or "99:99", x["title"]))
@@ -2362,13 +2530,14 @@ def _user_manages_source(user_id: int, source: str) -> bool:
 def api_speakers():
     buckets: Dict[str, Dict] = {}
     today = date.today().isoformat()
+    ai_mode = clean(request.args.get("speaker_normalize", "")).lower() in {"ai", "1", "true", "yes"}
     for e in EVENTS_CACHE:
-        sp = clean(e.get("speaker", ""))
+        sp = _speaker_for_directory(e.get("speaker", ""), use_ai=ai_mode)
         if not sp or sp.lower() in {"n/a", "tba", "tbd"}:
             continue
         if not _speaker_is_clean(sp):
             continue
-        key = re.sub(r"[^a-z0-9]+", "-", sp.lower()).strip("-")
+        key = _speaker_slug(sp)
         if not key:
             continue
         slot = buckets.setdefault(
@@ -2396,6 +2565,8 @@ def api_speakers():
             imgs = e.get("image_urls") or []
             if isinstance(imgs, list) and imgs:
                 slot["image_url"] = clean(str(imgs[0]))
+        if len(sp) > len(clean(slot.get("name", ""))):
+            slot["name"] = sp
     out = []
     for v in buckets.values():
         out.append({**v, "sources": sorted(v["sources"])})
@@ -2406,10 +2577,11 @@ def api_speakers():
 @app.get("/api/speakers/<slug>")
 def api_speaker_detail(slug: str):
     key = clean(slug).lower()
+    ai_mode = clean(request.args.get("speaker_normalize", "")).lower() in {"ai", "1", "true", "yes"}
     matches = []
     for e in EVENTS_CACHE:
-        sp = clean(e.get("speaker", ""))
-        k = re.sub(r"[^a-z0-9]+", "-", sp.lower()).strip("-") if sp else ""
+        sp = _speaker_for_directory(e.get("speaker", ""), use_ai=ai_mode)
+        k = _speaker_slug(sp) if sp else ""
         if k == key:
             matches.append(e)
     if not matches:
@@ -2420,7 +2592,7 @@ def api_speaker_detail(slug: str):
     return jsonify(
         {
             "slug": key,
-            "name": clean(matches[0].get("speaker", "")),
+            "name": _speaker_for_directory(matches[0].get("speaker", ""), use_ai=ai_mode),
             "upcoming": upcoming,
             "past": past,
             "total_events": len(matches),
@@ -2435,10 +2607,10 @@ SPEAKER_VIDEO_STALE_SECONDS = 72 * 3600  # refresh at most every 72 hours
 def _speaker_name_for_slug(slug: str) -> str:
     slug = clean(slug).lower()
     for e in EVENTS_CACHE:
-        sp = clean(e.get("speaker", ""))
+        sp = _speaker_for_directory(e.get("speaker", ""), use_ai=True)
         if not sp:
             continue
-        key = re.sub(r"[^a-z0-9]+", "-", sp.lower()).strip("-")
+        key = _speaker_slug(sp)
         if key == slug and _speaker_is_clean(sp):
             return sp
     return ""
@@ -2888,11 +3060,14 @@ def _clean_speaker_slugs() -> List[Tuple[str, str]]:
     query YouTube for.  De-dupes by slug."""
     seen: Dict[str, str] = {}
     for e in EVENTS_CACHE:
-        sp = clean(e.get("speaker", ""))
-        if not sp or not _speaker_is_clean(sp):
+        sp = _speaker_for_directory(e.get("speaker", ""), use_ai=True)
+        if not sp:
             continue
-        slug = re.sub(r"[^a-z0-9]+", "-", sp.lower()).strip("-")
-        if slug and slug not in seen:
+        slug = _speaker_slug(sp)
+        if not slug:
+            continue
+        prev = seen.get(slug, "")
+        if not prev or len(sp) > len(prev):
             seen[slug] = sp
     return sorted(seen.items())
 
@@ -3338,7 +3513,7 @@ def api_admin_analytics(source: str):
         ).fetchone()
         speaker_buckets: Dict[str, int] = {}
         for e in upcoming + past:
-            sp = clean(e.get("speaker", ""))
+            sp = _speaker_for_directory(e.get("speaker", ""), use_ai=True)
             if sp:
                 speaker_buckets[sp] = speaker_buckets.get(sp, 0) + 1
         top_speakers = sorted(speaker_buckets.items(), key=lambda x: -x[1])[:5]

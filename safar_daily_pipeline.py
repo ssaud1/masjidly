@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+from urllib.parse import urlparse
 
 from scrape_nj_masjid_instagram import DEFAULT_USERNAMES as IG_DEFAULT_USERNAMES, SOURCE_MAP as IG_SOURCE_MAP, normalize_proxy_line
 
@@ -538,6 +539,18 @@ _SEED_GENERIC_BAD_PHRASE_RE = re.compile(
     r")\b",
     flags=re.I,
 )
+_SEED_FORCE_REWRITE_RE = re.compile(
+    r"\b("
+    r"who\s+open\s+to\s+all\s+sisters|"
+    r"everyone\s+is\s+welcome\s+bring\s+your\s+family|"
+    r"summarized\s+sahih\s+al[-\s]?bukhari|"
+    r"mcmc\s+cdc\s+committee\s+presents|"
+    r"icpc[-\s]?paterson\s+\d+|"
+    r"assalamu?alaikum\s+mcmc\s+community|"
+    r"tazkiyah.*icpc[-\s]?younis"
+    r")\b",
+    flags=re.I,
+)
 
 
 def _clean_seed_title_text(raw: str) -> str:
@@ -554,7 +567,15 @@ def _is_caption_style_title(raw: str) -> bool:
     has_speaker_context = bool(re.search(r"\b(with|by)\s+(sh\.?|shaykh|sheikh|imam|ustadh|dr\.?)\b", s))
     if s.startswith("/") or s.startswith("\\"):
         return True
+    if re.match(r"^(assalamu?alaikum|salaam)\b", s):
+        return True
+    if re.match(r"^this week\b", s):
+        return True
+    if re.match(r"^join us(?:\s+for|\s+at)?\b", s) and not has_event_keyword:
+        return True
     if _SEED_GENERIC_BAD_PHRASE_RE.search(s):
+        return True
+    if _SEED_FORCE_REWRITE_RE.search(s):
         return True
     if re.search(r"\b(register|rsvp|follow|link in bio|swipe|tickets?|www\.|https?://|#\w+)\b", s):
         if words <= 16 or len(s) > 80:
@@ -566,6 +587,105 @@ def _is_caption_style_title(raw: str) -> bool:
             return False
         return True
     return False
+
+
+def _seed_title_override(event: Dict[str, Any]) -> str:
+    title = _clean_seed_title_text(str(event.get("title", "")))
+    desc = _clean_seed_title_text(str(event.get("description", "")))
+    raw_text = _clean_seed_title_text(str(event.get("raw_text", "")))
+    ocr_text = _clean_seed_title_text(str(event.get("poster_ocr_text", "")))
+    source = _clean_seed_title_text(str(event.get("source", ""))).lower()
+    blob = " ".join([title, desc, raw_text, ocr_text]).lower()
+
+    if "who open to all sisters" in blob or ("henna" in blob and re.search(r"ages?\s*15\s*[-–]\s*25", blob)):
+        return "Sisters Henna Workshop (Ages 15-25)"
+    if "everyone is welcome. bring your family and join us" in blob and ("hajj" in blob or "umrah" in blob):
+        return "Hajj and Umrah Fajr Program"
+    if "summarized sahih al-bukhari" in blob or ("sahih al-bukhari" in blob and "signs and clues of true islam and imaan" in blob):
+        return "Sahih Al-Bukhari Series: Signs and Clues of True Islam and Imaan"
+    if ("tazkiyah part" in blob or "tazkiyah series" in blob) and "ismail" in blob:
+        return "Tazkiyah Series: Instilling Good Habits"
+    if "assalamualaikum mcmc community" in blob or ("constitution committee" in blob and source == "mcmc"):
+        return "Constitution Committee Update"
+    if "eid bazaar" in blob and "vendor" in blob:
+        return "Eid Bazaar Vendor Call"
+    if "event postponed" in blob and ("clothing" in blob or "toy drive" in blob):
+        return "Kids Clothing & Toy Drive (Postponed)"
+    if "unspoken mind" in blob or ("mental health awareness month" in blob and "panel" in blob):
+        return "Mental Health Panel: Unspoken Mind"
+    if "mcmc cdc committee presents" in blob:
+        if "civic leadership" in blob:
+            return "Muslim Youth Civic Leadership Intensive"
+        if source == "mcmc":
+            return "MCMC Community Program"
+    if "5 sessions" in blob and "ages 0-3" in blob:
+        return "Mommy & Me (Ages 0-3)"
+    if "icpc-paterson" in blob and ("eid night bazaar" in blob or "derrom" in blob):
+        return "Eid Night Bazaar"
+    return title
+
+
+def _seed_first_image_key(event: Dict[str, Any]) -> str:
+    imgs = event.get("image_urls") or []
+    if isinstance(imgs, str):
+        imgs = [imgs]
+    if not imgs:
+        return ""
+    raw = str(imgs[0]).strip()
+    if not raw:
+        return ""
+    try:
+        p = urlparse(raw)
+        host = (p.netloc or "").lower()
+        path = p.path or ""
+        return f"{host}{path}"
+    except Exception:
+        return raw.lower()
+
+
+def _seed_event_dedupe_key(event: Dict[str, Any]) -> str:
+    source = _clean_seed_title_text(str(event.get("source", ""))).lower()
+    date = _clean_seed_title_text(str(event.get("date", "")))
+    start = _clean_seed_title_text(str(event.get("start_time", ""))).lower()
+    src_url = _clean_seed_title_text(str(event.get("source_url", "")))
+    if src_url:
+        m = re.search(r"instagram\.com/(?:p|reel)/([^/?#]+)/?", src_url, flags=re.I)
+        if m:
+            return f"{source}|ig:{m.group(1).lower()}"
+    img = _seed_first_image_key(event)
+    if img:
+        return f"{source}|{date}|{start}|img:{img}"
+    return f"{source}|{date}|{start}|{_clean_seed_title_text(str(event.get('title', ''))).lower()}"
+
+
+def _prefer_seed_event(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
+    def quality(e: Dict[str, Any]) -> Tuple[int, int, int]:
+        t = _clean_seed_title_text(str(e.get("title", "")))
+        score = _score_seed_title_candidate(t)
+        if _is_caption_style_title(t):
+            score -= 5
+        # Prefer rows with richer descriptions and real image arrays.
+        desc_len = len(_clean_seed_title_text(str(e.get("description", ""))))
+        imgs = e.get("image_urls") or []
+        if isinstance(imgs, str):
+            imgs = [imgs]
+        img_score = 1 if imgs else 0
+        return (score, desc_len, img_score)
+
+    return a if quality(a) >= quality(b) else b
+
+
+def _dedupe_seed_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    for e in events:
+        k = _seed_event_dedupe_key(e)
+        if k not in out:
+            out[k] = e
+            order.append(k)
+            continue
+        out[k] = _prefer_seed_event(out[k], e)
+    return [out[k] for k in order]
 
 
 def _score_seed_title_candidate(raw: str) -> int:
@@ -640,6 +760,11 @@ def _normalize_seed_event_titles(events: List[Dict[str, Any]]) -> None:
         old = _clean_seed_title_text(str(e.get("title", "")))
         if not old:
             continue
+        override = _seed_title_override(e)
+        if override and override != old:
+            e["title"] = override
+            changed += 1
+            continue
         if not _is_caption_style_title(old):
             continue
         new_title = _derive_seed_title_from_event(e)
@@ -671,6 +796,7 @@ def write_mobile_seed() -> None:
 
     _apply_seed_weekday_overrides(future)
     _normalize_seed_event_titles(future)
+    future = _dedupe_seed_events(future)
 
     sources: List[str] = sorted({(e.get("source") or "").strip() for e in future if e.get("source")})
     dates = [e.get("date") for e in future if e.get("date")]
@@ -802,6 +928,8 @@ def main() -> None:
     # Offline-first: ship a fresh snapshot of events + meta inside the mobile app
     # bundle so launch-time UX never waits on the network.
     write_mobile_seed()
+    # Nightly quality artifact for review: bad titles/speakers/missing posters by source.
+    run([PY, "generate_quality_report.py"], extra_env=run_env)
 
     update_index()
     mode = "fast" if fast_mode else "full"

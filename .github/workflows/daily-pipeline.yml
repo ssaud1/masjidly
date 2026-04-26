@@ -92,6 +92,10 @@ jobs:
       # Project URL is public-safe; keep service role in secrets.
       SUPABASE_URL: https://xkpbpwusseaphdhaelbr.supabase.co
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      # AI normalization keys for speaker/title cleanup on hosted runners.
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      SAFAR_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      SAFAR_AI_SPEAKER_NORMALIZE: "1"
 
     steps:
       - name: Checkout repo
@@ -192,6 +196,8 @@ jobs:
           name: pipeline-report-${{ github.run_id }}
           path: |
             events_by_masjid/_reports/
+            instagram/output/nj_masjid_events/review/quality_report_*.txt
+            instagram/output/nj_masjid_events/review/quality_report_*.json
           retention-days: 14
           if-no-files-found: warn
 

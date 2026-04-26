@@ -88,6 +88,17 @@ const IOS_SCROLL_INSTANT_TOUCH =
 
 /** Drop the default press delay so `Pressable` responds immediately (especially Android inside horizontal lists). */
 const PRESSABLE_INSTANT = { unstable_pressDelay: 0 } as const;
+// Apply the same instant-tap behavior to any Pressable that forgot to spread
+// PRESSABLE_INSTANT. This keeps button response consistent across the app.
+try {
+  const pressableAny = Pressable as unknown as { defaultProps?: Record<string, unknown> };
+  pressableAny.defaultProps = {
+    ...(pressableAny.defaultProps || {}),
+    unstable_pressDelay: 0,
+  };
+} catch {
+  // non-fatal
+}
 
 type FreshnessInfo = {
   label: string;
@@ -112,6 +123,9 @@ type EventItem = {
   source: string;
   title: string;
   description: string;
+  description_original?: string;
+  description_ai_generated?: boolean;
+  description_ai_model?: string;
   raw_text?: string;
   poster_ocr_text?: string;
   audience?: string;
@@ -254,7 +268,7 @@ const WELCOME_FLOW_DONE_KEY = "masjidly_welcome_flow_done_v1";
 const GUIDED_TOUR_DONE_KEY = "masjidly_guided_tour_done_v5";
 // Bump on every EAS update so the badge on the welcome screen reflects what's
 // actually running on device. v2 = post-"always-welcome" build + Explore perf.
-const APP_BUILD_VERSION = "v71";
+const APP_BUILD_VERSION = "v77";
 
 // Static hosted URLs referenced from several places (Settings, About,
 // PrivacyInfo).  Mirrored from `app.json > expo.extra.urls` so the app
@@ -274,6 +288,7 @@ const PRIVACY_POLICY_VERSION = "1";
 const THEME_KEY = "masjidly_theme_v1";
 const FOLLOWED_MASJIDS_KEY = "masjidly_followed_masjids_v1";
 const FOLLOWED_SCHOLARS_KEY = "masjidly_followed_scholars_v1";
+const MUTED_FEED_SOURCES_KEY = "masjidly_muted_feed_sources_v1";
 const RSVP_STATUSES_KEY = "masjidly_rsvp_statuses_v1";
 const RSVP_NOTIFICATION_IDS_KEY = "masjidly_rsvp_notification_ids_v1";
 const FILTER_PRESETS_KEY = "masjidly_filter_presets_v1";
@@ -375,12 +390,53 @@ function Mi({
   color?: string;
   style?: any;
 }) {
+  const [iconFailed, setIconFailed] = useState(false);
+  if (iconFailed) {
+    return <MaterialIcons name="circle" size={Math.max(12, size - 6)} color={color || "#7f8aa5"} style={style} />;
+  }
   return (
     <Image
       source={MI_ICONS[name]}
       style={[{ width: size, height: size, tintColor: color }, style]}
       resizeMode="contain"
+      fadeDuration={0}
+      onError={() => setIconFailed(true)}
     />
+  );
+}
+
+function LoadableNetworkImage({
+  uri,
+  style,
+  resizeMode = "cover",
+  onError,
+}: {
+  uri: string;
+  style: any;
+  resizeMode?: "cover" | "contain" | "stretch" | "repeat" | "center";
+  onError?: () => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  return (
+    <View style={[style, styles.imageLoadContainer]}>
+      <Image
+        source={{ uri }}
+        style={StyleSheet.absoluteFillObject}
+        resizeMode={resizeMode}
+        fadeDuration={0}
+        onLoadStart={() => setLoading(true)}
+        onLoadEnd={() => setLoading(false)}
+        onError={() => {
+          setLoading(false);
+          onError?.();
+        }}
+      />
+      {loading ? (
+        <View style={styles.imageLoadingOverlay} pointerEvents="none">
+          <ActivityIndicator size="small" color="#ff7a3c" />
+        </View>
+      ) : null}
+    </View>
   );
 }
 
@@ -707,6 +763,9 @@ function cleanSpeakerName(name: string): string {
     " for ",
     " about ",
     " discussing ",
+    " as ",
+    " who ",
+    " that ",
   ];
   let cut = raw;
   for (const stop of stopPhrases) {
@@ -781,9 +840,25 @@ const SPEAKER_JUNK_TOKENS = new Set([
   "programs",
   "events",
   "media",
+  "as",
+  "he",
+  "she",
+  "they",
+  "reflects",
+  "reflect",
+  "explore",
+  "explores",
 ]);
 
 const SCHOLAR_TITLE_PREFIX = new Set(["imam", "shaykh", "sheikh", "sheik", "ustadh", "ustad", "dr", "qari"]);
+const SCHOLAR_ALIAS_MAP: Record<string, string> = {
+  "shaykh ismael hamdi": "Shaykh Ismail Hamdi",
+  "shaykh ismail hamdi": "Shaykh Ismail Hamdi",
+  "sh ismail hamdi": "Shaykh Ismail Hamdi",
+  "sheikh ismail hamdi": "Shaykh Ismail Hamdi",
+  "imam tom facchine": "Imam Tom Facchine",
+  "shaykh yahya ibrahim": "Shaykh Yahya Ibrahim",
+};
 
 function trimBadScholarTokens(name: string): string {
   const parts = name.replace(/\s+/g, " ").trim().split(/\s+/).filter(Boolean);
@@ -819,7 +894,12 @@ function scholarNameIsPlausible(name: string): boolean {
 function finalizeScholarCandidate(raw: string): string {
   const t = trimBadScholarTokens(cleanSpeakerName(raw)).trim();
   if (!t || !scholarNameIsPlausible(t)) return "";
-  return t;
+  const aliasKey = t
+    .toLowerCase()
+    .replace(/\./g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return SCHOLAR_ALIAS_MAP[aliasKey] || t;
 }
 
 function inferSpeakerFromText(text: string): string {
@@ -967,22 +1047,212 @@ function eventTopicSummary(e: EventItem): string {
   return "";
 }
 
-// Stable dedupe key. We DELIBERATELY do not prefer event_uid, because the same
-// event can appear with uid=null in the bundled seed and uid="abc" once the
-// live pipeline assigns one — that used to create two copies per event. The
-// source+date+start_time+title signature is fully deterministic across seed
-// and live, so it collapses both copies into one. We only fall back to uid
-// when the sdt signature would be too weak to identify the row (e.g. missing
-// source/date/title, which almost never happens in practice).
+// Stable dedupe key. We intentionally DO NOT include title in the primary key.
+// The same event often arrives twice (seed/cache/live) where one row has the
+// cleaned title and another still has noisy OCR/caption text; title-based keys
+// keep both. Instead we key by source+date+time and disambiguate with poster or
+// source_url, then choose the better row via `eventDedupeQualityScore`.
 function eventDedupeKey(e: any): string {
   const source = (e?.source || "").toString().trim().toLowerCase();
   const date = (e?.date || "").toString().trim();
-  const title = (e?.title || "").toString().trim().toLowerCase().slice(0, 120);
   const startTime = (e?.start_time || "").toString().trim();
-  if (source && date && title) return `sdt:${source}|${date}|${startTime}|${title}`;
+  const endTime = (e?.end_time || "").toString().trim();
+  const poster = pickPoster((e as { image_urls?: unknown })?.image_urls);
+  const sourceUrl = normalizeText(((e as { source_url?: unknown })?.source_url ?? "").toString()).toLowerCase();
+  if (source && date && (startTime || endTime)) {
+    const base = `sdt:${source}|${date}|${startTime}|${endTime}`;
+    if (poster) return `${base}|p:${poster.toLowerCase().slice(0, 220)}`;
+    if (sourceUrl) return `${base}|u:${sourceUrl.slice(0, 260)}`;
+    return base;
+  }
   const uid = (e?.event_uid || "").toString().trim().toLowerCase();
   if (uid) return `uid:${uid}`;
-  return `sdt:${source}|${date}|${startTime}|${title}`;
+  const title = normalizeText((e?.title || "").toString()).toLowerCase().slice(0, 120);
+  return `fallback:${source}|${date}|${startTime}|${title}`;
+}
+
+function eventDedupeQualityScore(e: any): number {
+  let score = 0;
+  const title = normalizeText((e?.title || "").toString());
+  if (title) score += 6;
+  if (!isWeakEventTitle(title)) score += 20;
+  else score -= 8;
+  if (/https?:\/\/|www\.|#[a-z0-9_]+/i.test(title)) score -= 14;
+  if (
+    /\b\d{1,5}\s+[a-z0-9]/i.test(title) &&
+    /\b(street|st|ave|avenue|road|rd|lane|ln|blvd|drive|dr|nj)\b/i.test(title)
+  ) {
+    score -= 14;
+  }
+  const poster = pickPoster((e as { image_urls?: unknown })?.image_urls);
+  if (poster) score += 4;
+  if (poster && !isWeakPosterUrl(poster)) score += 8;
+  const desc = normalizeText(((e?.description || "") as string).replace(/<[^>]+>/g, " "));
+  if (desc && !isBoilerplateDescription(desc)) score += 3;
+  if (normalizeText((e?.event_uid || "").toString())) score += 2;
+  return score;
+}
+
+function upsertDedupeEvent(map: Map<string, EventItem>, candidate: EventItem) {
+  const key = eventDedupeKey(candidate);
+  const existing = map.get(key);
+  if (!existing) {
+    map.set(key, candidate);
+    return;
+  }
+  if (eventDedupeQualityScore(candidate) > eventDedupeQualityScore(existing)) {
+    map.set(key, candidate);
+  }
+}
+
+function normalizedTitleTokensForDedupe(e: EventItem): string[] {
+  const title = eventDisplayTitle(e)
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/#[a-z0-9_]+/g, " ")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!title) return [];
+  const stop = new Set([
+    "the", "and", "for", "with", "from", "this", "that", "your", "our", "you",
+    "are", "was", "will", "into", "about", "event", "program", "at", "to", "of",
+  ]);
+  return title
+    .split(" ")
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 3 && !stop.has(t));
+}
+
+function jaccardTitleSimilarity(a: EventItem, b: EventItem): number {
+  const at = normalizedTitleTokensForDedupe(a);
+  const bt = normalizedTitleTokensForDedupe(b);
+  if (!at.length || !bt.length) return 0;
+  const aSet = new Set(at);
+  const bSet = new Set(bt);
+  let intersection = 0;
+  for (const t of aSet) if (bSet.has(t)) intersection += 1;
+  const union = aSet.size + bSet.size - intersection;
+  return union > 0 ? intersection / union : 0;
+}
+
+function minutesDiffBetweenEvents(a: EventItem, b: EventItem): number {
+  const am = parseEventClockMinutes(a.start_time);
+  const bm = parseEventClockMinutes(b.start_time);
+  if (am == null || bm == null) return 0;
+  return Math.abs(am - bm);
+}
+
+function sourceUrlKey(e: EventItem): string {
+  const raw = normalizeText((e.source_url || "").toString()).toLowerCase();
+  if (!raw) return "";
+  const noHash = raw.split("#")[0];
+  const noQuery = noHash.split("?")[0];
+  return noQuery.replace(/\/+$/, "");
+}
+
+function posterUrlFingerprint(url: string): string {
+  const raw = normalizeText(url).toLowerCase();
+  if (!raw) return "";
+  const noHash = raw.split("#")[0];
+  const noQuery = noHash.split("?")[0];
+  const base = noQuery.split("/").filter(Boolean).pop() || noQuery;
+  return base
+    .replace(/_(?:\d{2,5}x\d{2,5}|[a-z]{1,4}\d{0,4})\.(jpg|jpeg|png|webp)$/i, ".$1")
+    .replace(/-(?:\d{2,5}x\d{2,5})\.(jpg|jpeg|png|webp)$/i, ".$1");
+}
+
+function startsSameMinute(a: EventItem, b: EventItem): boolean {
+  const aRaw = normalizeText((a.start_time || "").toString()).toLowerCase();
+  const bRaw = normalizeText((b.start_time || "").toString()).toLowerCase();
+  if (aRaw && bRaw && aRaw === bRaw) return true;
+  const am = parseEventClockMinutes(a.start_time);
+  const bm = parseEventClockMinutes(b.start_time);
+  return am != null && bm != null && am === bm;
+}
+
+function endsSameMinute(a: EventItem, b: EventItem): boolean {
+  const aRaw = normalizeText((a.end_time || "").toString()).toLowerCase();
+  const bRaw = normalizeText((b.end_time || "").toString()).toLowerCase();
+  if (aRaw && bRaw && aRaw === bRaw) return true;
+  const am = parseEventClockMinutes(a.end_time);
+  const bm = parseEventClockMinutes(b.end_time);
+  return am != null && bm != null && am === bm;
+}
+
+function isNearDuplicateEvent(a: EventItem, b: EventItem): boolean {
+  const sourceA = normalizeText(a.source).toLowerCase();
+  const sourceB = normalizeText(b.source).toLowerCase();
+  if (!sourceA || sourceA !== sourceB) return false;
+  if ((a.date || "") !== (b.date || "")) return false;
+
+  const uidA = normalizeText((a.event_uid || "").toString()).toLowerCase();
+  const uidB = normalizeText((b.event_uid || "").toString()).toLowerCase();
+  if (uidA && uidB && uidA === uidB) return true;
+
+  const timeDiff = minutesDiffBetweenEvents(a, b);
+  const posterA = pickPoster(a.image_urls);
+  const posterB = pickPoster(b.image_urls);
+  const posterSigA = posterUrlFingerprint(posterA);
+  const posterSigB = posterUrlFingerprint(posterB);
+  const urlA = sourceUrlKey(a);
+  const urlB = sourceUrlKey(b);
+  const titleSim = jaccardTitleSimilarity(a, b);
+  const weakA = isWeakEventTitle(eventDisplayTitle(a));
+  const weakB = isWeakEventTitle(eventDisplayTitle(b));
+  const sameStartMinute = startsSameMinute(a, b);
+  const sameEndMinute = endsSameMinute(a, b);
+
+  if (urlA && urlB && urlA === urlB && timeDiff <= 240) return true;
+  if (posterSigA && posterSigB && posterSigA === posterSigB && timeDiff <= 240) return true;
+  if (posterA && posterB && posterA === posterB && (timeDiff <= 180 || titleSim >= 0.45)) return true;
+  if (sameStartMinute && sameEndMinute && (weakA || weakB)) return true;
+  if (sameStartMinute && titleSim >= 0.56) return true;
+  if (titleSim >= 0.78 && timeDiff <= 240) return true;
+  if ((weakA || weakB) && titleSim >= 0.38 && timeDiff <= 240) return true;
+  return false;
+}
+
+function collapseNearDuplicateEvents(rows: EventItem[]): EventItem[] {
+  const out: EventItem[] = [];
+  for (const row of rows) {
+    const idx = out.findIndex((existing) => isNearDuplicateEvent(existing, row));
+    if (idx < 0) {
+      out.push(row);
+      continue;
+    }
+    if (eventDedupeQualityScore(row) > eventDedupeQualityScore(out[idx])) {
+      out[idx] = row;
+    }
+  }
+  return out;
+}
+
+function dropInferiorPosterlessClones(rows: EventItem[]): EventItem[] {
+  if (rows.length <= 1) return rows;
+  return rows.filter((row, idx) => {
+    const rowPoster = pickPoster(row.image_urls);
+    if (rowPoster) return true;
+    const rowScore = eventDedupeQualityScore(row);
+    const rowSource = normalizeText(row.source).toLowerCase();
+    const rowDate = normalizeText(row.date);
+    if (!rowSource || !rowDate) return true;
+    for (let i = 0; i < rows.length; i += 1) {
+      if (i === idx) continue;
+      const other = rows[i];
+      const otherPoster = pickPoster(other.image_urls);
+      if (!otherPoster) continue;
+      if (normalizeText(other.source).toLowerCase() !== rowSource) continue;
+      if (normalizeText(other.date) !== rowDate) continue;
+      const minuteDiff = minutesDiffBetweenEvents(row, other);
+      if (minuteDiff > 180) continue;
+      const otherScore = eventDedupeQualityScore(other);
+      // Prefer the richer row (poster + cleaner metadata) when a no-poster
+      // sibling appears nearby on the same masjid/day timeline.
+      if (otherScore >= rowScore + 8) return false;
+    }
+    return true;
+  });
 }
 
 // Identifies ongoing programs / class series that aren't discrete events the
@@ -1477,16 +1747,144 @@ function isWeakEventTitle(raw: string): boolean {
   if (!s) return true;
   if (/^(when|time|date|where)\b[:\-\s]*/.test(s)) return true;
   if (/^\*?\s*time\*?\s*[:\-]/.test(s)) return true;
+  if (/^[/\\]+/.test(s)) return true;
+  if (/^\d+\s+likes?,?\s+\d+\s+comments?\b/.test(s)) return true;
+  if (/^(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{1,2}$/.test(s)) return true;
+  if (/^-\s*[a-z0-9_]+.*join us in \d+\s*(hour|hours|hr|min|minutes)\b/.test(s)) return true;
+  if (/\b(?:presented?\s+by|organized\s+by|hosted\s+by)\b/.test(s)) return true;
+  if (/\bpresents?\b/.test(s) && s.split(/\s+/).length <= 6) return true;
+  if (/\b(register|rsvp|follow|link in bio|swipe|tickets?)\b/.test(s) && s.split(/\s+/).length <= 8) {
+    return true;
+  }
+  if (/\b(we hope to see you|see you all there|insha'?allah|will you attend|official rsvp|add to my device calendar|be the first from your circle|bring a friend)\b/.test(s)) {
+    return true;
+  }
   if (/\b(mon|tue|wed|thu|fri|sat|sun)\b/.test(s) && /\b\d{1,2}:\d{2}\s*(am|pm)\b/.test(s) && s.split(/\s+/).length <= 10) {
     return true;
   }
   return false;
 }
 
+function cleanedDescriptionForTitle(raw: string): string {
+  const s = normalizeText(raw || "");
+  if (!s) return "";
+  // Strip Instagram lead-in like "9 likes, 1 comments - handle on Date: "
+  return s
+    .replace(/^\d+\s+likes?,?\s+\d+\s+comments?\s*-\s*[^:]+:\s*/i, "")
+    .replace(/^"+|"+$/g, "")
+    .trim();
+}
+
+function titleCaseSentence(s: string): string {
+  const tiny = new Set(["a", "an", "and", "or", "of", "the", "to", "in", "for", "on", "with", "by"]);
+  const words = normalizeText(s).split(/\s+/).filter(Boolean);
+  return words
+    .map((w, i) => {
+      if (!w) return w;
+      const low = w.toLowerCase();
+      if (i > 0 && tiny.has(low)) return low;
+      return low.charAt(0).toUpperCase() + low.slice(1);
+    })
+    .join(" ");
+}
+
+function eventTitleLineScore(line: string): number {
+  const s = normalizeText(line);
+  if (!s || isWeakEventTitle(s)) return -999;
+  const low = s.toLowerCase();
+  const words = s.split(/\s+/).length;
+  let score = 0;
+  if (/\b(tafsir|tafseer|seerah|sirah|hadith|qur'?an|quran|tajweed|halaqa|dars|khatira|khutbah|lecture|talk|series|workshop|seminar|program|class|course|retreat|conference)\b/i.test(s)) {
+    score += 8;
+  }
+  if (/\b(with|by)\s+(sh\.?|shaykh|sheikh|imam|ustadh|dr\.?)\b/i.test(s)) score += 5;
+  if (/\b(we hope to see you|see you all there|insha'?allah|join us tonight|official rsvp|will you attend)\b/i.test(s)) {
+    score -= 12;
+  }
+  if (/^\s*[/\\]/.test(s)) score -= 4;
+  if (words >= 4 && words <= 15) score += 2;
+  if (words > 22) score -= 4;
+  // Slight preference for lines that look like a clean headline.
+  const letters = (s.match(/[a-z]/gi) || []).length;
+  if (letters >= 12) score += 1;
+  if (/\b(presents?|presented by|organized by)\b/.test(low) && !/\s*:\s*/.test(s)) score -= 3;
+  return score;
+}
+
+function extractNarrativeTitle(e: Partial<EventItem> | null | undefined): string {
+  const desc = cleanedDescriptionForTitle((e?.description || "").toString());
+  const raw = normalizeText((e?.raw_text || "").toString());
+  const poster = normalizeText((e?.poster_ocr_text || "").toString());
+  const blob = `${desc}\n${raw}\n${poster}`;
+  if (!blob.trim()) return "";
+
+  const explicit = /(?:title of (?:today'?s|tonight'?s|this)\s+(?:class|session|lecture)\s+is|tonight'?s class is)\s*[“"']?([^"”'.!?]{4,100})/i.exec(blob);
+  if (explicit?.[1]) {
+    const t = normalizeText(explicit[1]);
+    if (t && !isWeakEventTitle(t)) return titleCaseSentence(t);
+  }
+
+  const story = /\bstory of\s+([^.!?\n]{4,90})/i.exec(blob);
+  if (story?.[1]) {
+    const speaker = effectiveEventSpeakerName(e as EventItem);
+    const topic = titleCaseSentence(`Story of ${normalizeText(story[1])}`);
+    if (topic && !isWeakEventTitle(topic)) {
+      if (speaker) return `Tafsir Series with ${speaker}: ${topic}`;
+      return topic;
+    }
+  }
+
+  const joinFor = /\bjoin us (?:for|this)\s+(?:an?\s+)?([^.!?\n]{4,90})/i.exec(blob);
+  if (joinFor?.[1]) {
+    const rawTopic = normalizeText(joinFor[1]).replace(/\s+(led by|at|on)\b.*$/i, "").trim();
+    const topic = titleCaseSentence(rawTopic);
+    if (topic && !isWeakEventTitle(topic) && /\b(workshop|series|class|lecture|talk|seminar|hike|retreat|course|night)\b/i.test(topic)) {
+      return topic;
+    }
+  }
+
+  const lines = blob
+    .split(/[.\n]+/)
+    .map((x) => normalizeText(x))
+    .filter(Boolean);
+  let best = "";
+  let bestScore = -999;
+  for (const line of lines) {
+    if (line.length < 10 || line.length > 110) continue;
+    const presentsPayload = /\bpresents?\s*:\s*(.+)$/i.exec(line);
+    if (presentsPayload?.[1]) {
+      const t = titleCaseSentence(presentsPayload[1]);
+      const sc = eventTitleLineScore(t) + 2;
+      if (sc > bestScore) {
+        bestScore = sc;
+        best = t;
+      }
+      continue;
+    }
+    const sc = eventTitleLineScore(line);
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = line;
+    }
+  }
+  return bestScore >= 0 ? best : "";
+}
+
 function eventDisplayTitle(e: Partial<EventItem> | null | undefined): string {
   const primary = normalizeText((e?.title || "").toString());
-  if (primary && !isWeakEventTitle(primary)) return primary;
-  const blob = `${e?.poster_ocr_text || ""}\n${e?.description || ""}\n${e?.raw_text || ""}`;
+  const narrative = extractNarrativeTitle(e);
+  if (primary && !isWeakEventTitle(primary)) {
+    // Prefer cleaner narrative title when the primary looks like OCR/header noise.
+    if (narrative) {
+      const p = primary.toLowerCase();
+      if (/^[/\\]/.test(primary) || /\bpresents?\b/i.test(primary) || /\b(we hope to see you|join us tonight)\b/i.test(p)) {
+        return narrative;
+      }
+    }
+    return primary;
+  }
+  if (narrative) return narrative;
+  const blob = `${e?.description || ""}\n${e?.raw_text || ""}\n${e?.poster_ocr_text || ""}`;
   const lines = blob
     .split(/\r?\n+/)
     .map((x) => normalizeText(x))
@@ -1498,6 +1896,19 @@ function eventDisplayTitle(e: Partial<EventItem> | null | undefined): string {
       continue;
     }
     return line;
+  }
+  const lowerBlob = blob.toLowerCase();
+  let inferredType = "";
+  if (/\b(tafsir|tafseer)\b/.test(lowerBlob)) inferredType = "Tafsir Session";
+  else if (/\b(seerah|sirah)\b/.test(lowerBlob)) inferredType = "Seerah Session";
+  else if (/\b(halaqa|halaqah)\b/.test(lowerBlob)) inferredType = "Halaqa";
+  else if (/\b(workshop)\b/.test(lowerBlob)) inferredType = "Workshop";
+  else if (/\b(class|course|lesson)\b/.test(lowerBlob)) inferredType = "Class";
+  else if (/\b(lecture|talk|seminar|khutbah)\b/.test(lowerBlob)) inferredType = "Lecture";
+  else if (/\b(fundraiser|charity)\b/.test(lowerBlob)) inferredType = "Fundraiser";
+  if (inferredType) {
+    const speaker = effectiveEventSpeakerName((e || {}) as EventItem);
+    return speaker ? `${inferredType} with ${speaker}` : inferredType;
   }
   return primary || "Untitled event";
 }
@@ -1540,13 +1951,24 @@ function pickPoster(urls: unknown): string {
     "loading.gif",
     "blank.gif",
   ];
+  const isInstagramUiAsset = (url: string): boolean => {
+    const low = url.toLowerCase();
+    return (
+      low.includes("static.cdninstagram.com/rsrc.php") ||
+      low.includes("instagram.com/static/images") ||
+      // Common IG app/web chrome assets (not user poster media).
+      low.includes("/rsrc.php/v4/") ||
+      (low.includes("cdninstagram.com") && low.includes("/rsrc.php"))
+    );
+  };
   const cleaned = coercePosterUrls(urls);
   if (!cleaned.length) return "";
-  const good = cleaned.find((u) => !bad.some((k) => u.toLowerCase().includes(k)));
+  const good = cleaned.find((u) => !isInstagramUiAsset(u) && !bad.some((k) => u.toLowerCase().includes(k)));
   if (good) return good;
-  const notWeak = cleaned.find((u) => !isWeakPosterUrl(u));
+  const notWeak = cleaned.find((u) => !isInstagramUiAsset(u) && !isWeakPosterUrl(u));
   if (notWeak) return notWeak;
-  return cleaned[0] || "";
+  const nonUi = cleaned.find((u) => !isInstagramUiAsset(u));
+  return nonUi || cleaned[0] || "";
 }
 
 function eventPosterUrl(e: Pick<EventItem, "image_urls">): string {
@@ -1591,6 +2013,44 @@ function freshnessLabelFor(e: EventItem): { label: string; color: string } {
   if (st === "email") return { label: "Email", color: "yellow" };
   if (st === "instagram" || st === "instagram_recurring") return { label: "Instagram", color: "green" };
   return { label: "Source", color: "gray" };
+}
+
+function sourceTypeLabelForEvent(e: EventItem): string {
+  const st = normalizeText(e.source_type || e.freshness?.source_type || "").toLowerCase();
+  if (st === "instagram" || st === "instagram_recurring") return "Instagram";
+  if (st === "email") return "Email";
+  if (st === "website") return "Website";
+  if (st === "synthetic_jummah") return "Synthetic";
+  const url = normalizeText(e.source_url || "").toLowerCase();
+  if (url.includes("instagram.com")) return "Instagram";
+  if (url.includes("mail") || url.includes("gmail")) return "Email";
+  if (url) return "Website";
+  return "Unknown source";
+}
+
+function freshnessAgeLabel(e: EventItem): string {
+  if (typeof e.freshness?.days_old === "number") {
+    if (e.freshness.days_old <= 0) return "Fresh now";
+    if (e.freshness.days_old === 1) return "1 day old";
+    return `${Math.round(e.freshness.days_old)} days old`;
+  }
+  const posted = normalizeText(e.posted_at_utc || e.freshness?.posted_at || "");
+  if (!posted) return "";
+  const ts = Date.parse(posted);
+  if (!Number.isFinite(ts)) return "";
+  const days = Math.max(0, Math.round((Date.now() - ts) / (1000 * 60 * 60 * 24)));
+  if (days <= 0) return "Fresh now";
+  if (days === 1) return "1 day old";
+  return `${days} days old`;
+}
+
+function duplicateSuppressionReason(e: EventItem): string {
+  const uid = normalizeText(e.event_uid || "");
+  if (uid) return "dedupe by event uid";
+  const src = normalizeText(e.source_url || "");
+  if (src) return "dedupe by source url";
+  if (eventPosterUrl(e)) return "dedupe by poster + schedule";
+  return "dedupe by source + schedule";
 }
 
 const TOPIC_LABELS: Record<string, string> = {
@@ -1720,6 +2180,9 @@ function AppInner() {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  // Re-render time-sensitive labels (LIVE / starts soon / already happened)
+  // without requiring a manual refresh.
+  const [clockNowMs, setClockNowMs] = useState(() => Date.now());
   // Re-rendered at midnight and whenever the app returns to foreground so any
   // logic keyed off `today` advances without a cold start. Derived from the
   // device's local timezone.
@@ -1890,6 +2353,7 @@ function AppInner() {
   const mapRegionRef = useRef<Region>(DEFAULT_MAP_REGION);
   const mapRef = useRef<MapView | null>(null);
   const [followedMasjids, setFollowedMasjids] = useState<string[]>([]);
+  const [mutedFeedSources, setMutedFeedSources] = useState<string[]>([]);
   const [rsvpStatuses, setRsvpStatuses] = useState<Record<string, RsvpStatus>>({});
   // One-shot: after events hydrate for the first time and we know the user's
   // RSVPs, schedule any missing day-of / 2h reminders. This catches users who
@@ -1897,6 +2361,10 @@ function AppInner() {
   const rsvpReminderCatchupRan = useRef(false);
   useEffect(() => {
     if (rsvpReminderCatchupRan.current) return;
+    if (profileDraft.notifications?.rsvp_reminders === false) {
+      rsvpReminderCatchupRan.current = true;
+      return;
+    }
     if (!events.length) return;
     const rsvpKeys = Object.keys(rsvpStatuses);
     if (!rsvpKeys.length) { rsvpReminderCatchupRan.current = true; return; }
@@ -1913,7 +2381,7 @@ function AppInner() {
         }
       } catch { /* non-fatal */ }
     })();
-  }, [events, rsvpStatuses]);
+  }, [events, rsvpStatuses, profileDraft.notifications?.rsvp_reminders]);
   const [feedbackResponses, setFeedbackResponses] = useState<Record<string, "helpful" | "off" | "attended">>({});
   const [showModerationQueue, setShowModerationQueue] = useState(false);
   const [moderationReports, setModerationReports] = useState<any[]>([]);
@@ -1922,6 +2390,8 @@ function AppInner() {
   const [reportDetails, setReportDetails] = useState("");
   const [showReportSection, setShowReportSection] = useState(false);
   const [showFullDescription, setShowFullDescription] = useState(false);
+  const [showOriginalDescription, setShowOriginalDescription] = useState(false);
+  const [cacheWarmStatus, setCacheWarmStatus] = useState<"syncing" | "warming" | "ready">("syncing");
   const [reflectionState, setReflectionState] = useState<{ event?: EventItem; rating: number; text: string } | null>(null);
   const [eventSeries, setEventSeries] = useState<EventSeries[]>([]);
   const [speakers, setSpeakers] = useState<Speaker[]>([]);
@@ -1984,6 +2454,31 @@ function AppInner() {
     });
   }, []);
 
+  useEffect(() => {
+    const id = setInterval(() => setClockNowMs(Date.now()), 15_000);
+    return () => clearInterval(id);
+  }, []);
+  // Remote poster URLs that failed to load once. We remember failures so the
+  // UI can immediately render the fallback art instead of showing a blank box.
+  const [failedPosterUrls, setFailedPosterUrls] = useState<Set<string>>(() => new Set());
+  const markPosterFailed = useCallback((url: string) => {
+    const key = normalizeText(url);
+    if (!key) return;
+    setFailedPosterUrls((prev) => {
+      if (prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+  }, []);
+  const canRenderPoster = useCallback(
+    (url: string) => {
+      const key = normalizeText(url);
+      return !!key && !failedPosterUrls.has(key);
+    },
+    [failedPosterUrls],
+  );
+
   // Renders a masjid logo with graceful fallback: if we have a confirmed
   // domain for the source we render the real logo (curated override or
   // Google favicon service); on load error it flips to text-initials in
@@ -2017,6 +2512,7 @@ function AppInner() {
               source={{ uri }}
               style={{ width: size - 4, height: size - 4, borderRadius: (size - 4) / 2 }}
               resizeMode="contain"
+              fadeDuration={0}
               onError={() => markLogoFailed(src)}
             />
           </View>
@@ -2129,9 +2625,6 @@ function AppInner() {
   const launchOpacity = useRef(new Animated.Value(0)).current;
   const launchScale = useRef(new Animated.Value(0.9)).current;
   const launchTranslateY = useRef(new Animated.Value(18)).current;
-  const launchMessageOpacity = useRef(new Animated.Value(0)).current;
-  const launchMessageTranslateY = useRef(new Animated.Value(20)).current;
-  const launchPulse = useRef(new Animated.Value(0)).current;
   const launchGlowDrift = useRef(new Animated.Value(0)).current;
   // Master exit opacity — applied to the entire launch screen wrapper so
   // glows, card, and greeting all fade together instead of the greeting
@@ -2324,7 +2817,7 @@ function AppInner() {
   useEffect(() => {
     const loadLocalBehavior = async () => {
       try {
-        const [followedRaw, rsvpRaw, presetsRaw, feedbackRaw, streakRaw, referralRaw, scholarsRaw, referredByRaw, referralWinsRaw, feedSetupDoneRaw] = await Promise.all([
+        const [followedRaw, rsvpRaw, presetsRaw, feedbackRaw, streakRaw, referralRaw, scholarsRaw, mutedSourcesRaw, referredByRaw, referralWinsRaw, feedSetupDoneRaw] = await Promise.all([
           SecureStore.getItemAsync(FOLLOWED_MASJIDS_KEY),
           SecureStore.getItemAsync(RSVP_STATUSES_KEY),
           SecureStore.getItemAsync(FILTER_PRESETS_KEY),
@@ -2332,6 +2825,7 @@ function AppInner() {
           SecureStore.getItemAsync(STREAK_TRACKER_KEY),
           SecureStore.getItemAsync(REFERRAL_CODE_KEY),
           SecureStore.getItemAsync(FOLLOWED_SCHOLARS_KEY),
+          SecureStore.getItemAsync(MUTED_FEED_SOURCES_KEY),
           SecureStore.getItemAsync(REFERRED_BY_KEY),
           SecureStore.getItemAsync(REFERRAL_WINS_KEY),
           SecureStore.getItemAsync(FEED_SETUP_DONE_KEY),
@@ -2345,6 +2839,14 @@ function AppInner() {
             const parsed = JSON.parse(scholarsRaw);
             if (Array.isArray(parsed)) setFollowedScholars(parsed.map((x) => String(x)).filter(Boolean));
           } catch { /* corrupt json — ignore */ }
+        }
+        if (mutedSourcesRaw) {
+          try {
+            const parsed = JSON.parse(mutedSourcesRaw);
+            if (Array.isArray(parsed)) setMutedFeedSources(parsed.map((x) => normalizeText(String(x)).toLowerCase()).filter(Boolean));
+          } catch {
+            // ignore
+          }
         }
         if (rsvpRaw) {
           const parsed = JSON.parse(rsvpRaw);
@@ -2561,9 +3063,6 @@ function AppInner() {
     launchOpacity.setValue(0);
     launchScale.setValue(0.9);
     launchTranslateY.setValue(18);
-    launchMessageOpacity.setValue(0);
-    launchMessageTranslateY.setValue(20);
-    launchPulse.setValue(0);
     launchGlowDrift.setValue(0);
     launchExitOpacity.setValue(1);
     launchDotPulse.setValue(0);
@@ -2575,58 +3074,27 @@ function AppInner() {
     //    master opacity so nothing pops out abruptly.
     const intro = Animated.sequence([
       Animated.parallel([
-        Animated.timing(launchMessageOpacity, {
-          toValue: 1,
-          duration: 700,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(launchMessageTranslateY, {
-          toValue: 0,
-          duration: 700,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]),
-      Animated.delay(140),
-      Animated.parallel([
         Animated.timing(launchOpacity, {
           toValue: 1,
-          duration: 760,
+          duration: 640,
           easing: Easing.out(Easing.cubic),
           useNativeDriver: true,
         }),
         Animated.spring(launchScale, {
           toValue: 1,
-          friction: 8,
-          tension: 62,
+          friction: 7,
+          tension: 84,
           useNativeDriver: true,
         }),
         Animated.timing(launchTranslateY, {
           toValue: 0,
-          duration: 820,
+          duration: 700,
           easing: Easing.out(Easing.cubic),
           useNativeDriver: true,
         }),
       ]),
-      Animated.delay(900),
+      Animated.delay(650),
     ]);
-    const pulse = Animated.loop(
-      Animated.sequence([
-        Animated.timing(launchPulse, {
-          toValue: 1,
-          duration: 950,
-          easing: Easing.inOut(Easing.sin),
-          useNativeDriver: true,
-        }),
-        Animated.timing(launchPulse, {
-          toValue: 0,
-          duration: 950,
-          easing: Easing.inOut(Easing.sin),
-          useNativeDriver: true,
-        }),
-      ])
-    );
     const glowFloat = Animated.loop(
       Animated.sequence([
         Animated.timing(launchGlowDrift, {
@@ -2661,7 +3129,6 @@ function AppInner() {
       ])
     );
     const pulseStart = setTimeout(() => {
-      pulse.start();
       glowFloat.start();
       dotsLoop.start();
     }, 300);
@@ -2755,7 +3222,6 @@ function AppInner() {
       disposed = true;
       clearTimeout(pulseStart);
       if (waitingInterval) clearInterval(waitingInterval);
-      pulse.stop();
       glowFloat.stop();
       dotsLoop.stop();
     };
@@ -2977,8 +3443,18 @@ function AppInner() {
         privacy_policy_accepted_version: PRIVACY_POLICY_VERSION,
       };
       setPersonalization(nextPersonalization);
-      await SecureStore.setItemAsync(PERSONALIZATION_KEY, JSON.stringify(nextPersonalization));
-      await SecureStore.setItemAsync(WELCOME_FLOW_DONE_KEY, "1");
+      // Transition immediately so the last "Next" feels instant.
+      finishExitProgress.setValue(1);
+      justCompletedOnboardingRef.current = true;
+      setSetupInterestsDraft(null);
+      setEntryScreen("launch");
+
+      // Persist in background; do not block the visual transition.
+      void Promise.all([
+        SecureStore.setItemAsync(PERSONALIZATION_KEY, JSON.stringify(nextPersonalization)),
+        SecureStore.setItemAsync(WELCOME_FLOW_DONE_KEY, "1"),
+      ]).catch(() => {});
+
       let referredByForApi = referredByCode || normalizeMasjidlyShareCode(referralInput);
       if (referralCode && referredByForApi === referralCode) referredByForApi = "";
       if (referralInput.trim()) {
@@ -3003,12 +3479,6 @@ function AppInner() {
           email_opt_in: cleanedEmail ? personalization.emailOptIn : false,
         }),
       }).catch(() => {});
-      finishExitProgress.setValue(1);
-      // Launch screen shows As-salāmu ʿalaykum + dots; it waits for the feed
-      // there (see launch useEffect) so Finish Setup can jump over instantly.
-      justCompletedOnboardingRef.current = true;
-      setSetupInterestsDraft(null);
-      setEntryScreen("launch");
     } catch (e) {
       setOnboardingError((e as Error).message || "Could not save onboarding.");
     } finally {
@@ -3029,21 +3499,46 @@ function AppInner() {
         privacy_policy_accepted_version: PRIVACY_POLICY_VERSION,
       };
       setPersonalization(nextPersonalization);
-      try {
-        await SecureStore.setItemAsync(PERSONALIZATION_KEY, JSON.stringify(nextPersonalization));
-        await SecureStore.setItemAsync(WELCOME_FLOW_DONE_KEY, "1");
-      } catch {
-        // non-fatal — skip should still work even if SecureStore blips
-      }
       finishExitProgress.setValue(1);
       // Same as finishOnboarding: always show the launch celebration on
       // first entry so the jump to Home doesn't feel abrupt.
       justCompletedOnboardingRef.current = true;
       setEntryScreen("launch");
+      // Persist in background; skip flow should feel immediate.
+      void Promise.all([
+        SecureStore.setItemAsync(PERSONALIZATION_KEY, JSON.stringify(nextPersonalization)),
+        SecureStore.setItemAsync(WELCOME_FLOW_DONE_KEY, "1"),
+      ]).catch(() => {});
     } catch {
       justCompletedOnboardingRef.current = true;
       setEntryScreen("launch");
     }
+  };
+
+  const confirmSkipAccountSetup = () => {
+    Alert.alert(
+      "Continue without an account?",
+      "No problem — you can keep using Masjid.ly as a guest now. Account creation is optional (recommended for syncing your saves and follows), and you can do it later in Settings → Account.",
+      [
+        { text: "Keep setup", style: "cancel" },
+        {
+          text: "Skip for now",
+          style: "destructive",
+          onPress: () => {
+            hapticTap("selection");
+            if (personalization.privacy_policy_accepted_version !== PRIVACY_POLICY_VERSION) {
+              setOnboardingError("Please accept the Privacy Policy once, then tap Skip for now.");
+              if (entryScreen === "welcome" && setupSubStep < 2) {
+                setupStepDirRef.current = 1;
+                setSetupSubStep(2);
+              }
+              return;
+            }
+            void skipOnboarding();
+          },
+        },
+      ],
+    );
   };
 
   const toggleInterest = (interest: string) => {
@@ -3336,7 +3831,7 @@ function AppInner() {
       // screen alongside the fixed date and causes duplicate/zombie rows.
       const byKey = new Map<string, EventItem>();
       for (const item of fetched) {
-        byKey.set(eventDedupeKey(item), item);
+        upsertDedupeEvent(byKey, item);
       }
       const apiSourceTitlePairs = new Set<string>();
       for (const item of fetched) {
@@ -3346,14 +3841,15 @@ function AppInner() {
       }
       for (const item of BUNDLED_SEED_EVENTS as EventItem[]) {
         const k = eventDedupeKey(item);
-        if (byKey.has(k)) continue;
         const src = ((item as any)?.source || "").toString().toLowerCase();
         const title = ((item as any)?.title || "").toString().toLowerCase();
         if (src && title && apiSourceTitlePairs.has(`${src}|${title}`)) {
           // API has other dates for this series — trust the API, skip seed.
           continue;
         }
-        byKey.set(k, item);
+        if (!byKey.has(k)) {
+          upsertDedupeEvent(byKey, item);
+        }
       }
       const unioned = Array.from(byKey.values()).map((ev) => ({
         ...(ev as EventItem),
@@ -3378,7 +3874,7 @@ function AppInner() {
         const fallback: EventItem[] = [];
         const byKey = new Map<string, EventItem>();
         for (const item of BUNDLED_SEED_EVENTS as EventItem[]) {
-          byKey.set(eventDedupeKey(item), item);
+          upsertDedupeEvent(byKey, item);
         }
         for (const item of byKey.values()) fallback.push(item);
         if (fallback.length) setEvents(fallback);
@@ -3421,7 +3917,7 @@ function AppInner() {
         if (!events.length) {
           const byKey = new Map<string, EventItem>();
           for (const item of BUNDLED_SEED_EVENTS as EventItem[]) {
-            byKey.set(eventDedupeKey(item), item);
+            upsertDedupeEvent(byKey, item);
           }
           let cachedAt = 0;
           if (eventsRaw) {
@@ -3429,7 +3925,7 @@ function AppInner() {
               const parsed = JSON.parse(eventsRaw) as EventsCachePayload;
               if (parsed?.events?.length) {
                 for (const item of parsed.events) {
-                  byKey.set(eventDedupeKey(item), item); // overlay seed
+                  upsertDedupeEvent(byKey, item); // overlay seed
                 }
                 cachedAt = parsed.cached_at || 0;
               }
@@ -3458,6 +3954,54 @@ function AppInner() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meta]);
+
+  // Warm image cache for the first chunk of visible poster URLs so cards don't
+  // appear empty while the user scrolls Home/Explore.
+  useEffect(() => {
+    if (entryScreen !== "app") return;
+    setCacheWarmStatus("warming");
+    let cancelled = false;
+    const run = async () => {
+      const nowIso = todayIso();
+      const isSoon = (ev: EventItem): boolean => {
+        const d = normalizeText(ev.date || "");
+        return !!d && d >= nowIso && d <= plusDaysIso(2);
+      };
+      const followedSet = new Set(followedMasjids.map((s) => normalizeText(s).toLowerCase()));
+      const topPosterUrls = events
+        .filter((ev) => isSoon(ev) || followedSet.has(normalizeText(ev.source).toLowerCase()))
+        .map((ev) => eventPosterUrl(ev))
+        .filter((u): u is string => !!u && canRenderPoster(u))
+        .slice(0, 70);
+      const otherPosterUrls = events
+        .map((ev) => eventPosterUrl(ev))
+        .filter((u): u is string => !!u && canRenderPoster(u) && !topPosterUrls.includes(u))
+        .slice(0, 180);
+      const speakerUrls = speakers
+        .map((s) => normalizeText(s.image_url || ""))
+        .filter((u): u is string => !!u)
+        .slice(0, 80);
+      const logoUrls = (meta?.sources || [])
+        .map((src) => masjidLogoUrl(src) || "")
+        .filter((u): u is string => !!u)
+        .slice(0, 80);
+      const phase1 = Array.from(new Set([...topPosterUrls, ...speakerUrls.slice(0, 20), ...logoUrls.slice(0, 20)]));
+      const phase2 = Array.from(new Set([...otherPosterUrls, ...speakerUrls.slice(20), ...logoUrls.slice(20)]));
+      for (const url of phase1) {
+        if (cancelled) return;
+        await Image.prefetch(url).catch(() => false);
+      }
+      if (!cancelled) setCacheWarmStatus("ready");
+      for (const url of phase2) {
+        if (cancelled) return;
+        void Image.prefetch(url).catch(() => false);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [entryScreen, events, speakers, meta?.sources, canRenderPoster, followedMasjids]);
 
   // First-time guided tour: after the user enters the main app shell, check
   // whether they've seen the walkthrough. If not, kick it off shortly after
@@ -3898,6 +4442,53 @@ function AppInner() {
     const label = score >= 80 ? "High confidence" : score >= 60 ? "Medium confidence" : "Low confidence";
     return { score, label };
   };
+  const getTrustSignalBreakdown = (e: EventItem): Array<{ key: string; label: string; ok: boolean }> => {
+    const title = eventDisplayTitle(e);
+    const poster = eventPosterUrl(e);
+    const sourceType = sourceTypeLabelForEvent(e).toLowerCase();
+    return [
+      { key: "title", label: "Title quality", ok: !!title && !isWeakEventTitle(title) },
+      { key: "time", label: "Time present", ok: !!normalizeText(e.start_time || "") },
+      { key: "poster", label: "Poster detected", ok: !!poster && !isWeakPosterUrl(poster) },
+      { key: "source", label: "Source mapped", ok: sourceType !== "unknown source" },
+    ];
+  };
+  const detectSourceConflict = (e: EventItem): string => {
+    const st = normalizeText(e.source_type || "").toLowerCase();
+    const srcUrl = normalizeText(e.source_url || "").toLowerCase();
+    const hasInstagramUrl = srcUrl.includes("instagram.com");
+    if ((st === "instagram" || st === "instagram_recurring") && srcUrl && !hasInstagramUrl) {
+      return "Source conflict: marked Instagram but URL looks non-Instagram";
+    }
+    if (st === "website" && hasInstagramUrl) {
+      return "Source conflict: marked Website but URL is Instagram";
+    }
+    if (st === "email" && hasInstagramUrl) {
+      return "Source conflict: marked Email but URL is Instagram";
+    }
+    return "";
+  };
+  const suggestedQuickFixKind = (e: EventItem): "title" | "speaker" | "poster" | "duplicate" | null => {
+    if (isWeakEventTitle(eventDisplayTitle(e))) return "title";
+    if (!effectiveEventSpeakerName(e) && /\b(with|by)\s+(imam|shaykh|sheikh|ustadh|dr\.?)\b/i.test(`${e.description || ""} ${e.raw_text || ""}`)) {
+      return "speaker";
+    }
+    if (!eventPosterUrl(e)) return "poster";
+    const conflict = detectSourceConflict(e);
+    if (conflict) return "duplicate";
+    return null;
+  };
+  const getTrustPassChips = (e: EventItem, opts?: { debug?: boolean }): string[] => {
+    const conf = getEventConfidence(e);
+    const chips: string[] = [];
+    chips.push(`${conf.label} (${conf.score}%)`);
+    chips.push(sourceTypeLabelForEvent(e));
+    const age = freshnessAgeLabel(e);
+    if (age) chips.push(age);
+    if (isLikelyStaleEvent(e)) chips.push("Likely stale");
+    if (opts?.debug) chips.push(duplicateSuppressionReason(e));
+    return chips.slice(0, opts?.debug ? 5 : 4);
+  };
 
   const recurringProgramLabel = (e: EventItem): string => {
     const titleNorm = normalizeText(e.title).toLowerCase();
@@ -3995,14 +4586,32 @@ function AppInner() {
     return true;
   };
 
+  const getEventTemporalState = (e: EventItem): { isLive: boolean; isPast: boolean; startsInMinutes: number | null } => {
+    // Depend on the ticker so labels refresh automatically every ~15s.
+    void clockNowMs;
+    const isLive = isEventLiveNow(e);
+    const isPast = isEventPastNow(e);
+    let startsInMinutes: number | null = null;
+    if (!isLive && !isPast) {
+      const start = eventStartDate(e);
+      if (start) {
+        const diffMs = start.getTime() - clockNowMs;
+        const diffMin = Math.ceil(diffMs / 60000);
+        if (diffMin >= 0 && diffMin <= 60) startsInMinutes = diffMin;
+      }
+    }
+    return { isLive, isPast, startsInMinutes };
+  };
+
   const visibleEvents = useMemo(() => {
-    return events.filter((e) => {
+    const filtered = events.filter((e) => {
       if (isProgramNotEvent(e)) return false;
       if (isJumuahEvent(e)) return false;
       if (audienceFilter !== "all" && inferAudience(e) !== audienceFilter) return false;
       if (quickFilters.length && !quickFilters.every((f) => matchesQuickFilter(e, f))) return false;
       return true;
     });
+    return dropInferiorPosterlessClones(collapseNearDuplicateEvents(filtered));
   }, [events, audienceFilter, quickFilters]);
 
   const orderedVisibleEvents = useMemo(() => {
@@ -4164,7 +4773,9 @@ function AppInner() {
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-+|-+$/g, "");
+    const muted = new Set(mutedFeedSources.map((s) => normalizeText(s).toLowerCase()));
     return feedUpcomingEvents
+      .filter((event) => !muted.has(normalizeText(event.source).toLowerCase()))
       .map((event) => {
         const scoreBase = scoreEventForPersonalization(event);
         const reasons: string[] = [];
@@ -4223,6 +4834,7 @@ function AppInner() {
       );
   }, [
     feedUpcomingEvents,
+    mutedFeedSources,
     followedMasjidSet,
     followedScholarSlugSet,
     normalizedInterestTerms,
@@ -4230,6 +4842,15 @@ function AppInner() {
     savedEventsMap,
     scoreEventForPersonalization,
   ]);
+  const feedReasonByKey = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const row of feedRankedEvents) {
+      const key = eventStorageKey(row.event);
+      if (!key) continue;
+      out[key] = row.reasons[0] || "Personalized for you";
+    }
+    return out;
+  }, [feedRankedEvents]);
 
   const forYouFeedEvents = useMemo(() => feedRankedEvents.slice(0, 6).map((x) => x.event), [feedRankedEvents]);
   const followedMasjidFeedEvents = useMemo(
@@ -4363,9 +4984,14 @@ function AppInner() {
         .replace(/^-+|-+$/g, "");
     const bySlug = new Map<string, Speaker>();
     for (const sp of speakers) {
-      const slug = slugify(sp.slug || sp.name);
+      const canonicalName = finalizeScholarCandidate(cleanSpeakerName(sp.name || sp.slug || ""));
+      const slug = slugify(canonicalName || sp.slug || sp.name);
       if (!slug) continue;
-      bySlug.set(slug, { ...sp, slug });
+      bySlug.set(slug, {
+        ...sp,
+        slug,
+        name: canonicalName || cleanSpeakerName(sp.name || sp.slug || ""),
+      });
     }
     for (const e of feedUpcomingEvents) {
       const name = finalizeScholarCandidate(cleanSpeakerName(effectiveEventSpeakerName(e)));
@@ -4385,7 +5011,7 @@ function AppInner() {
       if (src && !existing.sources.includes(src)) existing.sources.push(src);
       if (!existing.next_date || (e.date || "") < (existing.next_date || "9999-12-31")) {
         existing.next_date = e.date || null;
-        existing.next_title = e.title;
+        existing.next_title = eventDisplayTitle(e);
       }
       if (!existing.name || existing.name.length < name.length) existing.name = name;
       bySlug.set(slug, existing);
@@ -4496,7 +5122,8 @@ function AppInner() {
     setFeedSetupApplying(true);
     setFeedBuildPhase("building");
     setFeedSetupStep(3);
-    const BUILD_SCREEN_MS = 3000;
+    // Keep the hammer-cat GIF on screen longer for QA screenshots.
+    const BUILD_SCREEN_MS = 12000;
     feedBuildProgress.setValue(0);
     Animated.sequence([
       Animated.timing(feedBuildProgress, { toValue: 0.42, duration: 900, easing: Easing.out(Easing.cubic), useNativeDriver: false }),
@@ -4988,12 +5615,42 @@ function AppInner() {
     // changes their mind.
     try {
       if (willActivate) {
-        await scheduleEventReminders(e);
+        if (profileDraft.notifications?.rsvp_reminders !== false) {
+          await scheduleEventReminders(e);
+        }
       } else {
         await cancelEventReminders(key);
       }
     } catch {
       // notification scheduling is best-effort; never block the UI.
+    }
+  };
+
+  const updateNotificationPreference = async (
+    key: keyof NonNullable<ProfilePayload["notifications"]>,
+    value: boolean,
+  ) => {
+    hapticTap("selection");
+    const nextNotifications = {
+      new_event_followed: profileDraft.notifications?.new_event_followed ?? true,
+      tonight_after_maghrib: profileDraft.notifications?.tonight_after_maghrib ?? true,
+      rsvp_reminders: profileDraft.notifications?.rsvp_reminders ?? true,
+      [key]: value,
+    };
+    const nextDraft = { ...profileDraft, notifications: nextNotifications };
+    setProfileDraft(nextDraft);
+    try {
+      await apiJson("/api/profile", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...nextDraft,
+          radius: Number(radius || nextDraft.radius || 35),
+          expo_push_token: pushToken || nextDraft.expo_push_token || "",
+        }),
+      });
+    } catch {
+      // local setting still applies even if remote profile sync fails.
     }
   };
 
@@ -5007,6 +5664,16 @@ function AppInner() {
       : `${e.title} at ${masjid}\n${when}`;
     Share.share({ title: e.title, message: msg, ...(link ? { url: link } : {}) });
   };
+
+  const openEventDetails = useCallback((e: EventItem) => {
+    hapticTap("selection");
+    setSelectedEvent(e);
+  }, []);
+
+  const closeEventDetails = useCallback(() => {
+    hapticTap("selection");
+    setSelectedEvent(null);
+  }, []);
 
   // #12 Bring-a-friend invite — pre-filled invite with poster + deep link + "save my seat" CTA
   const inviteFriendsToEvent = (e: EventItem) => {
@@ -5088,7 +5755,7 @@ function AppInner() {
   // #24 Speakers
   const loadSpeakers = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/speakers`);
+      const res = await fetch(`${API_BASE_URL}/api/speakers?speaker_normalize=ai`);
       if (!res.ok) return;
       const d = await res.json();
       setSpeakers(d.speakers || []);
@@ -5395,32 +6062,63 @@ function AppInner() {
     }
   };
 
-  const submitCommunityCorrection = async () => {
-    if (!selectedEvent?.event_uid) return;
+  const submitCommunityCorrection = async (opts?: { eventUid?: string; issueType?: string; details?: string; closeAfter?: boolean }) => {
+    const eventUid = normalizeText(opts?.eventUid || selectedEvent?.event_uid || "");
+    if (!eventUid) return;
+    const issueType = normalizeText(opts?.issueType || reportIssueType || "other").toLowerCase();
+    const details = normalizeText(opts?.details ?? reportDetails);
     try {
       await apiJson("/api/moderation/report", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          event_uid: selectedEvent.event_uid,
-          issue_type: reportIssueType,
-          details: reportDetails,
+          event_uid: eventUid,
+          issue_type: issueType,
+          details,
         }),
       });
+      hapticTap("success");
+      setReportIssueType(issueType);
       setReportDetails("");
-      setShowReportSection(false);
+      if (opts?.closeAfter ?? true) setShowReportSection(false);
       Alert.alert("Thanks", "Your correction report was sent to moderation.");
     } catch (err) {
       Alert.alert("Could not submit", (err as Error).message || "Try again shortly.");
     }
   };
 
+  const submitQuickCorrection = async (ev: EventItem, issueType: "title" | "speaker" | "poster" | "duplicate") => {
+    if (!ev.event_uid) return;
+    hapticTap("selection");
+    setSelectedEvent(ev);
+    setReportIssueType(issueType);
+    const autoDetails = `quick-fix:${issueType} source=${sourceTypeLabelForEvent(ev)} title="${eventDisplayTitle(ev)}"`;
+    await submitCommunityCorrection({ eventUid: ev.event_uid, issueType, details: autoDetails, closeAfter: false });
+  };
+
   useEffect(() => {
     if (!selectedEvent) {
       setShowReportSection(false);
       setShowFullDescription(false);
+      setShowOriginalDescription(false);
       setReportDetails("");
+      setReportIssueType("time");
+      return;
     }
+    const suggested = suggestedQuickFixKind(selectedEvent);
+    if (!suggested) return;
+    const issue = suggested === "duplicate" ? "duplicate" : suggested;
+    setShowReportSection(true);
+    setReportIssueType(issue);
+    const hint =
+      suggested === "title"
+        ? "Auto-suggested: title quality looks weak. Suggest a clearer event name."
+        : suggested === "speaker"
+        ? "Auto-suggested: likely missing speaker. Add the speaker name."
+        : suggested === "poster"
+        ? "Auto-suggested: poster missing or failed. Add a poster source link."
+        : "Auto-suggested: source/type conflict. Confirm if this is a duplicate.";
+    setReportDetails((prev) => (normalizeText(prev) ? prev : hint));
   }, [selectedEvent]);
 
   const loadModerationQueue = async () => {
@@ -5443,6 +6141,85 @@ function AppInner() {
       await loadModerationQueue();
     } catch (err) {
       Alert.alert("Update failed", (err as Error).message || "Could not update moderation status.");
+    }
+  };
+  const applyModerationMacro = async (reportId: number, macro: "title_fix" | "speaker_fix" | "poster_fix" | "merge_duplicate") => {
+    const label =
+      macro === "title_fix"
+        ? "Approve title fix"
+        : macro === "speaker_fix"
+        ? "Approve speaker fix"
+        : macro === "poster_fix"
+        ? "Approve poster swap"
+        : "Merge duplicate";
+    try {
+      await updateModerationReportStatus(reportId, "resolved");
+      Alert.alert("Macro applied", `${label} was marked resolved.`);
+    } catch {
+      // updateModerationReportStatus already surfaces failures
+    }
+  };
+
+  const openMasjidPartnerSnapshot = () => {
+    const upcoming = events.filter((e) => (e.date || "") >= today && !isEventPastNow(e));
+    const bySource = new Map<string, number>();
+    for (const e of upcoming) {
+      const src = normalizeText(e.source || "").toLowerCase();
+      if (!src) continue;
+      bySource.set(src, (bySource.get(src) || 0) + 1);
+    }
+    const top = Array.from(bySource.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([src, count]) => `${formatSourceLabel(src)} (${count})`)
+      .join(", ");
+    Alert.alert(
+      "Masjid partner snapshot",
+      `${upcoming.length} upcoming events tracked across ${bySource.size} masjids.\nTop active: ${top || "n/a"}.\n\nWant your masjid dashboard + claim access? Email team@masjidly.app.`,
+    );
+  };
+  const claimFirstFollowedMasjid = async () => {
+    const source = normalizeText(followedMasjids[0] || "").toLowerCase();
+    if (!source) {
+      Alert.alert("Follow a masjid first", "Follow a masjid, then tap claim so we can start your partner onboarding.");
+      return;
+    }
+    try {
+      const payload = await apiJson("/api/admin/claim-masjid", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source }),
+      });
+      Alert.alert(
+        "Claim request submitted",
+        payload?.verified
+          ? `${formatSourceLabel(source)} is now verified for your account.`
+          : `Claim request received for ${formatSourceLabel(source)}. We'll verify and follow up.`,
+      );
+    } catch (err) {
+      Alert.alert("Could not claim", (err as Error).message || "Please sign in and try again.");
+    }
+  };
+  const muteSourceFromFeed = async (source: string) => {
+    const src = normalizeText(source).toLowerCase();
+    if (!src) return;
+    if (mutedFeedSources.includes(src)) return;
+    const next = [...mutedFeedSources, src];
+    setMutedFeedSources(next);
+    hapticTap("selection");
+    try {
+      await SecureStore.setItemAsync(MUTED_FEED_SOURCES_KEY, JSON.stringify(next));
+    } catch {
+      // ignore local write errors
+    }
+  };
+  const clearMutedFeedSources = async () => {
+    setMutedFeedSources([]);
+    hapticTap("selection");
+    try {
+      await SecureStore.deleteItemAsync(MUTED_FEED_SOURCES_KEY);
+    } catch {
+      // ignore
     }
   };
 
@@ -5654,7 +6431,7 @@ function AppInner() {
                   >
                     <Image source={WELCOME_LOGO} style={styles.welcomeLogoBase} resizeMode="contain" />
                   </View>
-                  <Text style={[styles.welcomeBetaBadge, isNeo && styles.welcomeBetaBadgeNeo, isEmerald && styles.welcomeBetaBadgeEmerald]}>{`BETA · ${APP_BUILD_VERSION}`}</Text>
+                  <Text style={[styles.welcomeBetaBadge, isNeo && styles.welcomeBetaBadgeNeo, isEmerald && styles.welcomeBetaBadgeEmerald]}>{`Version ${APP_BUILD_VERSION}`}</Text>
           <Text style={[styles.welcomeTitle, isMinera && styles.welcomeTitleMinera, isEmerald && styles.welcomeTitleEmerald, isNeo && styles.welcomeTitleNeo]}>Local masjid events, beautifully organized</Text>
           <Text style={[styles.welcomeSub, isMinera && styles.welcomeSubMinera, isEmerald && styles.welcomeSubEmerald, isNeo && styles.welcomeSubNeo]}>
             Discover upcoming programs, classes, and community nights from nearby masjids in one place.
@@ -5958,6 +6735,19 @@ function AppInner() {
                     },
                   ]}
                 />
+                <Animated.View
+                  style={{
+                    opacity: setupStepAnim,
+                    transform: [
+                      {
+                        translateX: setupStepAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [setupStepDirRef.current * STEP_TRANSITION_PX, 0],
+                        }),
+                      },
+                    ],
+                  }}
+                >
                 <Text style={[styles.captureTitle, styles.captureTitleCentered, isNeo && styles.welcomeInfoTitleNeo, isEmerald && styles.welcomeInfoTitleEmerald]}>
                   {setupSubStep === 0
                     ? "Tell us about yourself"
@@ -5976,20 +6766,14 @@ function AppInner() {
                         ? "Quick read + one tap to agree. You can review it anytime from Settings."
                         : "A quick review before we take you into the app."}
                 </Text>
-
-                <Animated.View
-                  style={{
-                    opacity: setupStepAnim,
-                    transform: [
-                      {
-                        translateX: setupStepAnim.interpolate({
-                          inputRange: [0, 1],
-                          outputRange: [setupStepDirRef.current * STEP_TRANSITION_PX, 0],
-                        }),
-                      },
-                    ],
-                  }}
-                >
+                {setupSubStep === 0 ? (
+                  <View style={styles.captureOptionalAccountNote}>
+                    <Text style={styles.captureOptionalAccountNoteTitle}>Account setup is optional</Text>
+                    <Text style={styles.captureOptionalAccountNoteText}>
+                      Recommended for syncing your saves/follows across devices. You can skip now and create one later in Settings → Account.
+                    </Text>
+                  </View>
+                ) : null}
                 {/* Step 0: Name, How heard, Email + opt-in (email last). */}
                 {setupSubStep === 0 ? (
                   <>
@@ -6251,11 +7035,27 @@ function AppInner() {
                     </Text>
                   </View>
                 ) : null}
-                </Animated.View>
-
                 {onboardingError ? <Text style={styles.captureErrorText}>{onboardingError}</Text> : null}
 
                 <View style={styles.setupSubStepBtnRow}>
+                  <Pressable
+                    unstable_pressDelay={0}
+                    style={[
+                      styles.welcomePrimaryBtn,
+                      styles.welcomePrimaryBtnOnHero,
+                      styles.setupSubStepSkipBtn,
+                    ]}
+                    onPress={confirmSkipAccountSetup}
+                  >
+                    <Text
+                      style={[styles.welcomePrimaryBtnText, styles.setupSubStepSkipBtnText]}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.82}
+                    >
+                      Skip for now
+                    </Text>
+                  </Pressable>
                   {setupSubStep > 0 ? (
                     <Pressable
                       unstable_pressDelay={0}
@@ -6271,7 +7071,14 @@ function AppInner() {
                         setSetupSubStep((s) => (Math.max(0, s - 1) as 0 | 1 | 2 | 3));
                       }}
                     >
-                      <Text style={[styles.welcomePrimaryBtnText, styles.setupSubStepBackBtnText]}>Back</Text>
+                      <Text
+                        style={[styles.welcomePrimaryBtnText, styles.setupSubStepBackBtnText]}
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.82}
+                      >
+                        Back
+                      </Text>
                     </Pressable>
                   ) : null}
                   <Pressable
@@ -6335,14 +7142,21 @@ function AppInner() {
                         return;
                       }
                       // Step 3: finish for real.
+                      hapticTap("selection");
                       void saveOnboarding();
                     }}
                   >
-                    <Text style={[styles.welcomePrimaryBtnText, styles.welcomePrimaryBtnTextMinera, styles.welcomePrimaryBtnTextWhite, isEmerald && styles.welcomePrimaryBtnTextEmerald, isNeo && styles.welcomePrimaryBtnTextNeo, isInferno && styles.welcomePrimaryBtnTextInferno]}>
+                    <Text
+                      style={[styles.welcomePrimaryBtnText, styles.welcomePrimaryBtnTextMinera, styles.welcomePrimaryBtnTextWhite, isEmerald && styles.welcomePrimaryBtnTextEmerald, isNeo && styles.welcomePrimaryBtnTextNeo, isInferno && styles.welcomePrimaryBtnTextInferno]}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.8}
+                    >
                       {setupSubStep === 3 ? "Finish Setup" : "Next"}
                     </Text>
                   </Pressable>
                 </View>
+                </Animated.View>
               </Animated.View>
               </ScrollView>
               </KeyboardAvoidingView>
@@ -6471,6 +7285,12 @@ function AppInner() {
             This isn't a dating app — we just want to personalize your experience.
             Nothing's sold to anyone; I (the person who made this app) can't afford a lawsuit anyway.
           </Text>
+          <View style={styles.captureOptionalAccountNote}>
+            <Text style={styles.captureOptionalAccountNoteTitle}>Account setup is optional</Text>
+            <Text style={styles.captureOptionalAccountNoteText}>
+              Recommended for syncing your saves/follows across devices. You can skip now and create one later in Settings → Account.
+            </Text>
+          </View>
           <View style={styles.captureFieldGroup}>
             <Text style={[styles.captureLabel, isNeo && styles.welcomeInfoStepTextNeo, isEmerald && styles.welcomeInfoStepTextEmerald]}>Name</Text>
             <TextInput
@@ -6533,22 +7353,50 @@ function AppInner() {
 
           {onboardingError ? <Text style={styles.captureErrorText}>{onboardingError}</Text> : null}
 
-          <Pressable {...PRESSABLE_INSTANT}
-            style={[
-              styles.welcomePrimaryBtn,
-              styles.welcomePrimaryBtnOnHero,
-              isEmerald && styles.welcomePrimaryBtnEmerald,
-              isMidnight && styles.welcomePrimaryBtnMidnight,
-              isNeo && styles.welcomePrimaryBtnNeo,
-              isVitaria && styles.welcomePrimaryBtnVitaria,
-              isInferno && styles.welcomePrimaryBtnInferno,
-            ]}
-            onPress={saveOnboarding}
-          >
-            <Text style={[styles.welcomePrimaryBtnText, styles.welcomePrimaryBtnTextMinera, isEmerald && styles.welcomePrimaryBtnTextEmerald, isNeo && styles.welcomePrimaryBtnTextNeo, isInferno && styles.welcomePrimaryBtnTextInferno]}>
-              Finish Setup
-            </Text>
-          </Pressable>
+          <View style={styles.setupSubStepBtnRow}>
+            <Pressable
+              unstable_pressDelay={0}
+              style={[
+                styles.welcomePrimaryBtn,
+                styles.welcomePrimaryBtnOnHero,
+                styles.setupSubStepSkipBtn,
+              ]}
+              onPress={confirmSkipAccountSetup}
+            >
+              <Text
+                style={[styles.welcomePrimaryBtnText, styles.setupSubStepSkipBtnText]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.82}
+              >
+                Skip for now
+              </Text>
+            </Pressable>
+            <Pressable {...PRESSABLE_INSTANT}
+              style={[
+                styles.welcomePrimaryBtn,
+                styles.welcomePrimaryBtnOnHero,
+                isEmerald && styles.welcomePrimaryBtnEmerald,
+                isMidnight && styles.welcomePrimaryBtnMidnight,
+                isNeo && styles.welcomePrimaryBtnNeo,
+                isVitaria && styles.welcomePrimaryBtnVitaria,
+                isInferno && styles.welcomePrimaryBtnInferno,
+              ]}
+              onPress={() => {
+                hapticTap("selection");
+                void saveOnboarding();
+              }}
+            >
+              <Text
+                style={[styles.welcomePrimaryBtnText, styles.welcomePrimaryBtnTextMinera, isEmerald && styles.welcomePrimaryBtnTextEmerald, isNeo && styles.welcomePrimaryBtnTextNeo, isInferno && styles.welcomePrimaryBtnTextInferno]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.8}
+              >
+                Finish Setup
+              </Text>
+            </Pressable>
+          </View>
         </Animated.View>
       </ScrollView>
     </SafeAreaView>
@@ -6615,96 +7463,56 @@ function AppInner() {
         />
         <Animated.View
           style={[
-            styles.launchCard,
-            styles.launchCardSurface,
-            isMidnight && styles.launchCardSurfaceDark,
-            isNeo && styles.launchCardSurfaceNeo,
-            isEmerald && styles.launchCardSurfaceEmerald,
-            isInferno && styles.launchCardSurfaceInferno,
-            isVitaria && styles.launchCardSurfaceVitaria,
+            styles.launchSimpleHero,
             {
               opacity: launchOpacity,
               transform: [{ translateY: launchTranslateY }, { scale: launchScale }],
             },
           ]}
         >
-          <View style={styles.launchTopCluster}>
-            <Text style={[styles.launchKicker, isNeo && styles.launchKickerNeo, isEmerald && styles.launchKickerEmerald, isMidnight && styles.launchKickerDark]}>
-              YOU'RE ALL SET
-            </Text>
-            <Text style={[styles.launchTitle, isNeo && styles.launchTitleNeo, isEmerald && styles.launchTitleEmerald, isMidnight && styles.launchTitleDark, isVitaria && styles.launchTitleVitaria]}>
-              Welcome to Masjid.ly
-            </Text>
-            <Text style={[styles.launchLead, isNeo && styles.launchSubNeo, isEmerald && styles.launchSubEmerald, isMidnight && styles.launchSubDark, isVitaria && styles.launchSubVitaria]}>
-              Find local masjid events quickly, with clean filters and smart discovery.
-            </Text>
+          <View
+            style={[
+              styles.launchSimpleLogoWrap,
+              isNeo && styles.launchSimpleLogoWrapNeo,
+              isEmerald && styles.launchSimpleLogoWrapEmerald,
+              isMidnight && styles.launchSimpleLogoWrapMidnight,
+              isVitaria && styles.launchSimpleLogoWrapVitaria,
+              isInferno && styles.launchSimpleLogoWrapInferno,
+            ]}
+          >
+            <Image source={WELCOME_LOGO} style={styles.launchSimpleLogo} resizeMode="contain" />
           </View>
-          <View style={[styles.launchFeatureStack, isMidnight && styles.launchFeatureStackDark, isNeo && styles.launchFeatureStackNeo, isEmerald && styles.launchFeatureStackEmerald, isVitaria && styles.launchFeatureStackVitaria]}>
-            {[
-              "Follow masjids and scholars you trust",
-              "Get personalized picks without missing anything",
-              "Save events and RSVP in one place",
-            ].map((line) => (
-              <View key={`launch-feature-${line}`} style={styles.launchFeatureRow}>
-                <View style={[styles.launchFeatureDot, isMidnight && styles.launchFeatureDotDark, isNeo && styles.launchFeatureDotNeo, isEmerald && styles.launchFeatureDotEmerald]} />
-                <Text style={[styles.launchFeatureText, isMidnight && styles.launchFeatureTextDark, isNeo && styles.launchFeatureTextNeo, isEmerald && styles.launchFeatureTextEmerald, isVitaria && styles.launchFeatureTextVitaria]}>
-                  {line}
-                </Text>
-              </View>
-            ))}
-          </View>
-          <View style={[styles.launchBottomNote, isMidnight && styles.launchBottomNoteDark, isNeo && styles.launchBottomNoteNeo, isEmerald && styles.launchBottomNoteEmerald]}>
-            <Text style={[styles.launchSub, isNeo && styles.launchSubNeo, isEmerald && styles.launchSubEmerald, isMidnight && styles.launchSubDark]}>
-              {justCompletedOnboardingRef.current
-                ? loading && events.length === 0
-                  ? "Loading your feed…"
-                  : "Your home for local masjid life — let's go."
-                : "Preparing your home feed..."}
+          <View style={styles.launchSimpleTextBlock}>
+            <Text
+              style={[
+                styles.launchSimpleTitle,
+                isNeo && styles.launchTitleNeo,
+                isEmerald && styles.launchTitleEmerald,
+                isMidnight && styles.launchTitleDark,
+                isVitaria && styles.launchTitleVitaria,
+                isInferno && styles.launchTitleInferno,
+              ]}
+            >
+              Welcome to Masjidly
+            </Text>
+            <Text
+              style={[
+                styles.launchSimpleSub,
+                isNeo && styles.launchSubNeo,
+                isEmerald && styles.launchSubEmerald,
+                isMidnight && styles.launchSubDark,
+                isVitaria && styles.launchSubVitaria,
+                isInferno && styles.launchSubInferno,
+              ]}
+            >
+              {loading && events.length === 0 ? "Loading your feed…" : "Getting your home feed ready…"}
             </Text>
           </View>
         </Animated.View>
-        <Animated.Text
-          style={[
-            styles.launchGreeting,
-            isNeo && styles.launchGreetingNeo,
-            isEmerald && styles.launchGreetingEmerald,
-            {
-              opacity: launchMessageOpacity,
-              transform: [{ translateY: launchMessageTranslateY }],
-            },
-          ]}
-        >
-          {justCompletedOnboardingRef.current
-            ? `As-salāmu ʿalaykum${personalization.name ? `, ${personalization.name}` : ""}`
-            : `Welcome back, ${personalization.name || "Friend"}`}
-        </Animated.Text>
-        {justCompletedOnboardingRef.current ? (
-          <Animated.View
-            style={[
-              styles.launchCatCard,
-              {
-                opacity: launchMessageOpacity,
-                transform: [
-                  { translateY: launchMessageTranslateY },
-                  {
-                    translateY: bubbleDrift.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [0, -4],
-                    }),
-                  },
-                ],
-              },
-            ]}
-          >
-            <Image source={CAT_READING} style={styles.launchCatImage} resizeMode="cover" />
-          </Animated.View>
-        ) : null}
         <Animated.View
           style={[
             styles.launchDotsRow,
-            {
-              opacity: launchMessageOpacity,
-            },
+            { opacity: launchOpacity },
           ]}
         >
           {[0, 1, 2].map((i) => {
@@ -6933,17 +7741,17 @@ function AppInner() {
       const rsvpState = rsvpStatuses[key];
       const saved = isSavedEvent(e);
       const poster = eventPosterUrl(e);
-      const liveNow = isEventLiveNow(e);
+      const temporal = getEventTemporalState(e);
       const displayTitle = eventDisplayTitle(e);
     return (
         <Pressable
           {...PRESSABLE_INSTANT}
           key={`home-row-${keyHint}`}
           style={[styles.homeEventRow, isDarkTheme && styles.homeEventRowDark]}
-          onPress={() => setSelectedEvent(e)}
+          onPress={() => openEventDetails(e)}
         >
-          {poster ? (
-            <Image source={{ uri: poster }} style={styles.homeEventRowPoster} resizeMode="cover" />
+          {poster && canRenderPoster(poster) ? (
+            <LoadableNetworkImage uri={poster} style={styles.homeEventRowPoster} onError={() => markPosterFailed(poster)} />
           ) : (
             <View style={[styles.homeEventRowPoster, { alignItems: "center", justifyContent: "center" }]}>
               <Mi name="mosque" size={26} color="#a3b0c8" />
@@ -6951,10 +7759,22 @@ function AppInner() {
           )}
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap" }}>
-              {liveNow ? (
+              {temporal.isPast ? (
+                <View style={styles.eventPastBadge}>
+                  <Text style={styles.eventPastText}>ALREADY HAPPENED</Text>
+                </View>
+              ) : null}
+              {temporal.isLive ? (
                 <View style={styles.liveNowBadge}>
                   <View style={styles.liveNowDot} />
                   <Text style={styles.liveNowText}>LIVE NOW</Text>
+                </View>
+              ) : null}
+              {!temporal.isLive && !temporal.isPast && temporal.startsInMinutes != null ? (
+                <View style={styles.eventStartsSoonBadge}>
+                  <Text style={styles.eventStartsSoonText}>
+                    {temporal.startsInMinutes <= 1 ? "STARTS IN 1M" : `STARTS IN ${temporal.startsInMinutes}M`}
+                  </Text>
                 </View>
               ) : null}
               <Text style={[styles.homeEventRowWhen, isDarkTheme && { color: "#c4cee8" }]}>
@@ -7098,6 +7918,9 @@ function AppInner() {
             </Text>
           <Text style={[styles.homeHeroSub, isNeo && { color: "#3f3f3f" }]}>
             {nextEventText} · {new Set(homeFeedEvents.map((e) => e.source)).size} masjids
+          </Text>
+          <Text style={[styles.homeHeroStatus, isNeo && { color: "#5a5a5a" }]}>
+            {cacheWarmStatus === "ready" ? "Feed ready" : cacheWarmStatus === "warming" ? "Warming media cache..." : "Syncing latest..."}
           </Text>
           <Pressable {...PRESSABLE_INSTANT} style={styles.homeHeroCta} onPress={() => switchTab("explore")}>
             <Text style={styles.homeHeroCtaText}>Plan your week  →</Text>
@@ -7297,24 +8120,50 @@ function AppInner() {
     const verified = e.correction?.verified;
     const listPosterUri = eventPosterUrl(e);
     const displayTitle = eventDisplayTitle(e);
+    const temporal = getEventTemporalState(e);
+    const trustChips = getTrustPassChips(e, { debug: __DEV__ && tab === "feed" });
+    const feedReason = tab === "feed" ? feedReasonByKey[key] || "" : "";
     return (
       <Pressable
         {...PRESSABLE_INSTANT}
         key={`event-card-${keyHint || key}`}
         style={styles.hospitalListCard}
-        onPress={() => setSelectedEvent(e)}
+        onPress={() => openEventDetails(e)}
       >
-        {listPosterUri ? (
-          <Image source={{ uri: listPosterUri }} style={styles.hospitalListPoster} resizeMode="cover" />
+        {listPosterUri && canRenderPoster(listPosterUri) ? (
+          <LoadableNetworkImage
+            uri={listPosterUri}
+            style={styles.hospitalListPoster}
+            onError={() => markPosterFailed(listPosterUri)}
+          />
         ) : (
-          <View style={styles.hospitalListPoster} />
+          <View
+            style={[
+              styles.hospitalListPoster,
+              { backgroundColor: masjidBrandColor(e.source), alignItems: "center", justifyContent: "center" },
+            ]}
+          >
+            <Text style={{ color: "#fff", fontWeight: "900", fontSize: 18 }}>{masjidInitials(e.source)}</Text>
+          </View>
         )}
         <View style={{ flex: 1 }}>
           <View style={styles.eventBadgeRow}>
-            {isEventLiveNow(e) ? (
+            {temporal.isPast ? (
+              <View style={styles.eventPastBadge}>
+                <Text style={styles.eventPastText}>ALREADY HAPPENED</Text>
+              </View>
+            ) : null}
+            {temporal.isLive ? (
               <View style={styles.liveNowBadge}>
                 <View style={styles.liveNowDot} />
                 <Text style={styles.liveNowText}>LIVE NOW</Text>
+              </View>
+            ) : null}
+            {!temporal.isLive && !temporal.isPast && temporal.startsInMinutes != null ? (
+              <View style={styles.eventStartsSoonBadge}>
+                <Text style={styles.eventStartsSoonText}>
+                  {temporal.startsInMinutes <= 1 ? "STARTS IN 1M" : `STARTS IN ${temporal.startsInMinutes}M`}
+                </Text>
               </View>
             ) : null}
             <View style={[styles.freshnessPill, { backgroundColor: freshPalette.bg }]}>
@@ -7373,6 +8222,16 @@ function AppInner() {
           <Text style={[styles.hospitalListMeta, isDarkTheme && styles.hospitalListMetaDark, isNeo && styles.hospitalListMetaNeo]} numberOfLines={1}>
             {formatSourceLabel(e.source)} · {[e.location_name, e.address].filter(Boolean).join(" · ")}
           </Text>
+          {feedReason ? (
+            <Text style={[styles.hospitalListMeta, { color: "#5b6d90", fontWeight: "700" }]} numberOfLines={1}>
+              Why in your feed: {feedReason}
+            </Text>
+          ) : null}
+          {trustChips.length ? (
+            <Text style={[styles.hospitalListMeta, { color: "#6e5bb2" }]} numberOfLines={1}>
+              Trust pass: {trustChips.join(" · ")}
+            </Text>
+          ) : null}
           {isLikelyStaleEvent(e) ? (
             <Text style={[styles.hospitalListMeta, { color: "#cc6f2f" }]}>Likely stale — verify details</Text>
           ) : null}
@@ -7449,6 +8308,22 @@ function AppInner() {
             >
               <Mi name="open_in_new" size={14} color="#2e4f82" />
                 </Pressable>
+            {tab === "feed" ? (
+              <Pressable
+                {...PRESSABLE_INSTANT}
+                hitSlop={6}
+                style={({ pressed }) => [
+                  styles.cardActionChip,
+                  pressed && styles.cardActionChipPressed,
+                ]}
+                onPress={(ev) => {
+                  ev.stopPropagation?.();
+                  muteSourceFromFeed(e.source);
+                }}
+              >
+                <Text style={styles.cardActionChipText}>Not interested</Text>
+              </Pressable>
+            ) : null}
               </View>
             </View>
       </Pressable>
@@ -7743,8 +8618,12 @@ function AppInner() {
                   setSelectedMasjidSheet(s.source);
                 }}
               >
-                {s.image_url ? (
-                  <Image source={{ uri: s.image_url }} style={styles.seriesPoster} resizeMode="cover" />
+                {s.image_url && canRenderPoster(s.image_url) ? (
+                  <LoadableNetworkImage
+                    uri={s.image_url}
+                    style={styles.seriesPoster}
+                    onError={() => markPosterFailed(s.image_url || "")}
+                  />
                 ) : (
                   <View style={[styles.seriesPoster, { backgroundColor: masjidBrandColor(s.source), alignItems: "center", justifyContent: "center" }]}>
                     <Text style={{ color: "#fff", fontWeight: "800" }}>{masjidInitials(s.source)}</Text>
@@ -8141,10 +9020,14 @@ function AppInner() {
                       <Pressable {...PRESSABLE_INSTANT}
                         key={`cal-agenda-${eventStorageKey(e)}-${idx}`}
                         style={[styles.calendarAgendaRow, isDarkTheme && styles.calendarAgendaRowDark]}
-                        onPress={() => setSelectedEvent(e)}
+                        onPress={() => openEventDetails(e)}
                       >
-                        {poster ? (
-                          <Image source={{ uri: poster }} style={styles.calendarAgendaPoster} resizeMode="cover" />
+                        {poster && canRenderPoster(poster) ? (
+                          <LoadableNetworkImage
+                            uri={poster}
+                            style={styles.calendarAgendaPoster}
+                            onError={() => markPosterFailed(poster)}
+                          />
                         ) : (
                           <View style={[styles.calendarAgendaPoster, { alignItems: "center", justifyContent: "center", backgroundColor: masjidBrandColor(e.source) }]}>
                             <Text style={{ color: "#fff", fontWeight: "900", fontSize: 16 }}>{masjidInitials(e.source)}</Text>
@@ -8155,7 +9038,7 @@ function AppInner() {
                             {eventTime(e)} · {formatSourceLabel(e.source)}
                           </Text>
                           <Text style={[styles.calendarAgendaTitle, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={2}>
-                            {e.title}
+                            {eventDisplayTitle(e)}
                           </Text>
                           <View style={styles.cardActionRow}>
                             <Pressable {...PRESSABLE_INSTANT}
@@ -8235,14 +9118,21 @@ function AppInner() {
         const calPoster = eventPosterUrl(e);
         return (
         <View key={`cal-${e.event_uid || e.title}-${idx}`} style={styles.hospitalListCard}>
-          {calPoster ? (
-            <Image source={{ uri: calPoster }} style={styles.hospitalListPoster} resizeMode="cover" />
+          {calPoster && canRenderPoster(calPoster) ? (
+            <LoadableNetworkImage uri={calPoster} style={styles.hospitalListPoster} onError={() => markPosterFailed(calPoster)} />
           ) : (
-            <View style={styles.hospitalListPoster} />
+            <View
+              style={[
+                styles.hospitalListPoster,
+                { backgroundColor: masjidBrandColor(e.source), alignItems: "center", justifyContent: "center" },
+              ]}
+            >
+              <Text style={{ color: "#fff", fontWeight: "900", fontSize: 18 }}>{masjidInitials(e.source)}</Text>
+            </View>
           )}
           <View style={{ flex: 1 }}>
             <Text style={styles.mapTag}>Calendar</Text>
-            <Text style={[styles.hospitalListTitle, isDarkTheme && styles.hospitalListTitleDark, isNeo && styles.hospitalListTitleNeo]} numberOfLines={1}>{e.title}</Text>
+            <Text style={[styles.hospitalListTitle, isDarkTheme && styles.hospitalListTitleDark, isNeo && styles.hospitalListTitleNeo]} numberOfLines={1}>{eventDisplayTitle(e)}</Text>
             <Text style={[styles.hospitalListMeta, isDarkTheme && styles.hospitalListMetaDark, isNeo && styles.hospitalListMetaNeo]} numberOfLines={1}>
                     {formatHumanDate(e.date)} • {eventTime(e)} • {formatSourceLabel(e.source)}
             </Text>
@@ -9093,8 +9983,12 @@ function AppInner() {
                     }}
                   >
                     <View style={styles.discoverScholarAvatarWrap}>
-                      {sp.image_url ? (
-                        <Image source={{ uri: sp.image_url }} style={styles.discoverScholarAvatar} resizeMode="cover" />
+                      {sp.image_url && canRenderPoster(sp.image_url) ? (
+                        <LoadableNetworkImage
+                          uri={sp.image_url}
+                          style={styles.discoverScholarAvatar}
+                          onError={() => markPosterFailed(sp.image_url || "")}
+                        />
                       ) : (
                         <View style={[styles.discoverScholarAvatar, { backgroundColor: "#ffe3d1", alignItems: "center", justifyContent: "center" }]}>
                           <Text style={{ color: "#9b4a1b", fontWeight: "900", fontSize: 20 }}>
@@ -9482,13 +10376,13 @@ function AppInner() {
                   {...PRESSABLE_INSTANT}
                   key={`followed-sp-${i}-${eventStorageKey(e)}`}
                   style={styles.discoverFollowedScholarsRow}
-                  onPress={() => setSelectedEvent(e)}
+                  onPress={() => openEventDetails(e)}
                 >
                   <Text style={styles.discoverFollowedScholarsRowWho} numberOfLines={1}>
-                    {e.speaker || "Speaker"}
+                    {effectiveEventSpeakerName(e) || "Speaker"}
                   </Text>
                   <Text style={styles.discoverFollowedScholarsRowWhat} numberOfLines={2}>
-                    {e.title}
+                    {eventDisplayTitle(e)}
                   </Text>
                   <Text style={styles.discoverFollowedScholarsRowWhen}>
                     {formatHumanDate(e.date)} · {eventTime(e)} · {formatSourceLabel(e.source)}
@@ -9542,8 +10436,12 @@ function AppInner() {
                     }}
                   >
                     <View style={styles.discoverScholarAvatarWrap}>
-                      {sp.image_url ? (
-                        <Image source={{ uri: sp.image_url }} style={styles.discoverScholarAvatar} resizeMode="cover" />
+                      {sp.image_url && canRenderPoster(sp.image_url) ? (
+                        <LoadableNetworkImage
+                          uri={sp.image_url}
+                          style={styles.discoverScholarAvatar}
+                          onError={() => markPosterFailed(sp.image_url || "")}
+                        />
                       ) : (
                         <View style={[styles.discoverScholarAvatar, { backgroundColor: "#ffe3d1", alignItems: "center", justifyContent: "center" }]}>
                           <Text style={{ color: "#9b4a1b", fontWeight: "900", fontSize: 20 }}>
@@ -9936,32 +10834,7 @@ function AppInner() {
           </View>
         </View>
 
-        {/* Sadaqah — keep prominent */}
-        <View style={styles.sadaqahCard}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 6 }}>
-            <View style={styles.sadaqahIcon}>
-              <Mi name="favorite_fill1" size={20} color="#fff" />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.sadaqahTitle}>Sadaqah Jar</Text>
-              <Text style={styles.sadaqahSub}>Keep Masjid.ly free for the ummah</Text>
-            </View>
-          </View>
-          <Text style={styles.sadaqahBody}>
-            Built and maintained by one brother. If Masjid.ly helped you find a halaqah or your next masjid —
-            drop a tip. JazakAllahu khayran.
-          </Text>
-          <Pressable {...PRESSABLE_INSTANT}
-            style={styles.sadaqahBtn}
-            onPress={() => { Linking.openURL("https://ko-fi.com/shaheer23407"); hapticTap("success"); }}
-          >
-            <Text style={styles.sadaqahBtnText}>Support with a tip →</Text>
-          </Pressable>
-        </View>
-
-        {/* Share Masjid.ly — win merch. Mirrors the Sadaqah card's visual
-            weight so it sits right under the hero and doesn't get lost
-            deep in the settings list. */}
+        {/* Share Masjid.ly — keep near top so it doesn't get lost. */}
         <View style={styles.shareCard}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 6 }}>
             <View style={styles.shareCardIcon}>
@@ -10123,6 +10996,28 @@ function AppInner() {
         <SectionLabel>NOTIFICATIONS</SectionLabel>
         <SectionCard>
           <SettingsRow
+            icon="mail"
+            label="New events from followed masjids"
+            value={profileDraft.notifications?.new_event_followed === false ? "Off" : "On"}
+            onPress={() =>
+              updateNotificationPreference(
+                "new_event_followed",
+                profileDraft.notifications?.new_event_followed === false,
+              )
+            }
+          />
+          <SettingsRow
+            icon="schedule"
+            label="Tonight after Maghrib digest"
+            value={profileDraft.notifications?.tonight_after_maghrib === false ? "Off" : "On"}
+            onPress={() =>
+              updateNotificationPreference(
+                "tonight_after_maghrib",
+                profileDraft.notifications?.tonight_after_maghrib === false,
+              )
+            }
+          />
+          <SettingsRow
             icon="notifications"
             label="Push notifications"
             value={pushToken ? "On — you'll get reminders & new-event nudges" : "Off — tap to enable"}
@@ -10131,14 +11026,55 @@ function AppInner() {
           <SettingsRow
             icon="check"
             label="RSVP reminders"
-            value="Notified 2 hours before events you RSVP'd to"
-            onPress={() => Alert.alert("RSVP reminders", "When you tap 'Going' on an event, we schedule a local reminder 2 hours before it starts. No action needed.")}
+            value={profileDraft.notifications?.rsvp_reminders === false ? "Off" : "On — notified 2 hours before"}
+            onPress={() =>
+              updateNotificationPreference(
+                "rsvp_reminders",
+                profileDraft.notifications?.rsvp_reminders === false,
+              )
+            }
           />
           <SettingsRow
             icon="favorite"
             label="Followed masjids"
             value={followedMasjids.length > 0 ? `${followedMasjids.length} masjid${followedMasjids.length === 1 ? "" : "s"} — get their new events` : "Follow a masjid to get its new events"}
             onPress={() => switchTab("discover")}
+            last
+          />
+        </SectionCard>
+
+        <SectionLabel>MASJID PARTNERS</SectionLabel>
+        <SectionCard>
+          <SettingsRow
+            icon="groups"
+            label="Claim your masjid profile"
+            value={followedMasjids.length ? `Claim ${formatSourceLabel(followedMasjids[0])}` : "Follow a masjid to claim"}
+            onPress={claimFirstFollowedMasjid}
+          />
+          <SettingsRow
+            icon="info"
+            label="Partnership analytics snapshot"
+            value="Live event coverage and activity"
+            onPress={openMasjidPartnerSnapshot}
+          />
+          <SettingsRow
+            icon="close"
+            label="Hidden feed sources"
+            value={mutedFeedSources.length ? `${mutedFeedSources.length} hidden` : "None hidden"}
+            onPress={() => {
+              if (!mutedFeedSources.length) {
+                Alert.alert("No hidden sources", "Tap 'Not interested' on a feed card to hide that source.");
+                return;
+              }
+              Alert.alert(
+                "Hidden feed sources",
+                mutedFeedSources.map((s) => formatSourceLabel(s)).join(", "),
+                [
+                  { text: "Close", style: "cancel" },
+                  { text: "Clear all", style: "destructive", onPress: () => void clearMutedFeedSources() },
+                ],
+              );
+            }}
             last
           />
         </SectionCard>
@@ -10948,7 +11884,7 @@ function AppInner() {
         animationType="fade"
         presentationStyle="fullScreen"
         statusBarTranslucent={false}
-        onRequestClose={() => setSelectedEvent(null)}
+        onRequestClose={closeEventDetails}
       >
         {selectedEvent && !detailReady ? (
           <View style={[styles.eventModalContainer, isDarkTheme && styles.eventModalContainerDark, styles.eventModalSkeleton]}>
@@ -10963,7 +11899,7 @@ function AppInner() {
                   {...PRESSABLE_INSTANT}
                   style={styles.eventHeroIconBtn}
                   hitSlop={10}
-                  onPress={() => setSelectedEvent(null)}
+                  onPress={closeEventDetails}
                 >
                   <Mi name="close" size={18} color="#fff" />
                 </Pressable>
@@ -10995,18 +11931,25 @@ function AppInner() {
           const locationParts = [ev.location_name, ev.address].filter(Boolean);
           const brandColor = masjidBrandColor(ev.source);
           const descRaw = normalizeText((ev.description || "").replace(/<[^>]+>/g, " "));
+          const descOriginal = normalizeText(
+            (ev.description_original || ev.raw_text || ev.poster_ocr_text || "").replace(/<[^>]+>/g, " "),
+          );
           const explanation = buildEventExplanation(ev);
-          const descToShow = descRaw || explanation;
+          const canToggleOriginal = !!descOriginal && !!descRaw && descOriginal !== descRaw;
+          const activeDesc = showOriginalDescription ? descOriginal : descRaw;
+          const descToShow = activeDesc || explanation;
           const descIsLong = descToShow.length > 220;
           const descShown = !descIsLong || showFullDescription ? descToShow : `${descToShow.slice(0, 220).trim()}…`;
           const conf = getEventConfidence(ev);
           const transparency = transparencyLabel(ev);
           const recurring = recurringProgramLabel(ev);
-          const shareEv = () =>
+          const shareEv = () => {
+            hapticTap("selection");
             Share.share({
               title: displayTitle,
               message: `${displayTitle} • ${formatHumanDate(ev.date)} ${ev.deep_link?.web || ev.source_url || ""}`,
             });
+          };
           const feedbackState = feedbackResponses[rsvpKey];
           return (
             <View style={[styles.eventModalContainer, isDarkTheme && styles.eventModalContainerDark]}>
@@ -11018,8 +11961,12 @@ function AppInner() {
                 {...IOS_SCROLL_INSTANT_TOUCH}
               >
                 <View style={[styles.eventHero, { height: Math.min(windowHeight * 0.5, 420) }]}>
-                  {poster ? (
-                    <Image source={{ uri: poster }} style={StyleSheet.absoluteFillObject} resizeMode="cover" blurRadius={0} />
+                  {poster && canRenderPoster(poster) ? (
+                    <LoadableNetworkImage
+                      uri={poster}
+                      style={StyleSheet.absoluteFillObject}
+                      onError={() => markPosterFailed(poster)}
+                    />
                   ) : (
                     <View style={[StyleSheet.absoluteFillObject, { backgroundColor: brandColor }]} />
                   )}
@@ -11033,7 +11980,7 @@ function AppInner() {
                       {...PRESSABLE_INSTANT}
                       style={styles.eventHeroIconBtn}
                       hitSlop={10}
-                      onPress={() => setSelectedEvent(null)}
+                      onPress={closeEventDetails}
                     >
                       <Mi name="close" size={18} color="#fffdf8" />
                     </Pressable>
@@ -11324,12 +12271,58 @@ function AppInner() {
                 {descToShow ? (
                   <View style={styles.eventSection}>
                     <Text style={[styles.eventSectionLabel, isDarkTheme && { color: "#c4cee8" }]}>About</Text>
+                    {ev.description_ai_generated ? (
+                      <Text style={[styles.eventInfoSub, isDarkTheme && { color: "#9fc6ff" }, { marginBottom: 6 }]}>
+                        AI summary
+                      </Text>
+                    ) : null}
                     <Text style={[styles.eventDescText, isDarkTheme && { color: "#e4ebf7" }]}>{descShown}</Text>
+                    {canToggleOriginal ? (
+                      <Pressable
+                        {...PRESSABLE_INSTANT}
+                        onPress={() => setShowOriginalDescription((v) => !v)}
+                        hitSlop={6}
+                        style={[styles.eventDescToggleBtn, isDarkTheme && styles.eventDescToggleBtnDark, { marginTop: 8 }]}
+                      >
+                        <View style={styles.eventDescToggleLead}>
+                          <MaterialIcons
+                            name={showOriginalDescription ? "notes" : "article"}
+                            size={14}
+                            color={isDarkTheme ? "#cfe1ff" : "#2e4f82"}
+                          />
+                          <Text style={[styles.eventDescToggle, isDarkTheme && { color: "#cfe1ff" }]}>
+                            {showOriginalDescription ? "Show polished description" : "Show original source text"}
+                          </Text>
+                        </View>
+                        <MaterialIcons
+                          name={showOriginalDescription ? "keyboard-arrow-up" : "arrow-forward"}
+                          size={16}
+                          color={isDarkTheme ? "#9fc6ff" : "#2e4f82"}
+                        />
+                      </Pressable>
+                    ) : null}
                     {descIsLong ? (
-                      <Pressable {...PRESSABLE_INSTANT} onPress={() => setShowFullDescription((v) => !v)} hitSlop={6}>
-                        <Text style={[styles.eventDescToggle, isDarkTheme && { color: "#9fc6ff" }]}>
-                          {showFullDescription ? "Show less" : "Read more"}
-                        </Text>
+                      <Pressable
+                        {...PRESSABLE_INSTANT}
+                        onPress={() => setShowFullDescription((v) => !v)}
+                        hitSlop={6}
+                        style={[styles.eventDescToggleBtn, isDarkTheme && styles.eventDescToggleBtnDark]}
+                      >
+                        <View style={styles.eventDescToggleLead}>
+                          <MaterialIcons
+                            name={showFullDescription ? "unfold-less" : "auto-stories"}
+                            size={14}
+                            color={isDarkTheme ? "#cfe1ff" : "#2e4f82"}
+                          />
+                          <Text style={[styles.eventDescToggle, isDarkTheme && { color: "#cfe1ff" }]}>
+                            {showFullDescription ? "Show less" : "Read more details"}
+                          </Text>
+                        </View>
+                        <MaterialIcons
+                          name={showFullDescription ? "keyboard-arrow-up" : "arrow-forward"}
+                          size={16}
+                          color={isDarkTheme ? "#9fc6ff" : "#2e4f82"}
+                        />
                       </Pressable>
                     ) : null}
                   </View>
@@ -11420,36 +12413,92 @@ function AppInner() {
                       {transparency}
                     </Text>
                   ) : null}
+                  {ev.correction?.verified ? (
+                    <Text style={[styles.eventTrustNote, { color: "#2f8a57" }]}>
+                      Last verified by community: {ev.correction?.score || 0} confirmations
+                    </Text>
+                  ) : null}
+                  {detectSourceConflict(ev) ? (
+                    <Text style={[styles.eventTrustNote, { color: "#a85617" }]}>
+                      {detectSourceConflict(ev)}
+                    </Text>
+                  ) : null}
+                  <View style={styles.eventTrustBreakdownRow}>
+                    {getTrustSignalBreakdown(ev).map((sig) => (
+                      <View
+                        key={`trust-signal-${sig.key}`}
+                        style={[
+                          styles.eventTrustBreakdownChip,
+                          sig.ok ? styles.eventTrustBreakdownChipOk : styles.eventTrustBreakdownChipWarn,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.eventTrustBreakdownChipText,
+                            sig.ok ? styles.eventTrustBreakdownChipTextOk : styles.eventTrustBreakdownChipTextWarn,
+                          ]}
+                        >
+                          {sig.ok ? "✓ " : "⚠ "} {sig.label}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                  <Text style={[styles.eventTrustNote, isDarkTheme && { color: "#bcc6df" }]}>
+                    Trust pass: {getTrustPassChips(ev, { debug: __DEV__ }).join(" · ")}
+                  </Text>
+                  <View style={styles.eventTrustActions}>
+                    {(["title", "speaker", "poster", "duplicate"] as const).map((kind) => (
+                      <Pressable
+                        {...PRESSABLE_INSTANT}
+                        key={`quick-fix-${kind}`}
+                        style={[styles.eventTrustChip, { backgroundColor: "rgba(78,108,180,0.12)" }]}
+                        onPress={() => submitQuickCorrection(ev, kind)}
+                      >
+                        <Text style={[styles.eventTrustChipText, { color: "#2d4f88" }]}>
+                          {kind === "title"
+                            ? "Fix title"
+                            : kind === "speaker"
+                            ? "Fix speaker"
+                            : kind === "poster"
+                            ? "Fix poster"
+                            : "Mark duplicate"}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
                   <View style={styles.eventTrustActions}>
                     <Pressable {...PRESSABLE_INSTANT}
-                      style={[styles.eventTrustChip, feedbackState === "helpful" && styles.eventTrustChipActive, { flexDirection: "row", alignItems: "center", gap: 4 }]}
+                      style={[styles.eventTrustChip, feedbackState === "helpful" && styles.eventTrustChipActive]}
                       onPress={() => submitFeedback(ev, "helpful")}
                     >
                       <Mi
                         name="thumb_up"
-                        size={12}
+                        size={14}
+                        style={styles.eventTrustChipIcon}
                         color={feedbackState === "helpful" ? "#fff" : (isDarkTheme ? "#c4cee8" : "#4a5568")}
                       />
                       <Text style={[styles.eventTrustChipText, feedbackState === "helpful" && styles.eventTrustChipTextActive]}>Helpful</Text>
                     </Pressable>
                     <Pressable {...PRESSABLE_INSTANT}
-                      style={[styles.eventTrustChip, feedbackState === "attended" && styles.eventTrustChipActive, { flexDirection: "row", alignItems: "center", gap: 4 }]}
+                      style={[styles.eventTrustChip, feedbackState === "attended" && styles.eventTrustChipActive]}
                       onPress={() => submitFeedback(ev, "attended")}
                     >
                       <Mi
                         name="check"
-                        size={12}
+                        size={14}
+                        style={styles.eventTrustChipIcon}
                         color={feedbackState === "attended" ? "#fff" : (isDarkTheme ? "#c4cee8" : "#4a5568")}
                       />
                       <Text style={[styles.eventTrustChipText, feedbackState === "attended" && styles.eventTrustChipTextActive]}>Attended</Text>
                     </Pressable>
                     <Pressable {...PRESSABLE_INSTANT}
-                      style={[styles.eventTrustChip, feedbackState === "off" && styles.eventTrustChipActive, { flexDirection: "row", alignItems: "center", gap: 4 }]}
+                      style={[styles.eventTrustChip, feedbackState === "off" && styles.eventTrustChipActive]}
                       onPress={() => submitFeedback(ev, "off")}
                     >
                       <Mi
                         name="warning"
-                        size={12}
+                        size={14}
+                        style={styles.eventTrustChipIcon}
                         color={feedbackState === "off" ? "#fff" : (isDarkTheme ? "#c4cee8" : "#4a5568")}
                       />
                       <Text style={[styles.eventTrustChipText, feedbackState === "off" && styles.eventTrustChipTextActive]}>Info off</Text>
@@ -11471,7 +12520,7 @@ function AppInner() {
                   <View style={[styles.eventReportCard, isDarkTheme && styles.eventReportCardDark]}>
                     <Text style={[styles.eventReportLabel, isDarkTheme && { color: "#c4cee8" }]}>What's incorrect?</Text>
                     <View style={styles.eventReportChipRow}>
-                      {[["time", "Time"], ["location", "Location"], ["category", "Category"]].map(([id, label]) => (
+                      {[["title", "Title"], ["speaker", "Speaker"], ["poster", "Poster"], ["duplicate", "Duplicate"], ["time", "Time"], ["location", "Location"], ["category", "Category"]].map(([id, label]) => (
                         <Pressable {...PRESSABLE_INSTANT}
                           key={`rep-${id}`}
                           style={[styles.eventReportChip, reportIssueType === id && styles.eventReportChipActive, isDarkTheme && !reportIssueType.startsWith(id) && styles.eventReportChipDark]}
@@ -11489,7 +12538,7 @@ function AppInner() {
                       placeholderTextColor={isDarkTheme ? "#7c89a8" : "#8a95ac"}
                       multiline
                     />
-                    <Pressable {...PRESSABLE_INSTANT} style={styles.eventReportSubmitBtn} onPress={submitCommunityCorrection}>
+                    <Pressable {...PRESSABLE_INSTANT} style={styles.eventReportSubmitBtn} onPress={() => void submitCommunityCorrection()}>
                       <Text style={styles.eventReportSubmitText}>Submit correction</Text>
                     </Pressable>
                   </View>
@@ -11592,13 +12641,18 @@ function AppInner() {
                 const rsvpState = rsvpStatuses[key];
                 const saved = isSavedEvent(e);
                 const poster = eventPosterUrl(e);
+                const temporal = getEventTemporalState(e);
                 return (
                     <Pressable {...PRESSABLE_INSTANT}
                       style={[styles.calendarDayEventCard, isDarkTheme && styles.calendarDayEventCardDark]}
-                      onPress={() => setSelectedEvent(e)}
+                      onPress={() => openEventDetails(e)}
                     >
-                      {poster ? (
-                        <Image source={{ uri: poster }} style={styles.calendarDayEventPoster} resizeMode="cover" />
+                      {poster && canRenderPoster(poster) ? (
+                        <LoadableNetworkImage
+                          uri={poster}
+                          style={styles.calendarDayEventPoster}
+                          onError={() => markPosterFailed(poster)}
+                        />
                       ) : (
                         <View style={[styles.calendarDayEventPoster, styles.calendarDayEventPosterEmpty]}>
                           <Mi name="mosque" size={36} color="#a3b0c8" />
@@ -11606,10 +12660,22 @@ function AppInner() {
                       )}
                       <View style={{ padding: 12, gap: 6 }}>
                         <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                          {isEventLiveNow(e) ? (
+                          {temporal.isPast ? (
+                            <View style={styles.eventPastBadge}>
+                              <Text style={styles.eventPastText}>ALREADY HAPPENED</Text>
+                            </View>
+                          ) : null}
+                          {temporal.isLive ? (
                             <View style={styles.liveNowBadge}>
                               <View style={styles.liveNowDot} />
                               <Text style={styles.liveNowText}>LIVE NOW</Text>
+                            </View>
+                          ) : null}
+                          {!temporal.isLive && !temporal.isPast && temporal.startsInMinutes != null ? (
+                            <View style={styles.eventStartsSoonBadge}>
+                              <Text style={styles.eventStartsSoonText}>
+                                {temporal.startsInMinutes <= 1 ? "STARTS IN 1M" : `STARTS IN ${temporal.startsInMinutes}M`}
+                              </Text>
                             </View>
                           ) : null}
                           <Text style={styles.mapTag}>{inferAudience(e)}</Text>
@@ -11618,7 +12684,7 @@ function AppInner() {
                           </Text>
                         </View>
                         <Text style={[styles.calendarDayEventTitle, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={2}>
-                          {e.title}
+                          {eventDisplayTitle(e)}
                         </Text>
                         <View style={styles.cardActionRow}>
                           <Pressable {...PRESSABLE_INSTANT}
@@ -11923,6 +12989,20 @@ function AppInner() {
                     <Text style={styles.roundGhostText}>Resolve</Text>
                   </Pressable>
                 </View>
+                <View style={styles.modalActionsRow}>
+                  <Pressable {...PRESSABLE_INSTANT} style={styles.roundGhostBtn} onPress={() => applyModerationMacro(Number(r.id), "title_fix")}>
+                    <Text style={styles.roundGhostText}>Approve title</Text>
+                  </Pressable>
+                  <Pressable {...PRESSABLE_INSTANT} style={styles.roundGhostBtn} onPress={() => applyModerationMacro(Number(r.id), "speaker_fix")}>
+                    <Text style={styles.roundGhostText}>Approve speaker</Text>
+                  </Pressable>
+                  <Pressable {...PRESSABLE_INSTANT} style={styles.roundGhostBtn} onPress={() => applyModerationMacro(Number(r.id), "poster_fix")}>
+                    <Text style={styles.roundGhostText}>Swap poster</Text>
+                  </Pressable>
+                  <Pressable {...PRESSABLE_INSTANT} style={styles.roundGhostBtn} onPress={() => applyModerationMacro(Number(r.id), "merge_duplicate")}>
+                    <Text style={styles.roundGhostText}>Merge dup</Text>
+                  </Pressable>
+                </View>
               </View>
             ))}
           </ScrollView>
@@ -12022,11 +13102,15 @@ function AppInner() {
                             ]}
                             onPress={() => {
                               setSelectedMasjidSheet("");
-                              setSelectedEvent(ev);
+                              openEventDetails(ev);
                             }}
                           >
-                            {poster ? (
-                              <Image source={{ uri: poster }} style={styles.masjidPosterImage} resizeMode="cover" />
+                            {poster && canRenderPoster(poster) ? (
+                              <LoadableNetworkImage
+                                uri={poster}
+                                style={styles.masjidPosterImage}
+                                onError={() => markPosterFailed(poster)}
+                              />
                             ) : (
                               <View style={[styles.masjidPosterImage, styles.masjidPosterImageEmpty]}>
                                 <Mi name="mosque" size={56} color="#a3b0c8" />
@@ -12043,7 +13127,7 @@ function AppInner() {
                                 </Text>
                               </View>
                               <Text style={styles.masjidPosterCaptionTitle} numberOfLines={2}>
-                                {ev.title}
+                                {eventDisplayTitle(ev)}
                               </Text>
                               <View style={styles.masjidPosterCaptionHint}>
                                 <Text style={styles.masjidPosterCaptionHintText}>
@@ -12060,22 +13144,34 @@ function AppInner() {
                         All upcoming ({masjidEvents.length})
                       </Text>
                       {masjidEvents.map((ev, idx) => {
-                        const liveNow = isEventLiveNow(ev);
+                        const temporal = getEventTemporalState(ev);
                         return (
                           <Pressable {...PRESSABLE_INSTANT}
                             key={`sheet-list-${eventStorageKey(ev)}-${idx}`}
                             style={[styles.sheetEventRow, isDarkTheme && styles.sheetEventRowDark]}
                             onPress={() => {
                               setSelectedMasjidSheet("");
-                              setSelectedEvent(ev);
+                              openEventDetails(ev);
                             }}
                           >
                             <View style={{ flex: 1 }}>
                               <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                                {liveNow ? (
+                                {temporal.isPast ? (
+                                  <View style={styles.eventPastBadge}>
+                                    <Text style={styles.eventPastText}>ALREADY HAPPENED</Text>
+                                  </View>
+                                ) : null}
+                                {temporal.isLive ? (
                                   <View style={styles.liveNowBadge}>
                                     <View style={styles.liveNowDot} />
                                     <Text style={styles.liveNowText}>LIVE NOW</Text>
+                                  </View>
+                                ) : null}
+                                {!temporal.isLive && !temporal.isPast && temporal.startsInMinutes != null ? (
+                                  <View style={styles.eventStartsSoonBadge}>
+                                    <Text style={styles.eventStartsSoonText}>
+                                      {temporal.startsInMinutes <= 1 ? "STARTS IN 1M" : `STARTS IN ${temporal.startsInMinutes}M`}
+                                    </Text>
                                   </View>
                                 ) : null}
                                 <Text style={[styles.sheetEventWhen, isDarkTheme && { color: "#c4cee8" }]} numberOfLines={1}>
@@ -12083,7 +13179,7 @@ function AppInner() {
                                 </Text>
                               </View>
                               <Text style={[styles.sheetEventTitle, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={2}>
-                                {ev.title}
+                                {eventDisplayTitle(ev)}
                               </Text>
                             </View>
                             <Text style={[styles.sheetEventChevron, isDarkTheme && { color: "#8aa3d4" }]}>›</Text>
@@ -12986,14 +14082,14 @@ function AppInner() {
                       onPress={() => {
                         hapticTap("selection");
                         setCollectionPreview(null);
-                        setSelectedEvent(e);
+                        openEventDetails(e);
                       }}
                     >
-                      {poster ? (
-                        <Image
-                          source={{ uri: poster }}
+                      {poster && canRenderPoster(poster) ? (
+                        <LoadableNetworkImage
+                          uri={poster}
                           style={{ width: "100%", height: 180, borderRadius: 12 }}
-                          resizeMode="cover"
+                          onError={() => markPosterFailed(poster)}
                         />
                       ) : (
                         <View style={{ width: "100%", height: 90, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: masjidBrandColor(e.source) }}>
@@ -13004,11 +14100,11 @@ function AppInner() {
                         style={[styles.discoverFollowedScholarsRowWhat, isDarkTheme && { color: "#f4f7ff" }, { fontSize: 16 }]}
                         numberOfLines={2}
                       >
-                        {e.title}
+                        {eventDisplayTitle(e)}
                       </Text>
                       <Text style={[styles.discoverFollowedScholarsRowWho, isDarkTheme && { color: "#c4cee8" }]} numberOfLines={1}>
                         {formatSourceLabel(e.source)}
-                        {e.speaker ? ` · ${e.speaker}` : ""}
+                        {effectiveEventSpeakerName(e) ? ` · ${effectiveEventSpeakerName(e)}` : ""}
                       </Text>
                       <Text style={[styles.discoverFollowedScholarsRowWhen, isDarkTheme && { color: "#9db0db" }]}>
                         {formatHumanDate(e.date)} · {eventTime(e)}
@@ -13131,7 +14227,7 @@ function AppInner() {
                     key={`plan-ev-${idx}-${eventStorageKey(e)}`}
                     onPress={() => {
                       setKnowledgePlanPreview(null);
-                      setSelectedEvent(e);
+                      openEventDetails(e);
                     }}
                     style={[styles.knowledgePlanStep, isDarkTheme && { backgroundColor: "#1b2238" }]}
                   >
@@ -13143,11 +14239,11 @@ function AppInner() {
                         {formatHumanDate(e.date)} · {eventTime(e)}
                       </Text>
                       <Text style={[styles.knowledgePlanStepTitle, isDarkTheme && { color: "#f4f7ff" }]} numberOfLines={2}>
-                        {e.title}
+                        {eventDisplayTitle(e)}
                       </Text>
                       <Text style={[styles.knowledgePlanStepWho, isDarkTheme && { color: "#c4cee8" }]} numberOfLines={1}>
                         {formatSourceLabel(e.source)}
-                        {e.speaker ? ` · ${e.speaker}` : ""}
+                        {effectiveEventSpeakerName(e) ? ` · ${effectiveEventSpeakerName(e)}` : ""}
                       </Text>
                       <View style={styles.cardActionRow}>
                         <Pressable {...PRESSABLE_INSTANT}
@@ -13190,8 +14286,12 @@ function AppInner() {
                         </Pressable>
                       </View>
                     </View>
-                    {poster ? (
-                      <Image source={{ uri: poster }} style={styles.knowledgePlanStepPoster} resizeMode="cover" />
+                    {poster && canRenderPoster(poster) ? (
+                      <LoadableNetworkImage
+                        uri={poster}
+                        style={styles.knowledgePlanStepPoster}
+                        onError={() => markPosterFailed(poster)}
+                      />
                     ) : (
                       <View style={[styles.knowledgePlanStepPoster, { alignItems: "center", justifyContent: "center", backgroundColor: masjidBrandColor(e.source) }]}>
                         <Text style={{ color: "#fff", fontWeight: "900" }}>{masjidInitials(e.source)}</Text>
@@ -13317,8 +14417,12 @@ function AppInner() {
                     style={({ pressed }) => [styles.scholarCard, pressed && styles.cardActionChipPressed]}
                     onPress={() => { hapticTap("selection"); setSelectedSpeaker(sp.slug); }}
                   >
-                    {sp.image_url ? (
-                      <Image source={{ uri: sp.image_url }} style={styles.scholarAvatar} resizeMode="cover" />
+                    {sp.image_url && canRenderPoster(sp.image_url) ? (
+                      <LoadableNetworkImage
+                        uri={sp.image_url}
+                        style={styles.scholarAvatar}
+                        onError={() => markPosterFailed(sp.image_url || "")}
+                      />
                     ) : (
                       <View style={[styles.scholarAvatar, { backgroundColor: "#eef2fa", justifyContent: "center", alignItems: "center" }]}>
                         <Text style={{ fontWeight: "800", color: "#5b6a88" }}>{sp.name.split(" ").map((p) => p[0]).slice(0, 2).join("")}</Text>
@@ -13396,8 +14500,12 @@ function AppInner() {
                           Linking.openURL(v.url);
                         }}
                       >
-                        {v.thumbnail_url ? (
-                          <Image source={{ uri: v.thumbnail_url }} style={styles.videoThumb} />
+                        {v.thumbnail_url && canRenderPoster(v.thumbnail_url) ? (
+                          <LoadableNetworkImage
+                            uri={v.thumbnail_url}
+                            style={styles.videoThumb}
+                            onError={() => markPosterFailed(v.thumbnail_url || "")}
+                          />
                         ) : (
                           <View style={[styles.videoThumb, { backgroundColor: "#16131f", justifyContent: "center", alignItems: "center" }]}>
                             <Mi name="play_arrow" size={24} color="#ff4b4b" />
@@ -13762,14 +14870,8 @@ function AppInner() {
           Uses a translucent backdrop so the actual app UI stays visible
           beneath. As the user advances, we switch tabs and pulse a highlight
           ring around the relevant tab button (or the floating chatbot). */}
-      <Modal
-        visible={guidedTourOpen}
-        animationType="fade"
-        transparent
-        statusBarTranslucent
-        onRequestClose={() => setGuidedTourOpen(false)}
-      >
-        {(() => {
+      {guidedTourOpen
+        ? (() => {
           const step = GUIDED_TOUR_STEPS[guidedTourStep];
           const isLast = guidedTourStep >= GUIDED_TOUR_STEPS.length - 1;
 
@@ -13927,7 +15029,7 @@ function AppInner() {
                     transform: [{ translateY: tourContentTranslate }],
                   },
                 ]}
-                pointerEvents="box-none"
+                pointerEvents="auto"
               >
                 <View style={styles.tourSpriteRow}>
                   {renderPixelSprite(undefined, 88, "avatar")}
@@ -13957,9 +15059,14 @@ function AppInner() {
                       <Text style={styles.tourSkipText}>Skip tour</Text>
                     </Pressable>
                     {isTaskStep ? (
-                      <Pressable {...PRESSABLE_INSTANT} style={styles.tourSkipStepBtn} onPress={nextTour}>
-                        <Text style={styles.tourSkipStepText}>Skip this step →</Text>
-                      </Pressable>
+                      <>
+                        <Pressable {...PRESSABLE_INSTANT} style={styles.tourSkipStepBtn} onPress={nextTour}>
+                          <Text style={styles.tourSkipStepText}>Skip step</Text>
+                        </Pressable>
+                        <Pressable {...PRESSABLE_INSTANT} style={styles.tourNextBtn} onPress={nextTour}>
+                          <Text style={styles.tourNextText}>Done →</Text>
+                        </Pressable>
+                      </>
                     ) : (
                       <Pressable {...PRESSABLE_INSTANT} style={styles.tourNextBtn} onPress={nextTour}>
                         <Text style={styles.tourNextText}>
@@ -13972,8 +15079,8 @@ function AppInner() {
               </Animated.View>
             </View>
           );
-        })()}
-      </Modal>
+        })()
+        : null}
 
       {/* Sprite chatbot — event-aware local Q&A. Uses a pageSheet
           presentation on iOS so the system status bar sits *above* the
@@ -14077,7 +15184,7 @@ function AppInner() {
                       key={`chat-ev-${idx}-${e.event_uid || e.id || idx}`}
                       onPress={() => {
                         setChatOpen(false);
-                        setSelectedEvent(e);
+                        openEventDetails(e as EventItem);
                       }}
                       style={[styles.chatEventCard, isDarkTheme && styles.chatEventCardDark]}
                     >
@@ -14296,8 +15403,10 @@ const styles = StyleSheet.create({
   // Lighter backdrop for the walkthrough — leaves enough of the app visible
   // that the user can actually see which tab/UI element is being described.
   tourBackdropLight: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(8,12,24,0.38)",
+    zIndex: 1200,
+    elevation: 1200,
   },
   // Much lighter dim for task steps — we want the real UI to feel
   // primary since the user is actually going to interact with it.
@@ -15219,14 +16328,58 @@ const styles = StyleSheet.create({
     color: "#ffdfc9",
     fontWeight: "900",
   },
+  captureOptionalAccountNote: {
+    marginTop: 10,
+    marginBottom: 2,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.22)",
+    gap: 2,
+  },
+  captureOptionalAccountNoteTitle: {
+    color: "#ffffff",
+    fontSize: 13,
+    fontWeight: "900",
+    letterSpacing: 0.2,
+  },
+  captureOptionalAccountNoteText: {
+    color: "#ffe7d7",
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "600",
+  },
   setupSubStepBtnRow: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "flex-start",
+    flexWrap: "wrap",
     gap: 10,
     marginTop: 12,
+    paddingRight: 4,
+  },
+  setupSubStepSkipBtn: {
+    flexGrow: 1,
+    flexBasis: 132,
+    minWidth: 132,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.3)",
+  },
+  setupSubStepSkipBtnText: {
+    color: "#fff4ea",
+    fontWeight: "800",
+    fontSize: 14,
+    lineHeight: 18,
+    textAlign: "center",
+    paddingHorizontal: 8,
   },
   setupSubStepBackBtn: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: 104,
+    minWidth: 104,
     backgroundColor: "rgba(255,255,255,0.14)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.35)",
@@ -15237,7 +16390,10 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   setupSubStepNextBtn: {
-    flex: 1.4,
+    flexGrow: 1.2,
+    flexBasis: 138,
+    minWidth: 138,
+    marginRight: 2,
   },
   capturePrivacyRow: {
     flexDirection: "row",
@@ -15413,11 +16569,62 @@ const styles = StyleSheet.create({
     backgroundColor: "#d68750",
   },
   launchDotDark: { backgroundColor: "#ffb486" },
+  launchSimpleHero: {
+    marginTop: 46,
+    minHeight: "78%",
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    paddingHorizontal: 20,
+  },
+  launchSimpleLogoWrap: {
+    width: 300,
+    height: 300,
+    borderRadius: 44,
+    backgroundColor: "rgba(255,122,60,0.92)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+  },
+  launchSimpleLogoWrapNeo: { backgroundColor: "#f2f2f2", borderColor: "#b4b4b4" },
+  launchSimpleLogoWrapEmerald: { backgroundColor: "#e6f3ea", borderColor: "#a7c7b3" },
+  launchSimpleLogoWrapMidnight: { backgroundColor: "#151a32", borderColor: "#2e3858" },
+  launchSimpleLogoWrapVitaria: { backgroundColor: "rgba(255,255,255,0.2)", borderColor: "rgba(255,255,255,0.36)" },
+  launchSimpleLogoWrapInferno: { backgroundColor: "#2b1208", borderColor: "#7b3a17" },
+  launchSimpleLogo: {
+    width: "100%",
+    height: "100%",
+  },
+  launchSimpleTextBlock: {
+    marginTop: "auto",
+    marginBottom: 20,
+    alignItems: "center",
+    width: "100%",
+  },
+  launchSimpleTitle: {
+    color: "#1f2f4f",
+    fontSize: 44,
+    fontWeight: "900",
+    letterSpacing: -0.7,
+    textAlign: "center",
+    lineHeight: 48,
+  },
+  launchSimpleSub: {
+    marginTop: 14,
+    color: "#4c5f84",
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: "700",
+    textAlign: "center",
+  },
   launchTitle: { color: "#ffffff", fontSize: 38, fontWeight: "900", letterSpacing: -0.5, textAlign: "center", lineHeight: 42 },
   launchTitleDark: { color: "#eef2ff" },
   launchTitleNeo: { color: "#1f1f1f" },
   launchTitleEmerald: { color: "#1f5137" },
   launchTitleVitaria: { color: "#fffaf6" },
+  launchTitleInferno: { color: "#ffe6d4" },
   launchLead: {
     color: "#ffe9da",
     fontSize: 15,
@@ -15504,6 +16711,7 @@ const styles = StyleSheet.create({
   launchSubNeo: { color: "#626262" },
   launchSubEmerald: { color: "#3f6a53" },
   launchSubVitaria: { color: "#fff8f3" },
+  launchSubInferno: { color: "#ffd1b7" },
   premiumHero: {
     borderRadius: 28,
     padding: 18,
@@ -17374,7 +18582,29 @@ const styles = StyleSheet.create({
   eventInfoChevron: { color: "#b0b9cf", fontSize: 24, fontWeight: "700", marginLeft: 4 },
 
   eventDescText: { color: "#34405a", fontSize: 15, lineHeight: 22, fontWeight: "500" },
-  eventDescToggle: { marginTop: 6, color: "#2e4f82", fontSize: 13, fontWeight: "800" },
+  eventDescToggleBtn: {
+    marginTop: 8,
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    minWidth: 176,
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "#eaf2ff",
+    borderWidth: 1,
+    borderColor: "#cfdcf7",
+    shadowColor: "#2e4f82",
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 1,
+  },
+  eventDescToggleBtnDark: { backgroundColor: "#1c2a44", borderColor: "#355180" },
+  eventDescToggleLead: { flexDirection: "row", alignItems: "center", gap: 6 },
+  eventDescToggle: { color: "#2e4f82", fontSize: 13, fontWeight: "900" },
 
   eventMasjidCard: {
     marginTop: 16,
@@ -17455,6 +18685,13 @@ const styles = StyleSheet.create({
   eventTrustValue: { color: "#1b2333", fontSize: 13, fontWeight: "800", minWidth: 60, textAlign: "right" },
   eventTrustNote: { color: "#6b7894", fontSize: 12, fontWeight: "600", lineHeight: 16 },
   eventTrustActions: { flexDirection: "row", gap: 8, marginTop: 4 },
+  eventTrustBreakdownRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6, marginBottom: 2 },
+  eventTrustBreakdownChip: { paddingHorizontal: 9, paddingVertical: 5, borderRadius: 999, borderWidth: 1 },
+  eventTrustBreakdownChipOk: { backgroundColor: "#edf8f2", borderColor: "#b8dfc8" },
+  eventTrustBreakdownChipWarn: { backgroundColor: "#fff3e9", borderColor: "#f0c8aa" },
+  eventTrustBreakdownChipText: { fontSize: 11, fontWeight: "700" },
+  eventTrustBreakdownChipTextOk: { color: "#267448" },
+  eventTrustBreakdownChipTextWarn: { color: "#9a4e19" },
   eventTrustChip: {
     flex: 1,
     paddingVertical: 10,
@@ -17462,10 +18699,14 @@ const styles = StyleSheet.create({
     backgroundColor: "#f4f6fb",
     borderWidth: 1,
     borderColor: "#e0e5ef",
+    flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
   },
+  eventTrustChipIcon: { width: 14, height: 14 },
   eventTrustChipActive: { backgroundColor: "#1c4f82", borderColor: "#1c4f82" },
-  eventTrustChipText: { color: "#34405a", fontSize: 12, fontWeight: "700" },
+  eventTrustChipText: { color: "#34405a", fontSize: 12, lineHeight: 14, fontWeight: "700", includeFontPadding: false },
   eventTrustChipTextActive: { color: "#fffdf8" },
 
   eventReportToggle: { marginTop: 16, marginHorizontal: 14, alignItems: "center", padding: 10 },
@@ -17610,6 +18851,7 @@ const styles = StyleSheet.create({
   homeHeroHi: { color: "#fff", fontSize: 14, fontWeight: "700", letterSpacing: 0.2 },
   homeHeroCount: { color: "#fff", fontSize: 34, fontWeight: "900", letterSpacing: -0.8, marginTop: 2 },
   homeHeroSub: { color: "rgba(255,255,255,0.9)", fontSize: 13, fontWeight: "600", marginTop: 2 },
+  homeHeroStatus: { color: "rgba(255,255,255,0.82)", fontSize: 12, fontWeight: "700", marginTop: 6 },
   homeHeroCta: {
     marginTop: 14,
     alignSelf: "flex-start",
@@ -18219,6 +19461,15 @@ const styles = StyleSheet.create({
   discoverFollowedScholarsRowWhen: { fontSize: 11, color: "#8a4b22", fontWeight: "700", marginTop: 3 },
   homeSectionCount: { fontSize: 12, color: "#6b7894", fontWeight: "700" },
   homeSectionSeeAll: { color: "#2e4f82", fontWeight: "800", fontSize: 12 },
+  imageLoadContainer: {
+    overflow: "hidden",
+  },
+  imageLoadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.22)",
+  },
 
   homeEventRow: {
     flexDirection: "row",
@@ -18255,6 +19506,34 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     fontSize: 9.5,
     letterSpacing: 0.6,
+  },
+  eventStartsSoonBadge: {
+    backgroundColor: "#f48725",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    marginRight: 6,
+    marginBottom: 2,
+  },
+  eventStartsSoonText: {
+    color: "#fff",
+    fontWeight: "900",
+    fontSize: 9.5,
+    letterSpacing: 0.45,
+  },
+  eventPastBadge: {
+    backgroundColor: "#3c465c",
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 8,
+    marginRight: 6,
+    marginBottom: 2,
+  },
+  eventPastText: {
+    color: "#fff",
+    fontWeight: "900",
+    fontSize: 11,
+    letterSpacing: 0.55,
   },
   homeEventRowTitle: { color: "#1b2333", fontWeight: "800", fontSize: 15, marginTop: 2, letterSpacing: -0.2 },
   homeEventRowMeta: { color: "#6b7894", fontSize: 12, marginTop: 2 },

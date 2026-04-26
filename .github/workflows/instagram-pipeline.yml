@@ -58,6 +58,10 @@ jobs:
       SAFAR_INSTAGRAM_USERNAMES: ${{ github.event.inputs.ig_usernames }}
       SUPABASE_URL: https://xkpbpwusseaphdhaelbr.supabase.co
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      # AI normalization keys for speaker/title cleanup on hosted runners.
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      SAFAR_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      SAFAR_AI_SPEAKER_NORMALIZE: "1"
 
     steps:
       - name: Checkout repo
