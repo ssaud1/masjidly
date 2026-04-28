@@ -1,7 +1,7 @@
 {
-  "data_version": "1777314731-v3",
+  "data_version": "1777401866-v3",
   "default_reference": "alfalah",
-  "min_date": "2026-04-27",
+  "min_date": "2026-04-28",
   "max_date": "2027-05-01",
   "sources": [
     "alfalah",
@@ -29,6 +29,6 @@
     "nbic",
     "waarith"
   ],
-  "generated_at_utc": "2026-04-27T18:32:36.128257+00:00",
-  "event_count": 812
+  "generated_at_utc": "2026-04-28T18:44:56.287699+00:00",
+  "event_count": 815
 }
